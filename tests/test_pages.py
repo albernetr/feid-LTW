@@ -264,14 +264,14 @@ async def test_projects_detail_page_shows_its_resources(user: User):
     seed()
     pid = core.list_items('projects')[0]['id']
     await user.open(f'/projects/edit?id={pid}')
-    await user.should_see('Módulos (1)')
+    await user.should_see('Módulos')
     await user.should_see('Sample API')
-    await user.should_see('Ambientes (1)')
+    await user.should_see('Ambientes')
     await user.should_see('Local')
-    await user.should_see('Casos (5)')
-    await user.should_see('Suites (1)')
+    await user.should_see('Casos')
+    await user.should_see('Suites')
     await user.should_see('Smoke encadenado')
-    await user.should_see('Programaciones (1)')
+    await user.should_see('Programaciones')
 
 
 async def test_projects_detail_resource_card_selects_project_before_navigating(user: User):

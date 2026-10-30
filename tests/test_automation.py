@@ -13,6 +13,22 @@ def test_scheduler_daily(monkeypatch,tmp_path):
     assert automation.next_due({'frequency':'weekdays','time':'10:00','timezone':'UTC'},dt.datetime(2026,10,30,12,tzinfo=dt.timezone.utc)).startswith('2026-11-02')
     assert core.get('schedules',schedule['id'])['enabled']
 
+def test_dispatch_due_skips_schedules_of_a_disabled_project(monkeypatch,tmp_path):
+    monkeypatch.setattr(core,'ROOT',tmp_path)
+    monkeypatch.setattr(core,'DB',tmp_path/'db.sqlite3')
+    monkeypatch.setattr(core,'ARTIFACTS',tmp_path/'evidence')
+    project=core.create_project('P')
+    env=core.save('environments',{'name':'QA','project_id':project['id'],'base_url':'http://127.0.0.1:8000','auth':{'type':'none'}})
+    case=core.save('cases',{'name':'check','type':'api','project_id':project['id'],'method':'GET','path':'/health','assertions':[{'type':'status','expected':200}]})
+    suite=core.save_suite('smoke',env['id'],[case['id']],project['id'])
+    schedule=automation.create_schedule(suite['id'],'daily','10:00','UTC')
+    core.set_project_enabled(project['id'],False)
+    due=dt.datetime.fromisoformat(schedule['next_run_at'])+dt.timedelta(seconds=1)
+    completed=automation.dispatch_due(due)
+    assert completed==[]
+    assert core.get('schedules',schedule['id'])['last_outcome']=='omitida (proyecto deshabilitado)'
+
+
 def test_ui_missing_playwright_is_recorded(monkeypatch,tmp_path):
     monkeypatch.setattr(core,'ROOT',tmp_path)
     monkeypatch.setattr(core,'DB',tmp_path/'db.sqlite3')

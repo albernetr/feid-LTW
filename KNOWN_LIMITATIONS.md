@@ -36,6 +36,11 @@
 - Irreversible y no hay papelera: exporta antes (`/portable`) si quieres conservar algo de ese proyecto.
 - No toca el historial del Laboratorio (`lab_history`): es por autor, no por proyecto, así que ese registro sigue existiendo.
 - No revierte un ambiente creado como copia en otro proyecto (p. ej. al correr una suite contra otro ambiente): esas copias son recursos independientes.
+- El borrado **seguro** (el que exige que no queden recursos «bloqueantes») también limpia ahora el historial de ejecuciones y las interfaces observadas de ese proyecto, aunque no cuenten como bloqueantes: si lo contrario te sorprende, es a propósito — ya no deja nada huérfano.
+
+## Deshabilitar un proyecto
+- No pausa nada que ya esté corriendo; solo impide que se vuelva a **seleccionar** como activo (y lo desactiva si lo estaba). Una programación de ese proyecto no se dispara mientras está deshabilitado (el scheduler la omite), pero una suite ya en ejecución al momento de deshabilitarlo sigue hasta terminar.
+- Importar un workspace no pasa por la validación de nombre duplicado ni preserva automáticamente el estado `disabled` del destino con la estrategia «merge» (si el proyecto ya existe, «merge» no lo toca en absoluto: conserva el que ya tenías, no el del paquete).
 
 ## Base de datos compartida
 - SQLite sobre un recurso de red depende de que el sistema de archivos respete los bloqueos; algunos NAS no lo hacen bien. Para uso concurrente intenso se necesitaría un servidor de base de datos (no incluido).

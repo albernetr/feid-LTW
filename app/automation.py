@@ -389,6 +389,8 @@ def dispatch_due(now_utc=None, grace_seconds=120):
             continue
         missed = (current - due).total_seconds() > grace_seconds
         should_run = not (missed and schedule.get('missed_policy', 'run_once') == 'skip')
+        project = core.get('projects', schedule['project_id']) if schedule.get('project_id') else None
+        project_disabled = bool(project and project.get('disabled'))
         # Advance before running so an execution error won't cause endless replays.
         if schedule['frequency'] == 'once':
             schedule['enabled'] = False
@@ -397,11 +399,12 @@ def dispatch_due(now_utc=None, grace_seconds=120):
         schedule['last_trigger_at'] = core.now()
         if missed:
             schedule['last_missed_at'] = core.now()
-        schedule['last_outcome'] = 'ejecutada' if should_run else 'omitida (perdida)'
+        schedule['last_outcome'] = ('omitida (proyecto deshabilitado)' if project_disabled else
+                                    'ejecutada' if should_run else 'omitida (perdida)')
         core.save('schedules', schedule)
-        logs.event('schedule.triggered', schedule=schedule['id'], missed=missed, ran=should_run)
+        logs.event('schedule.triggered', schedule=schedule['id'], missed=missed, ran=should_run and not project_disabled)
         suite = core.get('suites', schedule['suite_id'])
-        if suite and should_run:
+        if suite and should_run and not project_disabled:
             try:
                 completed.append(execute_suite(suite))
             except Exception as exc:

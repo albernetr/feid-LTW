@@ -62,8 +62,12 @@ def frame(title, current, wide=False):
                 except Exception as exc:
                     ui.notify(str(exc) or type(exc).__name__, type='negative', multi_line=True)
             selectable = {p['id']: p['name'] for p in projects if not p.get('disabled')}
-            ui.select(selectable, value=active, label='Proyecto activo', on_change=switch) \
-                .props('outlined dense options-dense').classes('w-60').tooltip('Todo lo que ves y creas pertenece a este proyecto')
+            if selectable:
+                ui.select(selectable, value=active, label='Proyecto activo', on_change=switch) \
+                    .props('outlined dense options-dense').classes('w-60').tooltip('Todo lo que ves y creas pertenece a este proyecto')
+            else:
+                ui.button('Todos los proyectos están deshabilitados', icon='warning', on_click=lambda: ui.navigate.to('/projects')) \
+                    .props('flat dense color=warning no-caps').tooltip('Habilita alguno en Proyectos para poder seleccionarlo')
         else:
             ui.button('Crear primer proyecto', icon='add', on_click=lambda: ui.navigate.to('/projects')).props('color=primary dense')
     with drawer:

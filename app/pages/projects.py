@@ -1,6 +1,6 @@
 from nicegui import ui
 from .. import core, automation
-from .common import frame, guard, confirm, empty_state
+from .common import frame, guard, confirm, empty_state, fmt_time
 
 RESOURCE_LABELS = (('modules', 'módulos'), ('environments', 'ambientes'), ('cases', 'casos'),
                     ('suites', 'suites'), ('schedules', 'programaciones'), ('taps', 'taps'))
@@ -177,18 +177,21 @@ def projects_list():
         search.on_value_change(refresh)
 
 
-def _resource_card(project, icon, title, table_name, route, render_item):
+def _resource_card(project, icon, color, title, table_name, route, render_item):
     entries = core.list_project_items(table_name, project['id'])
     with ui.card().classes('flex-1 min-w-[280px]'):
         with ui.row().classes('items-center justify-between w-full no-wrap'):
             with ui.row().classes('items-center gap-2'):
-                ui.icon(icon, color='primary')
-                ui.label(f'{title} ({len(entries)})').classes('font-semibold')
+                ui.avatar(icon, color=color, text_color='white', size='32px')
+                with ui.column().classes('gap-0'):
+                    ui.label(title).classes('font-semibold leading-tight')
+                    ui.label(str(len(entries))).classes('text-xs text-gray-500 leading-tight')
 
             def goto(r=route):
                 core.set_active_project(project['id'])
                 ui.navigate.to(r)
             ui.button('Ver todos', icon='open_in_new', on_click=guard(goto)).props('flat dense size=sm no-caps').mark(f'project-goto-{table_name}')
+        ui.separator().classes('my-1')
         if not entries:
             ui.label('Ninguno todavía.').classes('text-sm text-gray-400')
         for entry in entries[:5]:
@@ -211,15 +214,22 @@ def project_edit(id: str = ''):
 
         with ui.card().classes('w-full'):
             with ui.row().classes('items-center gap-2'):
+                ui.icon('folder', color='primary').classes('text-2xl')
                 ui.label(current['name'] if current else 'Nuevo proyecto').classes('text-xl font-semibold')
                 if is_active:
                     ui.badge('Activo', color='primary')
                 if is_disabled:
                     ui.badge('Deshabilitado', color='grey-6')
+            if current:
+                ui.label(f'Última actualización: {fmt_time(current.get("updated_at"))}').classes('text-xs text-gray-400')
+
+            ui.separator().classes('my-2')
             name = ui.input('Nombre', value=(current or {}).get('name', '')).props('outlined dense').classes('w-full').mark('project-name')
             description = ui.textarea('Descripción (opcional)', value=(current or {}).get('description', '')).props('outlined dense autogrow').classes('w-full')
             if is_disabled:
-                ui.label('Este proyecto está deshabilitado: no se puede seleccionar como activo hasta que lo habilites.').classes('text-sm text-amber-700')
+                with ui.row().classes('items-center gap-2 bg-amber-50 rounded px-3 py-2 w-full'):
+                    ui.icon('info', color='warning')
+                    ui.label('Este proyecto está deshabilitado: no se puede seleccionar como activo hasta que lo habilites.').classes('text-sm text-amber-800')
 
             def save():
                 if current:
@@ -241,11 +251,15 @@ def project_edit(id: str = ''):
                 ui.notify('Proyecto habilitado' if is_disabled else 'Proyecto deshabilitado', type='positive')
                 ui.navigate.to(f'/projects/edit?id={current["id"]}')
 
-            with ui.row().classes('gap-2'):
+            with ui.row().classes('gap-2 items-center mt-2'):
                 ui.button('Guardar cambios' if current else 'Crear proyecto', icon='save', on_click=guard(save)).props('color=primary').mark('project-save')
                 if current and not is_active and not is_disabled:
                     ui.button('Seleccionar', icon='check', on_click=guard(select)).props('outline').mark('project-select')
-                if current:
+
+            if current:
+                ui.separator().classes('my-3')
+                ui.label('Administración').classes('text-xs font-semibold text-gray-500 uppercase tracking-wide')
+                with ui.row().classes('gap-2 items-center mt-1'):
                     ui.button('Habilitar' if is_disabled else 'Deshabilitar', icon='unarchive' if is_disabled else 'archive',
                               on_click=guard(toggle_enabled)).props('outline').mark('project-toggle-enabled')
                     ui.button('Eliminar', icon='delete', on_click=lambda: _request_delete(
@@ -256,13 +270,13 @@ def project_edit(id: str = ''):
 
         ui.label('Contenido del proyecto').classes('text-lg font-semibold mt-2')
         with ui.row().classes('w-full gap-4 flex-wrap'):
-            _resource_card(current, 'api', 'Módulos', 'modules', '/modules',
+            _resource_card(current, 'api', 'blue', 'Módulos', 'modules', '/modules',
                             lambda m: f'{m["name"]} · {len(m.get("operations", []))} operaciones')
-            _resource_card(current, 'dns', 'Ambientes', 'environments', '/environments',
+            _resource_card(current, 'dns', 'teal', 'Ambientes', 'environments', '/environments',
                             lambda e: f'{e["name"]} · {e.get("base_url", "")}')
-            _resource_card(current, 'http', 'Casos', 'cases', '/cases',
+            _resource_card(current, 'http', 'indigo', 'Casos', 'cases', '/cases',
                             lambda c: f'{c["name"]} · {"UI" if c.get("type") == "ui" else c.get("method", "API")}')
-            _resource_card(current, 'playlist_play', 'Suites', 'suites', '/suites',
+            _resource_card(current, 'playlist_play', 'deep-orange', 'Suites', 'suites', '/suites',
                             lambda s: f'{s["name"]} · {len(core.suite_steps(s))} paso(s)')
-            _resource_card(current, 'schedule', 'Programaciones', 'schedules', '/schedules',
+            _resource_card(current, 'schedule', 'purple', 'Programaciones', 'schedules', '/schedules',
                             lambda s: automation.describe_schedule(s))

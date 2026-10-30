@@ -171,6 +171,24 @@ def test_project_update_stats_and_safe_delete():
   core.delete_project(empty['id'])
   assert core.get('projects', empty['id']) is None
 
+
+def test_safe_delete_also_purges_orphaned_history_and_its_evidence():
+    # a project can have run/interface history (from resources deleted earlier by hand) without any of
+    # that counting as "blocking" content in project_stats — delete_project must not leave it dangling
+    project = core.create_project('Con historial suelto')
+    shot = core.ARTIFACTS / 'suelto.png'
+    shot.write_text('x')
+    run = core.save('runs', {'type': 'api', 'project_id': project['id'], 'status': 'passed', 'screenshot': 'suelto.png'})
+    interface = core.save('interfaces', {'module': 'M', 'method': 'GET', 'project_id': project['id']})
+    assert core.project_stats(project['id']) == {'modules': 0, 'environments': 0, 'cases': 0, 'suites': 0, 'schedules': 0, 'taps': 0}
+
+    core.delete_project(project['id'])
+
+    assert core.get('projects', project['id']) is None
+    assert core.get('runs', run['id']) is None
+    assert core.get('interfaces', interface['id']) is None
+    assert not shot.exists()
+
 def test_roundtrip(tmp_path):
     m=core.import_openapi(SPEC)
     c=core.save('cases',{'name':'demo','module_id':m['id'],'assertions':[]})

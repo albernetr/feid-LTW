@@ -280,28 +280,10 @@ def project_stats(project_id):
 PROJECT_RESOURCE_LABELS = {'modules': 'módulo(s)', 'environments': 'ambiente(s)', 'cases': 'caso(s)', 'suites': 'suite(s)', 'schedules': 'programación(es)', 'taps': 'tap(s) de observación'}
 
 
-def delete_project(project_id):
-    if get('projects', project_id) is None:
-        raise ValueError('Proyecto inexistente')
-    stats = project_stats(project_id)
-    blocking = {table: count for table, count in stats.items() if count}
-    if blocking:
-        detail = ', '.join(f'{count} {PROJECT_RESOURCE_LABELS.get(table, table)}' for table, count in blocking.items())
-        raise ValueError(f'No se puede eliminar: tiene {detail}. Bórralos o muévelos a otro proyecto primero.')
-    delete('projects', project_id)
-    if get_active_project_id() == project_id:
-        set_active_project(None)
-
-
-CASCADE_TABLES = ('modules', 'environments', 'cases', 'suites', 'schedules', 'taps', 'runs', 'interfaces')
-
-
-def delete_project_cascade(project_id):
-    """Deletes the project AND every resource that belongs to it: irreversible, unlike the safe delete_project()
-    above (which refuses when there is still content). Evidence files (screenshots/traces) of its runs are
-    removed too. Lab history is per-author, not per-project, so it is left untouched."""
-    if get('projects', project_id) is None:
-        raise ValueError('Proyecto inexistente')
+def _purge_project_history(project_id):
+    """Removes a project's runs and observed interfaces (with the runs' evidence files). Not counted as
+    'blocking' content in project_stats (a user doesn't consciously manage history the way they manage
+    modules/cases), but leaving it behind as an orphan once the project is gone serves no one either."""
     for run in list_items('runs'):
         if run.get('project_id') != project_id:
             continue
@@ -310,6 +292,36 @@ def delete_project_cascade(project_id):
                 path = ARTIFACTS / Path(name).name
                 if path.is_file():
                     path.unlink()
+        delete('runs', run['id'])
+    for interface in list_items('interfaces'):
+        if interface.get('project_id') == project_id:
+            delete('interfaces', interface['id'])
+
+
+def delete_project(project_id):
+    if get('projects', project_id) is None:
+        raise ValueError('Proyecto inexistente')
+    stats = project_stats(project_id)
+    blocking = {table: count for table, count in stats.items() if count}
+    if blocking:
+        detail = ', '.join(f'{count} {PROJECT_RESOURCE_LABELS.get(table, table)}' for table, count in blocking.items())
+        raise ValueError(f'No se puede eliminar: tiene {detail}. Bórralos o muévelos a otro proyecto primero.')
+    _purge_project_history(project_id)
+    delete('projects', project_id)
+    if get_active_project_id() == project_id:
+        set_active_project(None)
+
+
+CASCADE_TABLES = ('modules', 'environments', 'cases', 'suites', 'schedules', 'taps')
+
+
+def delete_project_cascade(project_id):
+    """Deletes the project AND every resource that belongs to it: irreversible, unlike the safe delete_project()
+    above (which refuses when there is still content). Lab history is per-author, not per-project, so it is
+    left untouched."""
+    if get('projects', project_id) is None:
+        raise ValueError('Proyecto inexistente')
+    _purge_project_history(project_id)
     with transaction() as con:
         for table in CASCADE_TABLES:
             ids = [item['id'] for item in list_items(table) if item.get('project_id') == project_id]
