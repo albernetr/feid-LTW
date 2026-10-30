@@ -1,5 +1,7 @@
 # Limitaciones conocidas
 
+> Qué tan maduro está cada sección (estable / beta / experimental), con el aviso de responsabilidad completo: [README.md](README.md#qué-tan-maduro-está-cada-parte).
+
 ## Seguridad y alcance
 - **Sin autenticación propia**: la interfaz escucha solo en `127.0.0.1`, pero cualquier proceso local puede usarla. No la expongas a la red.
 - Los ambientes pueden apuntar a hosts internos (por diseño). Ejecuta solo contra sistemas autorizados.

@@ -4,6 +4,20 @@
 
 Aplicación local (Python + NiceGUI) para importar contratos OpenAPI/Swagger, definir ambientes, crear casos de prueba API y UI (Playwright), agruparlos en suites encadenadas, programarlos y exportar/importar el trabajo de forma segura.
 
+## Qué tan maduro está cada parte
+
+> **Aviso de responsabilidad.** LTW se entrega tal cual, sin garantía (ver [LICENSE](LICENSE), MIT). Pruébalo solo contra sistemas propios o autorizados, revisa siempre lo que una suite o un agente va a hacer antes de confiar en el resultado, y úsalo bajo tu propia responsabilidad.
+
+Esto no es "¿funciona?" — es "¿se probó contra algo real, más de una vez, con fallos reales encontrados y corregidos?". Se muestra también dentro de la aplicación (Inicio).
+
+| Nivel | Qué significa | Incluye |
+|---|---|---|
+| 🟢 **Estable** | Probado contra sistemas reales, con pruebas automáticas y fallos reales encontrados y corregidos. | Motor de aserciones y ejecución de casos API (26 tipos) · Protocolo para agentes (`ltw.spec`/`ltw.report`/`ltw.failure`) · Importar contratos OpenAPI (archivo, URL, Swagger UI/Redoc/FastAPI) · Exploración automática de contratos · Importar/Exportar del workspace · Seguridad de secretos |
+| 🟡 **Beta** | Funciona y tiene pruebas, pero con menos uso real sostenido o un límite conocido que conviene vigilar. | Suites y flujos con enriquecimiento entre módulos · Observador de interfaces (el tap/proxy en vivo, más que aprender del historial) · Resumen ejecutivo y reporte de estatus · Casos UI y el espacio de trabajo unificado |
+| ⚪ **Experimental** | Usable, pero la calidad depende de algo fuera de LTW (el modelo que conectes) o de un uso que casi no se ha probado. | Asistente con modelo de lenguaje (depende del modelo que conectes) · Programaciones de larga duración sin supervisión |
+
+Detalle de límites conocidos por sección: [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
+
 ## Instalación (Windows, con Python 3.11+ ya instalado)
 
 La solución está orientada a **Windows** y asume que **Python 3.11 o superior está instalado y en el PATH** (`python --version`).

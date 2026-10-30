@@ -280,3 +280,14 @@ async def test_saved_cases_are_unified_across_both_workspaces(user: User):
 
     await user.open('/workspace?case=no-existe')
     await user.should_see('ya no existe')
+
+
+async def test_home_shows_the_maturity_disclaimer(user: User):
+    """Transparency: no one should form an expectation the product hasn't earned - the home page says, up front,
+    what is stable, what is beta and what is experimental, plus the use-at-your-own-risk notice."""
+    from app import maturity
+    await user.open('/')
+    await user.should_see('Qué tan maduro está cada parte')
+    await user.should_see(maturity.DISCLAIMER[:40])
+    for level in maturity.LEVELS:
+        await user.should_see(level['label'])

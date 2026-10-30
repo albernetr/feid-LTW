@@ -33,7 +33,21 @@ Las recetas paso a paso para cada perfil están en el [capítulo 16](#16-recetas
 - No reemplaza a un servidor de integración continua: puede ejecutarse por línea de comandos y producir JUnit, pero no orquesta pipelines.
 - No es multiusuario con inicio de sesión: es local; lo único que se comparte es la **base de datos** (ver [capítulo 15](#15-trabajo-en-equipo-y-base-de-datos-compartida)).
 
-## 1.4 Cómo está organizado este manual
+## 1.4 Qué tan maduro está cada parte
+
+> **Aviso de responsabilidad.** LTW se entrega tal cual, sin garantía (licencia MIT). Pruébalo solo contra sistemas propios o autorizados, revisa siempre lo que una suite o un agente va a hacer antes de confiar en el resultado, y úsalo bajo tu propia responsabilidad.
+
+No todas las partes tienen el mismo recorrido. Esto no mide «¿funciona?» sino «¿se probó contra algo real, más de una vez, con fallos encontrados y corregidos?». La misma información se muestra en **Inicio**, dentro de la aplicación.
+
+| Nivel | Qué significa | Incluye |
+|---|---|---|
+| 🟢 **Estable** | Probado contra sistemas reales, con pruebas automáticas y fallos reales encontrados y corregidos. | Motor de aserciones y ejecución de casos API (26 tipos) · Protocolo para agentes (`ltw.spec`/`ltw.report`/`ltw.failure`) · Importar contratos OpenAPI (archivo, URL, Swagger UI/Redoc/FastAPI) · Exploración automática de contratos · Importar/Exportar del workspace · Seguridad de secretos |
+| 🟡 **Beta** | Funciona y tiene pruebas, pero con menos uso real sostenido o un límite conocido que conviene vigilar. | Suites y flujos con enriquecimiento entre módulos · Observador de interfaces (el tap/proxy en vivo, más que aprender del historial) · Resumen ejecutivo y reporte de estatus · Casos UI y el espacio de trabajo unificado |
+| ⚪ **Experimental** | Usable, pero la calidad depende de algo fuera de LTW (el modelo que conectes) o de un uso que casi no se ha probado. | Asistente con modelo de lenguaje (depende del modelo que conectes) · Programaciones de larga duración sin supervisión |
+
+Límites conocidos de cada sección, en detalle: [KNOWN_LIMITATIONS.md](../../KNOWN_LIMITATIONS.md).
+
+## 1.5 Cómo está organizado este manual
 
 | Si quieres… | Ve a |
 |---|---|

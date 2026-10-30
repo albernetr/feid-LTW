@@ -1,5 +1,5 @@
 from nicegui import ui
-from .. import core, automation
+from .. import core, automation, maturity
 from .common import frame, status_badge, fmt_time, show_run
 
 
@@ -10,6 +10,17 @@ def home():
         project = core.get('projects', pid) if pid else None
         counts = {t: len(core.list_project_items(t, pid)) for t in ('modules', 'environments', 'cases', 'suites', 'schedules')}
         ui.label(f'Proyecto activo: {project["name"]}' if project else 'Aún no hay un proyecto activo').classes('text-gray-600')
+
+        with ui.expansion('Qué tan maduro está cada parte (léelo antes de confiar)', icon='info', value=True).classes('w-full border rounded bg-amber-50'):
+            ui.label(maturity.DISCLAIMER).classes('text-sm font-medium')
+            for level in maturity.LEVELS:
+                with ui.row().classes('items-start gap-2 w-full mt-2'):
+                    ui.icon(level['icon'], color=level['color']).classes('mt-1')
+                    with ui.column().classes('gap-0'):
+                        ui.label(level['label']).classes('font-semibold')
+                        ui.label(level['summary']).classes('text-xs text-gray-600')
+                        ui.label(' · '.join(level['items'])).classes('text-xs text-gray-500')
+            ui.label('Detalle completo en KNOWN_LIMITATIONS.md y en el README.').classes('text-xs text-gray-400 mt-2')
 
         steps = [
             ('Crear un proyecto', bool(project), '/projects'),
