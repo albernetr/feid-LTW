@@ -155,11 +155,21 @@ def execute_ui(case, environment, variables=None):
                         elif action in ('wait_visible', 'assert_visible'): loc.wait_for(state='visible')
                         elif action == 'assert_not_visible': loc.wait_for(state='hidden')
                         elif action == 'assert_text':
+                            deadline = time.monotonic() + int(case.get('timeout_ms', 10000)) / 1000
                             text = loc.inner_text()
+                            while step['expected'] not in text and time.monotonic() < deadline:
+                                time.sleep(0.1)
+                                text = loc.inner_text()
                             if step['expected'] not in text:
                                 raise AssertionError(f'Texto esperado «{step["expected"]}» no encontrado en «{text[:80]}»')
                         elif action == 'assert_value':
-                            if loc.input_value() != str(step['expected']):
+                            expected = str(step['expected'])
+                            deadline = time.monotonic() + int(case.get('timeout_ms', 10000)) / 1000
+                            value = loc.input_value()
+                            while value != expected and time.monotonic() < deadline:
+                                time.sleep(0.1)
+                                value = loc.input_value()
+                            if value != expected:
                                 raise AssertionError('Valor distinto del esperado')
                     outcome['passed'] = True
                 run['status'] = 'passed'
