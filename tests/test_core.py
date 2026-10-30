@@ -58,6 +58,29 @@ def test_openapi_rejects_too_deep_ref_chain():
         core.parse_openapi(raw)
 
 
+def test_ensure_environment_for_module_creates_then_reuses():
+    project = core.create_project('P')
+    raw = 'openapi: 3.0.3\ninfo: {title: X, version: "1"}\nservers: [{url: https://api.example.com/v1}]\npaths: {}\n'
+    module = core.import_openapi(raw, project['id'])
+
+    env, created = core.ensure_environment_for_module(project['id'], module)
+    assert created is True
+    assert env['base_url'] == 'https://api.example.com/v1'
+    assert env['name'] == module['name']
+
+    again, created_again = core.ensure_environment_for_module(project['id'], module)
+    assert created_again is False
+    assert again['id'] == env['id']
+    assert len(core.list_project_items('environments', project['id'])) == 1
+
+
+def test_ensure_environment_for_module_returns_none_without_a_resolvable_server():
+    project = core.create_project('P')
+    module = core.import_openapi(SPEC, project['id'])  # no servers, no source_url
+    env, created = core.ensure_environment_for_module(project['id'], module)
+    assert env is None and created is False
+
+
 def test_projects_persist_and_select_active():
   project=core.create_project('Comercial', 'Pruebas del módulo comercial')
   module=core.import_openapi(SPEC, project['id'])

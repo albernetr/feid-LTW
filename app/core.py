@@ -616,6 +616,23 @@ def module_base_url(module):
     return None
 
 
+def ensure_environment_for_module(project_id, module):
+    """Finds (by exact base_url match) or creates the project's environment for a module's declared server.
+    Unlike ensure_environment_for_url, keeps any path prefix the server declares (e.g. /v1): a whole
+    contract commonly lives under one. Returns (environment, created); (None, False) if the module doesn't
+    resolve to an absolute base URL (relative server with no source_url, or unresolved {variables})."""
+    base = module_base_url(module)
+    if not base:
+        return None, False
+    normalized = base.rstrip('/')
+    for env in list_project_items('environments', project_id):
+        if env.get('base_url', '').rstrip('/') == normalized:
+            return env, False
+    env = save('environments', {'name': module['name'][:60], 'project_id': project_id, 'base_url': normalized,
+                                'auth': {'type': 'none', 'secret': '', 'env_var': '', 'header': 'X-API-Key'}, 'variables': {}})
+    return env, True
+
+
 def operation_response_schema(operation, status='200'):
     """JSON Schema declared by the contract for a response, if any (OpenAPI 3 / Swagger 2)."""
     response = (operation.get('responses') or {}).get(str(status)) or {}

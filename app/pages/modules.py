@@ -17,11 +17,17 @@ def modules():
             url = ui.input('URL del contrato, de su página de Swagger UI o un enlace de GitHub').props('outlined dense').classes('w-full')
             ui.label('Acepta el enlace directo al .json/.yaml, la página de Swagger UI / Redoc (se busca el contrato enlazado) o un enlace github.com/…/blob/….').classes('text-xs text-gray-500')
 
+            def _env_note(module):
+                env, created = core.ensure_environment_for_module(pid, module)
+                if not env:
+                    return ''
+                return f' Ambiente «{env["name"]}» {"creado" if created else "reutilizado"} con {env["base_url"]}.'
+
             async def from_url():
                 module = await run.io_bound(core.import_openapi_url, url.value, pid)
                 duplicates = [m for m in core.list_project_items('modules', pid) if m['id'] != module['id'] and m.get('source_url') == module.get('source_url')]
-                note = f' Ya había {len(duplicates)} módulo(s) con este mismo origen en el proyecto: revisa si quieres eliminar el anterior.' if duplicates else ''
-                ui.notify(f'Importado «{module["name"]}»: {len(module["operations"])} operaciones. Origen: {module["source_url"]}.{note}',
+                dup_note = f' Ya había {len(duplicates)} módulo(s) con este mismo origen en el proyecto: revisa si quieres eliminar el anterior.' if duplicates else ''
+                ui.notify(f'Importado «{module["name"]}»: {len(module["operations"])} operaciones. Origen: {module["source_url"]}.{_env_note(module)}{dup_note}',
                           type='warning' if duplicates else 'positive', multi_line=True)
                 ui.navigate.reload()
             ui.button('Importar desde URL', icon='cloud_download', on_click=guard(from_url)).props('color=primary')
@@ -32,8 +38,8 @@ def modules():
                     module = core.import_openapi(raw.decode('utf-8'), pid)
                     duplicates = [m for m in core.list_project_items('modules', pid)
                                   if m['id'] != module['id'] and m['name'] == module['name'] and m.get('version') == module.get('version')]
-                    note = f' Ya había {len(duplicates)} módulo(s) con el mismo nombre y versión: revisa si quieres eliminar el anterior.' if duplicates else ''
-                    ui.notify(f'Importado «{module["name"]}»: {len(module["operations"])} operaciones.{note}',
+                    dup_note = f' Ya había {len(duplicates)} módulo(s) con el mismo nombre y versión: revisa si quieres eliminar el anterior.' if duplicates else ''
+                    ui.notify(f'Importado «{module["name"]}»: {len(module["operations"])} operaciones.{_env_note(module)}{dup_note}',
                               type='warning' if duplicates else 'positive', multi_line=True)
                     ui.navigate.reload()
                 except Exception as exc:
@@ -118,15 +124,20 @@ def modules():
                 if module.get('source_url'):
                     ui.label(f'Origen: {module["source_url"]}').classes('text-xs text-gray-500')
                 if base:
-                    def make_env(m=module, b=base):
-                        name = m['name'][:60]
-                        if any(e['name'] == name for e in core.list_project_items('environments', pid)):
-                            raise ValueError(f'Ya existe un ambiente llamado «{name}» en este proyecto')
-                        core.save('environments', {'name': name, 'project_id': pid, 'base_url': b, 'auth': {'type': 'none', 'secret': '', 'env_var': '', 'header': 'X-API-Key'}, 'variables': {}})
-                        ui.notify(f'Ambiente «{name}» creado con {b}', type='positive')
+                    existing_env = next((e for e in core.list_project_items('environments', pid)
+                                         if e.get('base_url', '').rstrip('/') == base.rstrip('/')), None)
+
+                    def make_env(m=module):
+                        env, created = core.ensure_environment_for_module(pid, m)
+                        ui.notify(f'Ambiente «{env["name"]}» {"creado" if created else "ya existía"} con {env["base_url"]}', type='positive')
+                        if created:
+                            ui.navigate.reload()
                     with ui.row().classes('items-center gap-2'):
                         ui.label(f'Servidor declarado: {base}').classes('text-xs text-gray-600')
-                        ui.button('Crear ambiente con esta URL', icon='dns', on_click=guard(make_env)).props('flat dense size=sm no-caps color=primary')
+                        if existing_env:
+                            ui.label(f'· ambiente «{existing_env["name"]}» ya registrado').classes('text-xs text-positive')
+                        else:
+                            ui.button('Crear ambiente con esta URL', icon='dns', on_click=guard(make_env)).props('flat dense size=sm no-caps color=primary')
                 elif module.get('servers') and any('{' in (server.get('url') or '') for server in module['servers']):
                     ui.label('El contrato declara variables de servidor sin resolver (p. ej. «{entorno}»); crea el ambiente a mano.').classes('text-xs text-amber-700')
                 for index, op in enumerate(module['operations']):

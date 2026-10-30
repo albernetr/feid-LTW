@@ -392,10 +392,10 @@ async def test_modules_warns_about_duplicate_import_by_source_url(user: User, tm
         user.find('URL del contrato, de su página de Swagger UI o un enlace de GitHub').type(spec_url)
         user.find('Importar desde URL').click()
         # run.io_bound: a real thread + HTTP round trip, slow and jittery under a loaded test run — poll the actual state, not a fixed retry budget
-        await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 2, seconds=20)
+        await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 2, seconds=40)
         user.find('URL del contrato, de su página de Swagger UI o un enlace de GitHub').type(spec_url)
         user.find('Importar desde URL').click()
-        await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 3, seconds=20)
+        await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 3, seconds=40)
         await user.should_see('Ya había 1 módulo')
     finally:
         server.shutdown()

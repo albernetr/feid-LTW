@@ -117,11 +117,11 @@ async def test_modules_page_imports_from_a_swagger_ui_page_and_creates_the_envir
     await asyncio.sleep(1.5)  # the download runs in a worker thread
     await user.should_see('Importado «Tienda»')
     assert core.list_project_items('modules', project['id'])[0]['source_url'] == docs + '/api/v3/openapi.json'
+    await user.should_see('Ambiente «Tienda» creado')  # the environment is registered automatically on import now
+    assert [e['base_url'] for e in core.list_project_items('environments', project['id'])] == [docs + '/api/v3']
     await user.open('/modules')
     await user.should_see('Servidor declarado: ' + docs + '/api/v3')
-    user.find('Crear ambiente con esta URL').click()
-    await user.should_see('Ambiente «Tienda» creado')
-    assert [e['base_url'] for e in core.list_project_items('environments', project['id'])] == [docs + '/api/v3']
+    await user.should_see('ambiente «Tienda» ya registrado')  # no manual button left: already covered
 
 
 FASTAPI_DOCS = ('<html><head><link type="text/css" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"></head><body><div id="swagger-ui"></div>'
