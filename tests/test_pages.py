@@ -117,6 +117,31 @@ async def test_projects_table_row_click_opens_the_detail_page(user: User):
     assert user.find('project-name').elements.pop().value == 'Demo Sample App'
 
 
+async def test_projects_table_row_actions_select_edit_and_delete(user: User):
+    from nicegui import ui
+    core.create_project('A')
+    b = core.create_project('B')
+    await user.open('/projects')
+    interaction = user.find(kind=ui.table)
+    row_b = next(r for r in next(iter(interaction.elements)).rows if r['id'] == b['id'])
+
+    interaction.trigger('selectProject', row_b)
+    await eventually(lambda: core.get_active_project_id() == b['id'])
+
+    interaction.trigger('editProject', row_b)
+    await user.should_see(marker='project-save')
+    assert user.find('project-name').elements.pop().value == 'B'
+
+    await user.open('/projects')
+    interaction = user.find(kind=ui.table)
+    row_a = next(r for r in next(iter(interaction.elements)).rows if r['base_name'] == 'A')
+    interaction.trigger('deleteProject', row_a)
+    await user.should_see('¿Eliminar el proyecto «A»')
+    user.find('confirm-dialog-accept').click()
+    await user.should_see('Proyecto eliminado')
+    assert core.list_items('projects') == [core.get('projects', b['id'])]
+
+
 async def test_projects_page_marks_duplicate_names_with_a_short_id(user: User):
     from nicegui import ui
     core.save('projects', {'name': 'p', 'description': '', 'version': 1})  # bypasses create_project's own dedup check
@@ -163,6 +188,29 @@ async def test_projects_detail_page_save_select_and_delete(user: User):
 async def test_projects_edit_page_shows_a_clear_message_for_a_missing_project(user: User):
     await user.open('/projects/edit?id=nope')
     await user.should_see('Este proyecto ya no existe.')
+
+
+async def test_projects_detail_page_shows_its_resources(user: User):
+    seed()
+    pid = core.list_items('projects')[0]['id']
+    await user.open(f'/projects/edit?id={pid}')
+    await user.should_see('Módulos (1)')
+    await user.should_see('Sample API')
+    await user.should_see('Ambientes (1)')
+    await user.should_see('Local')
+    await user.should_see('Casos (5)')
+    await user.should_see('Suites (1)')
+    await user.should_see('Smoke encadenado')
+    await user.should_see('Programaciones (1)')
+
+
+async def test_projects_detail_resource_card_selects_project_before_navigating(user: User):
+    core.create_project('Otro activo')
+    second = core.create_project('Segundo')
+    await user.open(f'/projects/edit?id={second["id"]}')
+    assert core.get_active_project_id() != second['id']
+    user.find('project-goto-modules').click()
+    await eventually(lambda: user.client.page.path == '/modules' and core.get_active_project_id() == second['id'])
 
 
 async def test_validation_messages(user: User):
