@@ -600,6 +600,97 @@ def import_openapi_url(url, project_id=None, client=None):
     return import_openapi(fetched['raw'], project_id, source_url=fetched['source_url'])
 
 
+# --------------------------------------------------------------------------- token refresh
+
+def token_needs_refresh(environment):
+    """True if the environment has a refresh configured and either has no token yet or it is at/past
+    its known expiry (30s safety margin). With no known expiry, a token already present is trusted
+    as-is (refreshing it is then only reactive, on a 401)."""
+    auth = environment.get('auth') or {}
+    if not auth.get('refresh'):
+        return False
+    secret_name = auth.get('secret') or auth.get('env_var', '')
+    if not (secret_name and secret_get(secret_name)):
+        return True
+    expires_at = auth.get('token_expires_at')
+    if not expires_at:
+        return False
+    try:
+        return dt.datetime.now(dt.timezone.utc) >= dt.datetime.fromisoformat(expires_at) - dt.timedelta(seconds=30)
+    except ValueError:
+        return False
+
+
+def refresh_token(environment, variables=None):
+    """Runs an environment's configured token refresh (an HTTP request or a local command) and writes
+    the result into the secret it targets. Remembers when the new token expires if the refresh declares
+    it (`expires_path`), so future calls know whether to refresh proactively. Raises ValueError with a
+    clear reason on any failure; never writes a partial or empty token."""
+    auth = environment.get('auth') or {}
+    cfg = auth.get('refresh')
+    if not cfg:
+        raise ValueError('Este ambiente no tiene configurada una actualización automática de token.')
+    target = (cfg.get('target_secret') or '').strip() or auth.get('secret') or auth.get('env_var')
+    if not target:
+        raise ValueError('No hay un secreto de destino para guardar el token actualizado.')
+    variables = {**environment.get('variables', {}), **(variables or {})}
+    secrets_used = set()
+    expires_in = None
+    mode = cfg.get('mode', 'http')
+    if mode == 'command':
+        command = (cfg.get('command') or '').strip()
+        if not command:
+            raise ValueError('Falta el comando para actualizar el token.')
+        import subprocess
+        try:
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=cfg.get('timeout', 30))
+        except subprocess.TimeoutExpired:
+            raise ValueError('El comando de actualización de token tardó demasiado (se agotó el tiempo).')
+        if result.returncode != 0:
+            raise ValueError(f'El comando de actualización terminó con error ({result.returncode}): {(result.stderr or result.stdout or "").strip()[:300]}')
+        token = result.stdout.strip()
+    else:
+        url = substitute(cfg.get('url', ''), variables, secrets_used)
+        headers = substitute(cfg.get('headers') or {}, variables, secrets_used)
+        body = substitute(cfg.get('body'), variables, secrets_used)
+        missing = find_unresolved(url, headers, body)
+        if missing:
+            raise ValueError('Variables sin resolver en la actualización de token: ' + ', '.join(missing))
+        validate_base_url(url)
+        try:
+            with httpx.Client(timeout=cfg.get('timeout', 20), trust_env=False) as client:
+                response = client.request(cfg.get('method', 'POST'), url, headers=headers, json=body if body is not None else None)
+        except httpx.HTTPError as exc:
+            raise ValueError(f'No se pudo contactar el endpoint de actualización de token: {exc}')
+        if response.status_code >= 400:
+            raise ValueError(f'La actualización de token respondió {response.status_code}: {response.text[:300]}')
+        try:
+            payload = response.json()
+        except ValueError:
+            raise ValueError('La respuesta de actualización de token no es JSON.')
+        try:
+            token = extract_path(payload, cfg.get('token_path', '$.access_token'))
+        except Exception:
+            raise ValueError(f'No se pudo extraer el token con la ruta «{cfg.get("token_path", "$.access_token")}».')
+        if cfg.get('expires_path'):
+            try:
+                expires_in = float(extract_path(payload, cfg['expires_path']))
+            except Exception:
+                expires_in = None
+    if not isinstance(token, str) or not token.strip():
+        raise ValueError('La actualización de token no devolvió un texto válido.')
+    token = token.strip()
+    secret_set(target, token)
+    saved = copy.deepcopy(environment)
+    saved.setdefault('auth', {})['token_refreshed_at'] = now()
+    if expires_in is not None:
+        saved['auth']['token_expires_at'] = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=expires_in)).isoformat()
+    else:
+        saved['auth'].pop('token_expires_at', None)
+    save('environments', saved)
+    return token
+
+
 def module_base_url(module):
     """Absolute base URL a module declares (relative servers are resolved against where the contract came from); None if it cannot be known."""
     for server in module.get('servers') or []:
@@ -1601,6 +1692,11 @@ def execute_api(case, environment, variables=None, persist=True, context=None, e
         kind = auth.get('type', 'none')
         if kind in ('bearer', 'api_key'):
             secret_name = auth.get('secret') or auth.get('env_var', '')
+            if auth.get('refresh') and token_needs_refresh(environment):
+                try:
+                    refresh_token(environment, variables)
+                except Exception as exc:
+                    raise ValueError(f'No se pudo actualizar el token: {exc}')
             token = secret_get(secret_name) if secret_name else None
             if not token:
                 raise ValueError('Falta el secreto/variable de entorno de autenticación.')
@@ -1613,6 +1709,17 @@ def execute_api(case, environment, variables=None, persist=True, context=None, e
             raise ValueError('Autenticación no soportada en esta versión.')
         with httpx.Client(timeout=case.get('timeout', 20), follow_redirects=False, trust_env=False) as client:
             response = client.request(case['method'], url, headers=headers, json=body if body is not None else None, params=query)
+            if response.status_code == 401 and kind in ('bearer', 'api_key') and auth.get('refresh'):
+                try:
+                    refresh_token(environment, variables)
+                    retried_token = secret_get(secret_name)
+                except Exception:
+                    retried_token = None
+                if retried_token:
+                    secrets_used.add(retried_token)
+                    headers[('Authorization' if kind == 'bearer' else auth.get('header', 'X-API-Key'))] = (
+                        f'Bearer {retried_token}' if kind == 'bearer' else retried_token)
+                    response = client.request(case['method'], url, headers=headers, json=body if body is not None else None, params=query)
         duration_ms = round(response.elapsed.total_seconds() * 1000, 2)
         assertions = check_assertions(response, case.get('assertions', []), duration_ms)
         extracted, extract_errors = run_extractions(response, case.get('extract'))

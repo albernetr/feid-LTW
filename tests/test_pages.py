@@ -4,7 +4,7 @@ import pytest
 from nicegui.testing import User
 from app import core
 
-ROUTES = ['/', '/resumen', '/projects', '/projects/edit', '/workspace', '/lab', '/observer', '/observer/interface', '/modules', '/environments', '/environments/edit', '/cases', '/cases/edit', '/ui-cases',
+ROUTES = ['/', '/resumen', '/projects', '/projects/edit', '/workspace', '/lab', '/observer', '/observer/interface', '/modules', '/modules/edit', '/environments', '/environments/edit', '/cases', '/cases/edit', '/ui-cases',
           '/suites', '/schedules', '/runs', '/portable']
 
 
@@ -357,6 +357,107 @@ async def test_environments_delete_blocked_by_a_step_level_reference(user: User)
     user.find('confirm-dialog-accept').click()
     await user.should_see('paso(s) con ambiente propio')
     assert core.get('environments', other_env['id']) is not None
+
+
+async def test_environments_edit_saves_http_token_refresh_config(user: User):
+    seed()
+    await user.open('/environments/edit')
+    user.find('env-name').clear()
+    user.find('env-name').type('Con refresco')
+    user.find('env-base-url').clear()
+    user.find('env-base-url').type('https://api.example.com')
+    user.find('Autenticación').click()
+    user.find('Bearer token').click()
+    user.find('…o variable de entorno').type('MY_TOKEN_VAR')
+    user.find('env-refresh-enabled').click()
+    user.find('env-refresh-url').type('https://auth.example.com/token')
+    user.find('Guardar ambiente').click()
+    await user.should_see('Ambiente guardado')
+    env = [e for e in core.list_items('environments') if e['name'] == 'Con refresco'][0]
+    assert env['auth']['refresh']['mode'] == 'http'
+    assert env['auth']['refresh']['url'] == 'https://auth.example.com/token'
+    assert env['auth']['refresh']['token_path'] == '$.access_token'
+
+
+async def test_environments_edit_test_refresh_button(user: User):
+    import http.server, threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get('Content-Length', 0)); self.rfile.read(length)
+            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+            self.wfile.write(b'{"access_token": "abcdefgh"}')
+
+        def log_message(self, *a):
+            pass
+    server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    try:
+        project = core.create_project('Refresco')
+        core.set_active_project(project['id'])
+        env = core.save('environments', {'name': 'E', 'project_id': project['id'], 'base_url': 'https://api.example.com',
+                        'auth': {'type': 'bearer', 'secret': 'probe-tok'}, 'variables': {}})
+        await user.open(f'/environments/edit?id={env["id"]}')
+        user.find('env-refresh-enabled').click()
+        user.find('env-refresh-url').type(f'http://127.0.0.1:{server.server_port}/token')
+        user.find('Probar ahora').click()
+        await eventually(lambda: core.secret_get('probe-tok') == 'abcdefgh')
+        await user.should_see('Token actualizado')
+    finally:
+        server.shutdown()
+
+
+async def test_modules_table_row_click_opens_the_detail_page(user: User):
+    from nicegui import ui
+    seed()
+    module = core.list_items('modules')[0]
+    await user.open('/modules')
+    interaction = user.find(kind=ui.table)
+    row = next(r for r in next(iter(interaction.elements)).rows if r['id'] == module['id'])
+    interaction.trigger('viewModule', row)
+    await user.should_see(marker='module-delete')
+    assert user.client.page.path == '/modules/edit'
+
+
+async def test_modules_detail_page_shows_operations_and_creates_a_case(user: User):
+    from nicegui import ui
+    seed()
+    module = core.list_items('modules')[0]
+    await user.open(f'/modules/edit?id={module["id"]}')
+    await user.should_see(module['name'])
+    op_interaction = user.find(kind=ui.table)
+    op_row = next(iter(next(iter(op_interaction.elements)).rows))
+    op_interaction.trigger('createCase', op_row)
+    await eventually(lambda: user.client.page.path == '/cases/edit')
+
+
+async def test_modules_detail_page_delete_blocked_when_cases_use_it(user: User):
+    seed()
+    module = core.list_items('modules')[0]
+    case = [c for c in core.list_items('cases') if c['name'] == 'Health OK'][0]
+    case['module_id'] = module['id']
+    core.save('cases', case)
+    await user.open(f'/modules/edit?id={module["id"]}')
+    user.find('module-delete').click()
+    await user.should_see('¿Eliminar el módulo')
+    user.find('confirm-dialog-accept').click()
+    await user.should_see('caso(s) usan este módulo')
+    assert core.get('modules', module['id']) is not None
+
+
+async def test_modules_table_delete_removes_an_unused_module(user: User):
+    from nicegui import ui
+    core.create_project('P')
+    raw = 'openapi: 3.0.3\ninfo: {title: Suelto, version: "1"}\npaths: {}\n'
+    module = core.import_openapi(raw, core.get_active_project_id())
+    await user.open('/modules')
+    interaction = user.find(kind=ui.table)
+    row = next(r for r in next(iter(interaction.elements)).rows if r['id'] == module['id'])
+    interaction.trigger('deleteModule', row)
+    await user.should_see('¿Eliminar el módulo')
+    user.find('confirm-dialog-accept').click()
+    await user.should_see('Módulo eliminado')
+    assert core.get('modules', module['id']) is None
 
 
 async def test_modules_warns_about_empty_header_value(user: User):

@@ -9,6 +9,7 @@
 - Los valores *escritos* en pasos UI como texto literal (sin `{{secret:…}}`) quedan en el caso y en el historial.
 - El bloqueo de hosts del ejecutor UI cubre navegaciones; no es un sandbox: recursos secundarios (imágenes, scripts) de otros hosts siguen cargándose.
 - En Linux sin servicio de secretos (sin Secret Service/KWallet) `keyring` puede fallar; se usa la variable de entorno del mismo nombre como alternativa.
+- **Actualización automática de token, modo comando**: el scheduler lo ejecuta sin supervisión, en esta máquina, con cualquier comando que hayas escrito — es, en la práctica, ejecución de código local automática y desatendida. Úsalo solo con scripts/CLIs de confianza; por eso se clasifica como experimental. El modo por petición HTTP no ejecuta nada local: reutiliza el mismo motor de peticiones que los casos de prueba.
 
 ## Protocolo para agentes y espacio de trabajo
 - El diagnóstico de los fallos es **heurístico** (categorías por código HTTP, forma de la respuesta y tipo de error): orienta, no decide. `where_to_look` solo contiene lo que el autor de la spec puso en `code_hints`, el contrato OpenAPI importado y los cambios observados; la herramienta **no lee tu código**.

@@ -239,6 +239,107 @@ def test_http_run():
     finally:server.shutdown();server.server_close()
 
 
+def test_token_needs_refresh():
+    env_no_refresh = {'auth': {'type': 'bearer', 'secret': 'tok'}}
+    assert core.token_needs_refresh(env_no_refresh) is False  # no refresh configured: never auto-refreshed
+
+    core.secret_delete('tok-missing')
+    env_missing = {'auth': {'type': 'bearer', 'secret': 'tok-missing', 'refresh': {'mode': 'command', 'command': 'echo x'}}}
+    assert core.token_needs_refresh(env_missing) is True  # no token saved yet
+
+    core.secret_set('tok-present', 'abc')
+    env_no_expiry = {'auth': {'type': 'bearer', 'secret': 'tok-present', 'refresh': {'mode': 'command', 'command': 'echo x'}}}
+    assert core.token_needs_refresh(env_no_expiry) is False  # present, no known expiry: trusted as-is
+
+    import datetime as dt
+    past = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=5)).isoformat()
+    future = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)).isoformat()
+    env_expired = {'auth': {'type': 'bearer', 'secret': 'tok-present', 'refresh': {'mode': 'command', 'command': 'echo x'}, 'token_expires_at': past}}
+    env_fresh = {'auth': {'type': 'bearer', 'secret': 'tok-present', 'refresh': {'mode': 'command', 'command': 'echo x'}, 'token_expires_at': future}}
+    assert core.token_needs_refresh(env_expired) is True
+    assert core.token_needs_refresh(env_fresh) is False
+
+
+def test_refresh_token_command_mode_writes_the_secret():
+    env = core.save('environments', {'name': 'E', 'auth': {'type': 'bearer', 'secret': 'cmd-tok',
+                    'refresh': {'mode': 'command', 'command': 'echo refreshed-value'}}})
+    token = core.refresh_token(env)
+    assert token == 'refreshed-value'
+    assert core.secret_get('cmd-tok') == 'refreshed-value'
+    assert core.get('environments', env['id'])['auth']['token_refreshed_at']
+
+
+def test_refresh_token_command_mode_reports_a_failing_command():
+    env = core.save('environments', {'name': 'E', 'auth': {'type': 'bearer', 'secret': 'cmd-tok-2',
+                    'refresh': {'mode': 'command', 'command': 'exit 1'}}})
+    with pytest.raises(ValueError, match='error'):
+        core.refresh_token(env)
+
+
+def test_refresh_token_requires_configuration():
+    env = core.save('environments', {'name': 'E', 'auth': {'type': 'bearer', 'secret': 'x'}})
+    with pytest.raises(ValueError, match='actualización automática'):
+        core.refresh_token(env)
+
+
+def test_execute_api_proactively_refreshes_a_missing_token_via_http():
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get('Content-Length', 0)); self.rfile.read(length)
+            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+            self.wfile.write(b'{"access_token": "fresh-token", "expires_in": 3600}')
+
+        def do_GET(self):
+            ok = self.headers.get('Authorization') == 'Bearer fresh-token'
+            self.send_response(200 if ok else 401); self.end_headers()
+
+        def log_message(self, *a):
+            pass
+    server = HTTPServer(('127.0.0.1', 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True); thread.start()
+    try:
+        base = f'http://127.0.0.1:{server.server_port}'
+        core.secret_delete('proactive-tok')
+        env = core.save('environments', {'base_url': base, 'auth': {'type': 'bearer', 'secret': 'proactive-tok',
+                        'refresh': {'mode': 'http', 'url': base + '/token', 'token_path': '$.access_token', 'expires_path': '$.expires_in'}}})
+        case = core.save('cases', {'name': 'secure', 'method': 'GET', 'path': '/secure', 'assertions': [{'type': 'status', 'expected': 200}]})
+        result = core.execute_api(case, env)
+        assert result['status'] == 'passed'
+        assert core.secret_get('proactive-tok') == 'fresh-token'
+        assert core.get('environments', env['id'])['auth']['token_expires_at']
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def test_execute_api_reactively_refreshes_on_401():
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get('Content-Length', 0)); self.rfile.read(length)
+            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+            self.wfile.write(b'{"access_token": "good-token"}')
+
+        def do_GET(self):
+            ok = self.headers.get('Authorization') == 'Bearer good-token'
+            self.send_response(200 if ok else 401); self.end_headers()
+
+        def log_message(self, *a):
+            pass
+    server = HTTPServer(('127.0.0.1', 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True); thread.start()
+    try:
+        base = f'http://127.0.0.1:{server.server_port}'
+        core.secret_set('reactive-tok', 'stale-token')  # already present, no known expiry: no *proactive* refresh
+        env = core.save('environments', {'base_url': base, 'auth': {'type': 'bearer', 'secret': 'reactive-tok',
+                        'refresh': {'mode': 'http', 'url': base + '/token', 'token_path': '$.access_token'}}})
+        case = core.save('cases', {'name': 'secure', 'method': 'GET', 'path': '/secure', 'assertions': [{'type': 'status', 'expected': 200}]})
+        result = core.execute_api(case, env)
+        assert result['status'] == 'passed'   # the initial 401 with the stale token got a reactive retry
+        assert result['http_status'] == 200
+        assert core.secret_get('reactive-tok') == 'good-token'
+    finally:
+        server.shutdown(); server.server_close()
+
+
 def test_project_filtering_and_adoption():
     a=core.create_project('A'); b=core.create_project('B')
     core.import_openapi(SPEC,a['id']); core.import_openapi(SPEC,b['id'])

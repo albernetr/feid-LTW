@@ -1,4 +1,5 @@
-from nicegui import ui
+import json
+from nicegui import run, ui
 from .. import core
 from .common import frame, guard, confirm, empty_state, require_project, kv_editor
 
@@ -134,6 +135,80 @@ def environment_edit(id: str = ''):
                     envvar = ui.input('…o variable de entorno', value=auth0.get('env_var', ''), placeholder='QA_TOKEN').props('outlined dense').classes('w-60')
                     header_name = ui.input('Header (solo API Key)', value=auth0.get('header', 'X-API-Key')).props('outlined dense').classes('w-48')
                 ui.label('El valor nunca se guarda en la base ni en exportaciones. Créalo en «Secretos» desde la lista de ambientes.').classes('text-gray-500 text-sm')
+
+                ui.separator().classes('my-2')
+                refresh0 = auth0.get('refresh') or {}
+                with ui.row().classes('items-center gap-2'):
+                    ui.icon('autorenew', color='primary')
+                    ui.label('Actualización automática de token (opcional)').classes('font-medium')
+                refresh_enabled = ui.checkbox('Actualizar automáticamente si falta, expira, o el servicio responde 401',
+                                              value=bool(refresh0)).mark('env-refresh-enabled')
+                with ui.column().classes('w-full gap-2').bind_visibility_from(refresh_enabled, 'value'):
+                    refresh_mode = ui.select({'http': 'Petición HTTP', 'command': 'Comando del sistema'},
+                                             value=refresh0.get('mode', 'http'), label='Mecanismo').props('outlined dense').classes('w-60').mark('env-refresh-mode')
+                    with ui.column().classes('w-full gap-2').bind_visibility_from(refresh_mode, 'value', lambda v: v == 'http'):
+                        with ui.row().classes('w-full gap-3'):
+                            refresh_method = ui.select(['GET', 'POST', 'PUT'], value=refresh0.get('method', 'POST'), label='Método').props('outlined dense').classes('w-32')
+                            refresh_url = ui.input('URL del endpoint de token', value=refresh0.get('url', ''), placeholder='https://auth.ejemplo.com/oauth/token') \
+                                .props('outlined dense').classes('grow').mark('env-refresh-url')
+                        ui.label('Headers y body admiten {{variables}} y {{secret:NOMBRE}} (p. ej. client_id/client_secret guardados aparte).').classes('text-xs text-gray-500')
+                        refresh_headers = dict(refresh0.get('headers') or {})
+                        kv_editor(refresh_headers, 'Header', 'Valor')
+                        refresh_body = ui.textarea('Body (JSON, opcional)',
+                                                   value=json.dumps(refresh0['body'], ensure_ascii=False) if refresh0.get('body') is not None else '') \
+                            .props('outlined dense autogrow').classes('w-full font-mono').mark('env-refresh-body')
+                        with ui.row().classes('w-full gap-3'):
+                            refresh_token_path = ui.input('Ruta JSONPath al token', value=refresh0.get('token_path', '$.access_token')) \
+                                .props('outlined dense').classes('grow').mark('env-refresh-token-path')
+                            refresh_expires_path = ui.input('Ruta JSONPath a la duración en segundos (opcional)', value=refresh0.get('expires_path', '')) \
+                                .props('outlined dense').classes('grow').mark('env-refresh-expires-path')
+                    with ui.column().classes('w-full gap-2').bind_visibility_from(refresh_mode, 'value', lambda v: v == 'command'):
+                        with ui.row().classes('items-center gap-2 bg-amber-50 rounded px-3 py-2 w-full'):
+                            ui.icon('warning', color='warning')
+                            ui.label('El scheduler ejecuta este comando sin supervisión, en esta máquina. Úsalo solo con scripts de confianza.').classes('text-sm text-amber-800')
+                        refresh_command = ui.input('Comando', value=refresh0.get('command', ''), placeholder='mi-cli login --print-token') \
+                            .props('outlined dense').classes('w-full font-mono').mark('env-refresh-command')
+                    refresh_target = ui.input('Guardar el token en este secreto (vacío = el mismo de arriba)', value=refresh0.get('target_secret', '')) \
+                        .props('outlined dense').classes('w-full').mark('env-refresh-target')
+
+                    def collect_refresh_config():
+                        if not refresh_enabled.value:
+                            return None
+                        cfg = {'mode': refresh_mode.value, 'target_secret': (refresh_target.value or '').strip()}
+                        if refresh_mode.value == 'command':
+                            if not (refresh_command.value or '').strip():
+                                raise ValueError('Escribe el comando de actualización de token.')
+                            cfg['command'] = refresh_command.value.strip()
+                        else:
+                            if not (refresh_url.value or '').strip():
+                                raise ValueError('Escribe la URL del endpoint de actualización de token.')
+                            core.validate_base_url(refresh_url.value)
+                            if not (refresh_token_path.value or '').strip():
+                                raise ValueError('Escribe la ruta JSONPath del token (p. ej. $.access_token).')
+                            body_text = (refresh_body.value or '').strip()
+                            if body_text:
+                                try:
+                                    cfg['body'] = json.loads(body_text)
+                                except ValueError:
+                                    raise ValueError('El body de actualización de token no es JSON válido.')
+                            cfg.update({'method': refresh_method.value, 'url': refresh_url.value.strip(),
+                                       'headers': {k: v for k, v in refresh_headers.items() if k.strip()},
+                                       'token_path': refresh_token_path.value.strip()})
+                            if (refresh_expires_path.value or '').strip():
+                                cfg['expires_path'] = refresh_expires_path.value.strip()
+                        return cfg
+
+                    async def test_refresh():
+                        if not current:
+                            raise ValueError('Guarda el ambiente primero para poder probar la actualización.')
+                        cfg = collect_refresh_config()
+                        if not cfg:
+                            raise ValueError('Activa y completa la actualización automática antes de probarla.')
+                        probe = {**current, 'auth': {**current.get('auth', {}), 'refresh': cfg}}
+                        token = await run.io_bound(core.refresh_token, probe, {})
+                        ui.notify(f'Token actualizado: termina en «…{token[-4:]}».' if len(token) > 4 else 'Token actualizado.', type='positive')
+                    ui.button('Probar ahora', icon='play_arrow', on_click=guard(test_refresh)).props('outline dense').mark('env-refresh-test')
+
             ui.separator().classes('my-2')
             ui.label('Variables ({{nombre}} en rutas, headers, body y pasos UI)').classes('font-medium')
             kv_editor(variables, 'Variable', 'Valor')
@@ -150,9 +225,14 @@ def environment_edit(id: str = ''):
                 if auth.value != 'none' and not (secret.value or (envvar.value or '').strip()):
                     raise ValueError('Elige un secreto o indica una variable de entorno')
                 clean = {k: v for k, v in variables.items() if k.strip()}
+                auth_item = {'type': auth.value, 'secret': secret.value or '', 'env_var': (envvar.value or '').strip(), 'header': header_name.value or 'X-API-Key'}
+                refresh_cfg = collect_refresh_config() if auth.value != 'none' else None
+                if refresh_cfg:
+                    auth_item['refresh'] = refresh_cfg
+                    if current and current.get('auth', {}).get('token_expires_at') and current['auth'].get('refresh') == refresh_cfg:
+                        auth_item['token_expires_at'] = current['auth']['token_expires_at']  # unchanged config: keep what we already know
                 item = {'name': clean_name, 'project_id': pid, 'base_url': base.value.strip(), 'ui_base_url': (ui_base.value or '').strip(),
-                        'auth': {'type': auth.value, 'secret': secret.value or '', 'env_var': (envvar.value or '').strip(), 'header': header_name.value or 'X-API-Key'},
-                        'variables': clean}
+                        'auth': auth_item, 'variables': clean}
                 if current:
                     item['id'] = current['id']
                 core.save('environments', item)

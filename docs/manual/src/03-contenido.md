@@ -79,6 +79,17 @@ Pulsa **Nuevo ambiente** y luego **Guardar ambiente**. La lista es una tabla: ha
 
 Con **Bearer**, LTW envía `Authorization: Bearer <valor del secreto>`; con **API Key**, el header elegido con el valor del secreto. Si falta el secreto o la variable de entorno, el caso termina en **Error** con ese mensaje y **no se envía**.
 
+### Actualización automática de token (opcional)
+
+Con **Bearer** o **API Key** activos, puedes activar «Actualizar automáticamente si falta, expira, o el servicio responde 401»:
+
+| Mecanismo | Qué hace |
+|---|---|
+| **Petición HTTP** (beta) | Llama a un endpoint (típico de OAuth2: método, URL, headers y body, admiten `{{variables}}` y `{{secret:NOMBRE}}`), extrae el token de la respuesta con una ruta JSONPath (`$.access_token` por defecto) y, si das la ruta de duración (`expires_in`), recuerda cuándo vuelve a vencer. |
+| **Comando del sistema** (experimental) | Ejecuta un comando local y toma su salida estándar como el token. El scheduler lo corre sin supervisión en esta máquina: úsalo solo con scripts de confianza. |
+
+El token resultante se guarda en el secreto que indiques (o en el mismo que ya usa el ambiente, si lo dejas vacío). LTW refresca el token **antes** de ejecutar si no hay uno guardado o si ya venció, y además **reintenta una vez** si el servicio responde `401`, sin que tengas que hacer nada. El botón **Probar ahora** lo ejecuta de inmediato (requiere guardar el ambiente primero) para verificar que funciona antes de confiar en él en una programación.
+
 ### Secretos (almacén seguro del sistema)
 
 La sección **Secretos** guarda valores sensibles en el **Administrador de credenciales de Windows** (no en la base de datos ni en exportaciones).

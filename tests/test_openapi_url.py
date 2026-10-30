@@ -119,7 +119,8 @@ async def test_modules_page_imports_from_a_swagger_ui_page_and_creates_the_envir
     assert core.list_project_items('modules', project['id'])[0]['source_url'] == docs + '/api/v3/openapi.json'
     await user.should_see('Ambiente «Tienda» creado')  # the environment is registered automatically on import now
     assert [e['base_url'] for e in core.list_project_items('environments', project['id'])] == [docs + '/api/v3']
-    await user.open('/modules')
+    module_id = core.list_project_items('modules', project['id'])[0]['id']
+    await user.open(f'/modules/edit?id={module_id}')
     await user.should_see('Servidor declarado: ' + docs + '/api/v3')
     await user.should_see('ambiente «Tienda» ya registrado')  # no manual button left: already covered
 
