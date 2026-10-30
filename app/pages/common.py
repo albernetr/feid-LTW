@@ -113,7 +113,7 @@ def confirm(message, on_yes, confirm_label='Eliminar'):
             async def accept():
                 dialog.close()
                 await guard(on_yes)()
-            ui.button(confirm_label, on_click=accept, color='negative')
+            ui.button(confirm_label, on_click=accept, color='negative').mark('confirm-dialog-accept')
     dialog.open()
 
 

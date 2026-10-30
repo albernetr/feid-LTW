@@ -1,4 +1,3 @@
-from urllib.parse import urlparse
 from nicegui import ui
 from .. import core
 from .common import frame, guard, confirm, empty_state, require_project, kv_editor
@@ -11,15 +10,18 @@ def environments(edit: str = ''):
             return
         pid = core.get_active_project_id()
         current = core.get('environments', edit) if edit else None
+        if current and current.get('project_id') != pid:
+            ui.notify('Ese ambiente no pertenece al proyecto activo; no se puede editar desde aquí.', type='warning')
+            current = None
         variables = dict((current or {}).get('variables', {}))
         auth0 = (current or {}).get('auth', {'type': 'none'})
 
         with ui.card().classes('w-full'):
             ui.label('Editar ambiente' if current else 'Nuevo ambiente').classes('text-lg font-semibold')
             with ui.row().classes('w-full gap-3'):
-                name = ui.input('Nombre', value=(current or {}).get('name', 'QA')).props('outlined dense').classes('w-60')
-                base = ui.input('URL base (API)', value=(current or {}).get('base_url', ''), placeholder='https://qa.ejemplo.com').props('outlined dense').classes('grow')
-            ui_base = ui.input('URL base de la interfaz (si es distinta; opcional)', value=(current or {}).get('ui_base_url', '')).props('outlined dense').classes('w-full')
+                name = ui.input('Nombre', value=(current or {}).get('name', 'QA')).props('outlined dense').classes('w-60').mark('env-name')
+                base = ui.input('URL base (API)', value=(current or {}).get('base_url', ''), placeholder='https://qa.ejemplo.com').props('outlined dense').classes('grow').mark('env-base-url')
+            ui_base = ui.input('URL base de la interfaz (si es distinta; opcional)', value=(current or {}).get('ui_base_url', '')).props('outlined dense').classes('w-full').mark('env-ui-base-url')
             auth = ui.select({'none': 'Sin autenticación', 'bearer': 'Bearer token', 'api_key': 'API Key'}, value=auth0.get('type', 'none'), label='Autenticación').props('outlined dense').classes('w-60')
             names = core.secret_names()
             with ui.column().classes('w-full gap-2').bind_visibility_from(auth, 'value', lambda v: v != 'none'):
@@ -32,15 +34,18 @@ def environments(edit: str = ''):
             kv_editor(variables, 'Variable', 'Valor')
 
             def save():
-                parsed = urlparse((base.value or '').strip())
-                if parsed.scheme not in ('http', 'https') or not parsed.hostname:
-                    raise ValueError('URL base inválida (use http:// o https://)')
-                if not (name.value or '').strip():
+                core.validate_base_url(base.value)
+                core.validate_base_url(ui_base.value, required=False)
+                clean_name = (name.value or '').strip()
+                if not clean_name:
                     raise ValueError('El nombre es obligatorio')
+                others = [e for e in core.list_project_items('environments', pid) if not current or e['id'] != current['id']]
+                if any(e['name'].strip().lower() == clean_name.lower() for e in others):
+                    raise ValueError(f'Ya existe un ambiente llamado «{clean_name}» en este proyecto')
                 if auth.value != 'none' and not (secret.value or (envvar.value or '').strip()):
                     raise ValueError('Elige un secreto o indica una variable de entorno')
                 clean = {k: v for k, v in variables.items() if k.strip()}
-                item = {'name': name.value.strip(), 'project_id': pid, 'base_url': base.value.strip(), 'ui_base_url': (ui_base.value or '').strip(),
+                item = {'name': clean_name, 'project_id': pid, 'base_url': base.value.strip(), 'ui_base_url': (ui_base.value or '').strip(),
                         'auth': {'type': auth.value, 'secret': secret.value or '', 'env_var': (envvar.value or '').strip(), 'header': header_name.value or 'X-API-Key'},
                         'variables': clean}
                 if current:
@@ -63,15 +68,23 @@ def environments(edit: str = ''):
                     ui.label(env['base_url']).classes('font-mono text-sm text-gray-600')
                     ui.badge({'none': 'Sin autenticación', 'bearer': 'Bearer', 'api_key': 'API Key'}.get(env['auth']['type'], env['auth']['type']), color='grey')
                     ui.space()
-                    ui.button(icon='edit', on_click=lambda _, i=env['id']: ui.navigate.to(f'/environments?edit={i}')).props('flat round dense').tooltip('Editar')
+                    ui.button(icon='edit', on_click=lambda _, i=env['id']: ui.navigate.to(f'/environments?edit={i}')).props('flat round dense').tooltip('Editar').mark(f'env-edit-{env["id"]}')
 
                     def remove(e=env):
-                        used = [s for s in core.list_items('suites') if s.get('environment_id') == e['id']]
-                        if used:
-                            raise ValueError(f'No se puede eliminar: lo usan {len(used)} suite(s)')
+                        affected, step_count = set(), 0
+                        for s in core.list_items('suites'):
+                            if s.get('environment_id') == e['id']:
+                                affected.add(s['id'])
+                            for step in core.suite_steps(s):
+                                if step.get('environment_id') == e['id']:
+                                    affected.add(s['id'])
+                                    step_count += 1
+                        if affected:
+                            detail = f' ({step_count} paso(s) con ambiente propio)' if step_count else ''
+                            raise ValueError(f'No se puede eliminar: lo usan {len(affected)} suite(s){detail}')
                         core.delete('environments', e['id'])
                         ui.navigate.reload()
-                    ui.button(icon='delete', on_click=lambda _, e=env, r=remove: confirm(f'¿Eliminar el ambiente «{e["name"]}»?', r)).props('flat round dense color=negative').tooltip('Eliminar')
+                    ui.button(icon='delete', on_click=lambda _, e=env, r=remove: confirm(f'¿Eliminar el ambiente «{e["name"]}»?', r)).props('flat round dense color=negative').tooltip('Eliminar').mark(f'env-delete-{env["id"]}')
 
         with ui.card().classes('w-full'):
             ui.label('Secretos (almacén seguro del sistema operativo)').classes('text-lg font-semibold')

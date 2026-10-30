@@ -42,6 +42,22 @@ def test_openapi_resolves_local_refs_and_rejects_external_refs():
         core.parse_openapi(json.dumps({'openapi':'3.0.3','paths':{'/x':{'get':{'$ref':'other.yaml#/get'}}}}))
 
 
+def test_openapi_rejects_oversized_document():
+    huge = 'openapi: 3.0.3\ninfo:\n  title: X\npaths: {}\n# ' + ('x' * (core.MAX_SPEC_BYTES + 10))
+    with pytest.raises(ValueError, match='límite'):
+        core.parse_openapi(huge)
+
+
+def test_openapi_rejects_too_deep_ref_chain():
+    schemas = {f'S{i}': {'$ref': f'#/components/schemas/S{i + 1}'} for i in range(core.MAX_REF_DEPTH + 10)}
+    schemas[f'S{core.MAX_REF_DEPTH + 10}'] = {'type': 'string'}
+    raw = json.dumps({'openapi': '3.0.3', 'info': {'title': 'Deep'}, 'components': {'schemas': schemas},
+                       'paths': {'/x': {'get': {'responses': {'200': {'description': 'ok', 'content':
+                           {'application/json': {'schema': {'$ref': '#/components/schemas/S0'}}}}}}}}})
+    with pytest.raises(ValueError, match='profunda'):
+        core.parse_openapi(raw)
+
+
 def test_projects_persist_and_select_active():
   project=core.create_project('Comercial', 'Pruebas del módulo comercial')
   module=core.import_openapi(SPEC, project['id'])
@@ -54,6 +70,51 @@ def test_projects_persist_and_select_active():
   with pytest.raises(ValueError):core.set_active_project('missing-project')
 
 
+def test_create_project_rejects_duplicate_name_case_and_space_insensitive():
+    core.create_project('Comercial')
+    with pytest.raises(ValueError, match='Ya existe'):
+        core.create_project('  comercial  ')
+
+
+def test_update_project_rejects_duplicate_name_but_allows_keeping_its_own():
+    a = core.create_project('A')
+    b = core.create_project('B')
+    with pytest.raises(ValueError, match='Ya existe'):
+        core.update_project(b['id'], 'a')
+    renamed = core.update_project(a['id'], 'a')  # same project, same name (different case): no conflict with itself
+    assert renamed['name'] == 'a'
+
+
+def test_delete_project_lists_every_blocking_resource_type():
+    project = core.create_project('Con recursos')
+    core.import_openapi(SPEC, project['id'])
+    core.save('environments', {'name': 'E', 'project_id': project['id'], 'base_url': 'https://x', 'auth': {'type': 'none'}, 'variables': {}})
+    with pytest.raises(ValueError, match=r'1 módulo.*1 ambiente') as exc:
+        core.delete_project(project['id'])
+    assert 'Bórralos' in str(exc.value)
+
+
+def test_adopt_unassigned_includes_taps():
+    project = core.create_project('P')
+    core.save('taps', {'name': 'huérfano', 'port': 9101})  # no project_id: legacy/orphan record
+    adopted = core.adopt_unassigned(project['id'])
+    assert adopted['taps'] == 1
+    assert core.list_items('taps')[0]['project_id'] == project['id']
+
+
+def test_validate_base_url():
+    assert core.validate_base_url('https://api.example.com/v1') == 'https://api.example.com/v1'
+    assert core.validate_base_url('', required=False) == ''
+    with pytest.raises(ValueError):
+        core.validate_base_url('')
+    with pytest.raises(ValueError):
+        core.validate_base_url('ftp://api.example.com')
+    with pytest.raises(ValueError):
+        core.validate_base_url('https://user:pass@api.example.com')
+    with pytest.raises(ValueError):
+        core.validate_base_url('not a url')
+
+
 def test_project_update_stats_and_safe_delete():
   project=core.create_project('Temporal')
   assert core.project_stats(project['id'])['modules']==0
@@ -61,7 +122,7 @@ def test_project_update_stats_and_safe_delete():
   assert updated['name']=='Temporal actualizado'
   core.import_openapi(SPEC, project['id'])
   assert core.project_stats(project['id'])['modules']==1
-  with pytest.raises(ValueError, match='recursos asociados'):
+  with pytest.raises(ValueError, match='1 módulo'):
     core.delete_project(project['id'])
   empty=core.create_project('Vacío')
   core.delete_project(empty['id'])

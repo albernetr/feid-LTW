@@ -107,6 +107,30 @@ async def test_reset_workspace_requires_the_exact_phrase(user: User):
     assert core.list_items('cases') == []
 
 
+async def test_projects_page_hides_edit_fields_until_toggled(user: User):
+    seed()
+    pid = core.list_items('projects')[0]['id']
+    await user.open('/projects')
+    await user.should_not_see(marker=f'project-save-{pid}')
+    user.find(f'project-edit-{pid}').click()
+    await user.should_see(marker=f'project-save-{pid}')
+
+
+async def test_projects_page_marks_duplicate_names_with_a_short_id(user: User):
+    core.save('projects', {'name': 'p', 'description': '', 'version': 1})  # bypasses create_project's own dedup check
+    second = core.save('projects', {'name': 'p', 'description': '', 'version': 1})
+    await user.open('/projects')
+    await user.should_see(f'#{second["id"][:8]}')
+
+
+async def test_projects_page_search_filters_the_list(user: User):
+    created = [core.create_project(f'Proyecto {i}') for i in range(6)]
+    await user.open('/projects')
+    user.find('project-search').type('Proyecto 3')
+    await user.should_see('Proyecto 3')
+    await user.should_not_see(marker=f'project-edit-{created[0]["id"]}')  # filtered out, not just hidden elsewhere (e.g. the header's project selector)
+
+
 async def test_validation_messages(user: User):
     seed()
     await user.open('/cases/edit')
@@ -121,6 +145,108 @@ async def test_validation_messages(user: User):
     await user.open('/projects')
     user.find('Crear proyecto').click()
     await user.should_see('El nombre del proyecto es obligatorio')
+
+
+async def test_environments_edit_param_cannot_steal_another_projects_environment(user: User):
+    seed()
+    other = core.create_project('Otro proyecto')
+    foreign_env = core.save('environments', {'name': 'Ajeno', 'project_id': other['id'], 'base_url': 'https://ajeno.example.com', 'auth': {'type': 'none'}, 'variables': {}})
+    pid = [p for p in core.list_items('projects') if p['name'] == 'Demo Sample App'][0]['id']
+    core.set_active_project(pid)
+    await user.open(f'/environments?edit={foreign_env["id"]}')
+    await user.should_see('no pertenece al proyecto activo')
+    assert user.find('env-name').elements.pop().value == 'QA'  # shows the "new environment" default, not the foreign one
+    user.find('env-base-url').clear()
+    user.find('env-base-url').type('https://qa.ejemplo.com')
+    user.find('Guardar ambiente').click()
+    await user.should_see('Ambiente guardado')
+    assert core.get('environments', foreign_env['id'])['project_id'] == other['id']  # untouched
+
+
+async def test_environments_rejects_duplicate_name_within_the_project(user: User):
+    seed()
+    await user.open('/environments')
+    user.find('env-name').clear()
+    user.find('env-name').type('Local')  # the name seed() already used in this project
+    user.find('env-base-url').clear()
+    user.find('env-base-url').type('https://otra.example.com')
+    user.find('Guardar ambiente').click()
+    await user.should_see('Ya existe un ambiente llamado')
+    assert len(core.list_items('environments')) == 1
+
+
+async def test_environments_rejects_invalid_ui_base_url(user: User):
+    seed()
+    await user.open('/environments')
+    user.find('env-name').clear()
+    user.find('env-name').type('Nuevo')
+    user.find('env-base-url').clear()
+    user.find('env-base-url').type('https://ok.example.com')
+    user.find('env-ui-base-url').type('not a url')
+    user.find('Guardar ambiente').click()
+    await user.should_see('URL base inválida')
+    assert len(core.list_items('environments')) == 1
+
+
+async def test_environments_delete_blocked_by_a_step_level_reference(user: User):
+    seed()
+    pid = [p for p in core.list_items('projects') if p['name'] == 'Demo Sample App'][0]['id']
+    other_env = core.save('environments', {'name': 'Solo en un paso', 'project_id': pid, 'base_url': 'https://solo-paso.example.com', 'auth': {'type': 'none'}, 'variables': {}})
+    health = [c for c in core.list_items('cases') if c['name'] == 'Health OK'][0]
+    suite = core.list_items('suites')[0]
+    core.save_suite(suite['name'], suite['environment_id'], None, pid, id=suite['id'],
+                     steps=[{'case_id': health['id'], 'alias': 'health', 'environment_id': other_env['id'], 'enrich': []}])
+    await user.open('/environments')
+    user.find(f'env-delete-{other_env["id"]}').click()
+    await user.should_see('¿Eliminar el ambiente')
+    user.find('confirm-dialog-accept').click()
+    await user.should_see('paso(s) con ambiente propio')
+    assert core.get('environments', other_env['id']) is not None
+
+
+async def test_modules_warns_about_empty_header_value(user: User):
+    from nicegui import ui
+    seed()
+    await user.open('/modules')
+    # "Cabecera (opcional)" defaults to "Authorization" with no value typed: a very easy slip.
+    user.find('Explorar automáticamente').click()
+    await user.should_see('el valor está vacío')
+    # let the exploration itself finish (it targets an unreachable host, so it fails fast) before the test ends:
+    # otherwise it keeps running in the background and its result lands in whichever workspace core.DB points
+    # to by the time it completes — i.e. the *next* test's isolated database, not this one's.
+    await eventually(lambda: bool(user.find(kind=ui.code).elements))
+
+
+async def test_modules_warns_about_duplicate_import_by_source_url(user: User, tmp_path):
+    seed()
+    import http.server, threading
+    body = b'{"openapi":"3.0.3","info":{"title":"Dup"},"paths":{"/x":{"get":{"responses":{"200":{"description":"ok"}}}}}}'
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+    server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        spec_url = f'http://127.0.0.1:{server.server_port}/openapi.json'
+        await user.open('/modules')
+        user.find('URL del contrato, de su página de Swagger UI o un enlace de GitHub').type(spec_url)
+        user.find('Importar desde URL').click()
+        # run.io_bound: a real thread + HTTP round trip, slow and jittery under a loaded test run — poll the actual state, not a fixed retry budget
+        await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 2)
+        user.find('URL del contrato, de su página de Swagger UI o un enlace de GitHub').type(spec_url)
+        user.find('Importar desde URL').click()
+        await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 3)
+        await user.should_see('Ya había 1 módulo')
+    finally:
+        server.shutdown()
 
 
 def code_texts(user):

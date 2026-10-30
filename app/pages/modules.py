@@ -19,7 +19,10 @@ def modules():
 
             async def from_url():
                 module = await run.io_bound(core.import_openapi_url, url.value, pid)
-                ui.notify(f'Importado «{module["name"]}»: {len(module["operations"])} operaciones. Origen: {module["source_url"]}', type='positive', multi_line=True)
+                duplicates = [m for m in core.list_project_items('modules', pid) if m['id'] != module['id'] and m.get('source_url') == module.get('source_url')]
+                note = f' Ya había {len(duplicates)} módulo(s) con este mismo origen en el proyecto: revisa si quieres eliminar el anterior.' if duplicates else ''
+                ui.notify(f'Importado «{module["name"]}»: {len(module["operations"])} operaciones. Origen: {module["source_url"]}.{note}',
+                          type='warning' if duplicates else 'positive', multi_line=True)
                 ui.navigate.reload()
             ui.button('Importar desde URL', icon='cloud_download', on_click=guard(from_url)).props('color=primary')
 
@@ -27,7 +30,11 @@ def modules():
                 try:
                     raw = await read_upload(event)
                     module = core.import_openapi(raw.decode('utf-8'), pid)
-                    ui.notify(f'Importado «{module["name"]}»: {len(module["operations"])} operaciones', type='positive')
+                    duplicates = [m for m in core.list_project_items('modules', pid)
+                                  if m['id'] != module['id'] and m['name'] == module['name'] and m.get('version') == module.get('version')]
+                    note = f' Ya había {len(duplicates)} módulo(s) con el mismo nombre y versión: revisa si quieres eliminar el anterior.' if duplicates else ''
+                    ui.notify(f'Importado «{module["name"]}»: {len(module["operations"])} operaciones.{note}',
+                              type='warning' if duplicates else 'positive', multi_line=True)
                     ui.navigate.reload()
                 except Exception as exc:
                     ui.notify(str(exc), type='negative', multi_line=True)
@@ -62,7 +69,10 @@ def modules():
                     async def explore():
                         module = core.get('modules', module_select.value)
                         env = core.get('environments', env_select.value)
-                        extra_headers = {header_name.value.strip(): header_value.value} if (header_name.value or '').strip() and header_value.value else {}
+                        header_key = (header_name.value or '').strip()
+                        if header_key and not (header_value.value or '').strip():
+                            ui.notify(f'Escribiste el nombre de la cabecera «{header_key}» pero el valor está vacío: no se enviará.', type='warning')
+                        extra_headers = {header_key: header_value.value} if header_key and (header_value.value or '').strip() else {}
                         plan = await run.io_bound(explorer.discover, module, env, extra_headers)
                         if not plan['ready']:
                             ui.notify('Nada que ejecutar: ' + (f'{len(plan["blocked"])} operación(es) sin datos para resolver sus parámetros.' if plan['blocked'] else
@@ -117,6 +127,8 @@ def modules():
                     with ui.row().classes('items-center gap-2'):
                         ui.label(f'Servidor declarado: {base}').classes('text-xs text-gray-600')
                         ui.button('Crear ambiente con esta URL', icon='dns', on_click=guard(make_env)).props('flat dense size=sm no-caps color=primary')
+                elif module.get('servers') and any('{' in (server.get('url') or '') for server in module['servers']):
+                    ui.label('El contrato declara variables de servidor sin resolver (p. ej. «{entorno}»); crea el ambiente a mano.').classes('text-xs text-amber-700')
                 for index, op in enumerate(module['operations']):
                     with ui.row().classes('items-center gap-2 w-full'):
                         ui.badge(op['method'], color='primary').classes('w-16 justify-center')

@@ -224,10 +224,16 @@ def set_active_project(project_id):
     set_setting('active_project_id', project_id)
 
 
+def _project_name_taken(name, exclude_id=None):
+    return any(p['id'] != exclude_id and p['name'].strip().lower() == name.lower() for p in list_items('projects'))
+
+
 def create_project(name, description=''):
     name = name.strip()
     if not name:
         raise ValueError('El nombre del proyecto es obligatorio')
+    if _project_name_taken(name):
+        raise ValueError(f'Ya existe un proyecto llamado «{name}»')
     project = save('projects', {'name': name, 'description': description.strip(), 'version': 1})
     if get_active_project_id() is None:
         set_active_project(project['id'])
@@ -241,6 +247,8 @@ def update_project(project_id, name, description=''):
     name = name.strip()
     if not name:
         raise ValueError('El nombre del proyecto es obligatorio')
+    if _project_name_taken(name, exclude_id=project_id):
+        raise ValueError(f'Ya existe un proyecto llamado «{name}»')
     project.update({'name': name, 'description': description.strip()})
     return save('projects', project)
 
@@ -254,12 +262,17 @@ def project_stats(project_id):
     }
 
 
+PROJECT_RESOURCE_LABELS = {'modules': 'módulo(s)', 'environments': 'ambiente(s)', 'cases': 'caso(s)', 'suites': 'suite(s)', 'schedules': 'programación(es)', 'taps': 'tap(s) de observación'}
+
+
 def delete_project(project_id):
     if get('projects', project_id) is None:
         raise ValueError('Proyecto inexistente')
     stats = project_stats(project_id)
-    if any(stats.values()):
-        raise ValueError('No se puede eliminar un proyecto con recursos asociados')
+    blocking = {table: count for table, count in stats.items() if count}
+    if blocking:
+        detail = ', '.join(f'{count} {PROJECT_RESOURCE_LABELS.get(table, table)}' for table, count in blocking.items())
+        raise ValueError(f'No se puede eliminar: tiene {detail}. Bórralos o muévelos a otro proyecto primero.')
     delete('projects', project_id)
     if get_active_project_id() == project_id:
         set_active_project(None)
@@ -270,7 +283,7 @@ def adopt_unassigned(project_id):
     if get('projects', project_id) is None:
         raise ValueError('Proyecto inexistente')
     adopted = {}
-    for table in ('modules', 'environments', 'cases', 'suites', 'schedules'):
+    for table in ('modules', 'environments', 'cases', 'suites', 'schedules', 'taps'):
         pending = [item for item in list_items(table) if not item.get('project_id')]
         for item in pending:
             item['project_id'] = project_id
@@ -366,12 +379,20 @@ def _validated_steps(steps, default_environment, project_id):
 
 # --------------------------------------------------------------------------- OpenAPI
 
+MAX_SPEC_BYTES = 10_000_000
+MAX_REF_DEPTH = 200  # a non-cyclic $ref chain deeper than this would otherwise risk Python's own RecursionError
+
+
 def parse_openapi(raw):
+    if isinstance(raw, str) and len(raw.encode('utf-8', errors='ignore')) > MAX_SPEC_BYTES:
+        raise ValueError(f'El contrato supera el límite de {MAX_SPEC_BYTES // 1_000_000} MB.')
     data = yaml.safe_load(raw)
     if not isinstance(data, dict) or not (data.get('openapi') or data.get('swagger')) or not isinstance(data.get('paths'), dict):
         raise ValueError('Se requiere un documento OpenAPI/Swagger válido con paths.')
 
     def resolve(value, stack=()):
+        if len(stack) > MAX_REF_DEPTH:
+            raise ValueError(f'La cadena de referencias $ref es demasiado profunda (más de {MAX_REF_DEPTH} niveles).')
         if isinstance(value, dict) and '$ref' in value:
             reference = value['$ref']
             if not isinstance(reference, str) or not reference.startswith('#/'):
@@ -421,7 +442,6 @@ def import_openapi(raw, project_id=None, source_url=None):
     return save('modules', module)
 
 
-MAX_SPEC_BYTES = 10_000_000
 SPEC_GUESSES = ('openapi.json', 'openapi.yaml', 'swagger.json', 'swagger.yaml', 'v3/api-docs', 'v2/api-docs', 'api-docs', 'swagger/v1/swagger.json',
                 'docs/openapi.json', 'api/openapi.json', 'api/swagger.json')
 SWAGGER_DEMO_SPEC = 'petstore.swagger.io/v2/swagger.json'                            # the default baked into an unconfigured Swagger UI distribution
@@ -1037,6 +1057,19 @@ def normalize_url(value, scheme='https'):
     if scheme not in ('http', 'https'):
         raise ValueError('Protocolo inválido (http o https)')
     return f'{scheme}://{value.lstrip("/")}'
+
+
+def validate_base_url(url, required=True):
+    """Same rule as split_url (http/https, hostname, no embedded user:pass) without discarding the path/query."""
+    value = (url or '').strip()
+    if not value:
+        if required:
+            raise ValueError('URL base inválida (use http:// o https:// sin usuario/clave)')
+        return value
+    parsed = urlparse(value)
+    if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError('URL base inválida (use http:// o https:// sin usuario/clave)')
+    return value
 
 
 def split_url(url):
