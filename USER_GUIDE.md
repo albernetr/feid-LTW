@@ -1,6 +1,6 @@
 # Guía de usuario
 
-> Esta es la guía resumida. El **manual completo** (con capturas, recetas por perfil, referencia y solución de problemas) está en [MANUAL_DE_USUARIO.md](MANUAL_DE_USUARIO.md), con versiones [HTML](docs/manual/MANUAL_DE_USUARIO.html) y [PDF](docs/manual/MANUAL_DE_USUARIO.pdf).
+> Esta es la guía resumida. El **manual completo** (con capturas, recetas por perfil, referencia y solución de problemas) se genera con `python scripts/build_manual.py` a partir de [docs/manual/src/](docs/manual/src/), o se descarga ya construido (Markdown, HTML y PDF) desde los [Releases](https://github.com/albernetr/feid-LTW/releases) del repositorio.
 
 ## Flujo recomendado
 

@@ -1,5 +1,7 @@
 # Local Test Workspace
 
+![Pruebas](https://github.com/albernetr/feid-LTW/actions/workflows/tests.yml/badge.svg?branch=develop)
+
 Aplicación local (Python + NiceGUI) para importar contratos OpenAPI/Swagger, definir ambientes, crear casos de prueba API y UI (Playwright), agruparlos en suites encadenadas, programarlos y exportar/importar el trabajo de forma segura.
 
 ## Instalación (Windows, con Python 3.11+ ya instalado)
@@ -44,7 +46,9 @@ python run.py --scheduler    # scheduler (un proceso por workspace)
 
 ## Documentación
 
-[MANUAL_DE_USUARIO.md](MANUAL_DE_USUARIO.md) ([HTML](docs/manual/MANUAL_DE_USUARIO.html) · [PDF](docs/manual/MANUAL_DE_USUARIO.pdf)) · [USER_GUIDE.md](USER_GUIDE.md) · [AGENTS.md](AGENTS.md) · [ARCHITECTURE.md](ARCHITECTURE.md) · [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md) · [TEST_REPORT.md](TEST_REPORT.md) · [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) · [CHANGELOG.md](CHANGELOG.md) · [BACKLOG.md](BACKLOG.md)
+El manual de usuario completo (20 capítulos) se genera a partir de [docs/manual/src/](docs/manual/src/) con `python scripts/build_manual.py`, que produce `MANUAL_DE_USUARIO.md` y, en `docs/manual/`, las versiones HTML y PDF — no están versionadas en el repositorio (son binarios reconstruibles); se publican como adjuntos en los [Releases](https://github.com/albernetr/feid-LTW/releases) de este repositorio.
+
+[USER_GUIDE.md](USER_GUIDE.md) · [AGENTS.md](AGENTS.md) · [ARCHITECTURE.md](ARCHITECTURE.md) · [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md) · [TEST_REPORT.md](TEST_REPORT.md) · [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) · [CHANGELOG.md](CHANGELOG.md) · [BACKLOG.md](BACKLOG.md)
 
 ## Uso responsable
 

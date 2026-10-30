@@ -1,0 +1,27 @@
+name: Pruebas
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements-dev.txt
+          python -m playwright install chromium
+
+      - name: Ejecutar la batería de pruebas
+        run: python -m pytest -q
+        env:
+          PYTHONIOENCODING: utf-8
