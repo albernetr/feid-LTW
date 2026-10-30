@@ -85,6 +85,49 @@ def test_update_project_rejects_duplicate_name_but_allows_keeping_its_own():
     assert renamed['name'] == 'a'
 
 
+def test_delete_project_cascade_wipes_everything_and_evidence_files():
+    from app import automation
+    project = core.create_project('A borrar')
+    module = core.import_openapi(SPEC, project['id'])
+    env = core.save('environments', {'name': 'E', 'project_id': project['id'], 'base_url': 'https://x', 'auth': {'type': 'none'}, 'variables': {}})
+    case = core.save('cases', {'name': 'C', 'type': 'api', 'project_id': project['id'], 'method': 'GET', 'path': '/x', 'assertions': []})
+    suite = core.save_suite('S', env['id'], [case['id']], project['id'])
+    schedule = automation.create_schedule(suite['id'], 'daily', '02:00', 'UTC')
+    shot = core.ARTIFACTS / 'ev.png'
+    shot.write_text('x')
+    run = core.save('runs', {'type': 'api', 'project_id': project['id'], 'status': 'passed', 'screenshot': 'ev.png'})
+
+    core.delete_project_cascade(project['id'])
+
+    assert core.get('projects', project['id']) is None
+    assert core.get('modules', module['id']) is None
+    assert core.get('environments', env['id']) is None
+    assert core.get('cases', case['id']) is None
+    assert core.get('suites', suite['id']) is None
+    assert core.get('schedules', schedule['id']) is None
+    assert core.get('runs', run['id']) is None
+    assert not shot.exists()
+
+
+def test_delete_project_cascade_clears_active_project_if_it_was_selected():
+    project = core.create_project('Activo')
+    assert core.get_active_project_id() == project['id']
+    core.delete_project_cascade(project['id'])
+    assert core.get_active_project_id() is None
+
+
+def test_disable_project_blocks_activation_and_clears_it_if_active():
+    project = core.create_project('A')
+    assert core.get_active_project_id() == project['id']
+    core.set_project_enabled(project['id'], False)
+    assert core.get_active_project_id() is None
+    with pytest.raises(ValueError, match='deshabilitado'):
+        core.set_active_project(project['id'])
+    core.set_project_enabled(project['id'], True)
+    core.set_active_project(project['id'])
+    assert core.get_active_project_id() == project['id']
+
+
 def test_delete_project_lists_every_blocking_resource_type():
     project = core.create_project('Con recursos')
     core.import_openapi(SPEC, project['id'])

@@ -6,6 +6,47 @@ RESOURCE_LABELS = (('modules', 'módulos'), ('environments', 'ambientes'), ('cas
                     ('suites', 'suites'), ('schedules', 'programaciones'), ('taps', 'taps'))
 
 
+def _request_delete(project, on_done):
+    """Tries the safe delete first; if the project still has content, offers the destructive cascade
+    delete behind a type-the-name confirmation. `on_done()` runs after either one succeeds."""
+    def attempt():
+        try:
+            core.delete_project(project['id'])
+            ui.notify('Proyecto eliminado', type='positive')
+            on_done()
+        except ValueError as exc:
+            if str(exc).startswith('No se puede eliminar:'):
+                _offer_cascade_delete(project, str(exc), on_done)
+            else:
+                ui.notify(str(exc), type='negative', multi_line=True)
+    confirm(f'¿Eliminar el proyecto «{project["name"]}»? Solo es posible si no tiene recursos.', attempt)
+
+
+def _offer_cascade_delete(project, message, on_done):
+    with ui.dialog() as dialog, ui.card():
+        ui.label('Eliminar el proyecto con todo su contenido').classes('font-semibold text-red-700')
+        ui.label(message).classes('text-sm text-gray-700')
+        ui.label(f'Esto borra TODO lo del proyecto (módulos, ambientes, casos, suites, programaciones, taps e '
+                 f'historial de ejecuciones) y no se puede deshacer. Escribe «{project["name"]}» para confirmar.').classes('text-sm text-gray-600')
+        phrase = ui.input('Nombre del proyecto').props('outlined dense').mark('project-cascade-phrase')
+        with ui.row().classes('justify-end w-full gap-2'):
+            ui.button('Cancelar', on_click=dialog.close).props('flat')
+
+            def accept():
+                if (phrase.value or '') != project['name']:
+                    ui.notify(f'Escribe exactamente «{project["name"]}» para confirmar.', type='warning')
+                    return
+                dialog.close()
+                try:
+                    core.delete_project_cascade(project['id'])
+                    ui.notify('Proyecto y todo su contenido eliminados', type='positive')
+                    on_done()
+                except Exception as exc:
+                    ui.notify(str(exc) or type(exc).__name__, type='negative', multi_line=True)
+            ui.button('Borrar todo y eliminar', on_click=accept, color='negative').mark('project-cascade-accept')
+    dialog.open()
+
+
 @ui.page('/projects')
 def projects_list():
     with frame('Proyectos', '/projects'):
@@ -37,7 +78,7 @@ def projects_list():
             {'name': 'name', 'label': 'Nombre', 'field': 'name', 'align': 'left', 'sortable': True},
             {'name': 'description', 'label': 'Descripción', 'field': 'description', 'align': 'left'},
             {'name': 'resources', 'label': 'Recursos', 'field': 'resources', 'align': 'left'},
-            {'name': 'active', 'label': 'Activo', 'field': 'active', 'align': 'center', 'sortable': True},
+            {'name': 'status', 'label': 'Estado', 'field': 'status', 'align': 'center', 'sortable': True},
             {'name': 'actions', 'label': '', 'field': 'id', 'align': 'right'},
         ]
 
@@ -50,18 +91,20 @@ def projects_list():
                 duplicated = name_counts.get(project['name'].strip().lower(), 0) > 1
                 dup = f'#{project["id"][:8]}' if duplicated else ''
                 is_active = project['id'] == active_id
+                disabled = bool(project.get('disabled'))
                 result.append({'id': project['id'], 'base_name': project['name'], 'dup': dup,
                                'name': project['name'] + (f'  {dup}' if dup else ''),
                                'description': project.get('description', '') or '—',
                                'resources': summary, 'resource_list': resource_list or [{'label': 'sin recursos', 'count': None}],
-                               'active': is_active})
+                               'active': is_active, 'disabled': disabled,
+                               'status': 'disabled' if disabled else ('active' if is_active else '')})
             return result
 
         table = ui.table(columns=columns, rows=rows(), row_key='id', pagination=15).classes('w-full').mark('projects-table')
         table.props('flat bordered')
         table.add_slot('body-cell-name', r'''
             <q-td :props="props">
-                <span :class="props.row.active ? 'text-weight-bold text-primary' : ''">{{ props.row.base_name }}</span>
+                <span :class="props.row.active ? 'text-weight-bold text-primary' : (props.row.disabled ? 'text-grey-6' : '')">{{ props.row.base_name }}</span>
                 <span v-if="props.row.dup" class="text-grey-6 text-caption q-ml-xs">{{ props.row.dup }}</span>
             </q-td>
         ''')
@@ -73,12 +116,21 @@ def projects_list():
                 </q-chip>
             </q-td>
         ''')
-        table.add_slot('body-cell-active', '''<q-td :props="props"><q-badge v-if="props.value" color="primary">Activo</q-badge></q-td>''')
+        table.add_slot('body-cell-status', r'''
+            <q-td :props="props">
+                <q-badge v-if="props.value === 'active'" color="primary">Activo</q-badge>
+                <q-badge v-else-if="props.value === 'disabled'" color="grey-6">Deshabilitado</q-badge>
+            </q-td>
+        ''')
         table.add_slot('body-cell-actions', r'''
             <q-td :props="props" class="text-right" @click.stop>
-                <q-btn v-if="!props.row.active" flat dense round icon="check" color="primary"
+                <q-btn v-if="!props.row.active && !props.row.disabled" flat dense round icon="check" color="primary"
                        @click="$parent.$emit('selectProject', props.row)">
                     <q-tooltip>Seleccionar</q-tooltip>
+                </q-btn>
+                <q-btn flat dense round :icon="props.row.disabled ? 'unarchive' : 'archive'" color="grey-8"
+                       @click="$parent.$emit('toggleProject', props.row)">
+                    <q-tooltip>{{ props.row.disabled ? 'Habilitar' : 'Deshabilitar' }}</q-tooltip>
                 </q-btn>
                 <q-btn flat dense round icon="edit" color="grey-8" @click="$parent.$emit('editProject', props.row)">
                     <q-tooltip>Editar</q-tooltip>
@@ -101,17 +153,22 @@ def projects_list():
         table.on('selectProject', on_select)
         table.on('editProject', lambda e: ui.navigate.to(f'/projects/edit?id={e.args["id"]}'))
 
+        def on_toggle(e):
+            try:
+                enabling = e.args['disabled']  # row's *current* state before the toggle
+                core.set_project_enabled(e.args['id'], enabling)
+                ui.notify('Proyecto habilitado' if enabling else 'Proyecto deshabilitado', type='positive')
+                ui.navigate.reload()
+            except Exception as exc:
+                ui.notify(str(exc) or type(exc).__name__, type='negative', multi_line=True)
+        table.on('toggleProject', on_toggle)
+
         def on_delete(e):
             row = e.args
-
-            def do_delete():
-                core.delete_project(row['id'])
-                ui.notify('Proyecto eliminado', type='positive')
-                ui.navigate.reload()
-            confirm(f'¿Eliminar el proyecto «{row["base_name"]}»? Solo es posible si no tiene recursos.', do_delete)
+            _request_delete({'id': row['id'], 'name': row['base_name']}, lambda: ui.navigate.reload())
         table.on('deleteProject', on_delete)
 
-        ui.label('Haz clic en una fila (o en editar) para ver el detalle; selecciona o elimina directamente con los iconos.').classes('text-sm text-gray-500')
+        ui.label('Haz clic en una fila (o en editar) para ver el detalle; selecciona, deshabilita o elimina directamente con los iconos.').classes('text-sm text-gray-500')
 
         def refresh(_=None):
             query = (search.value or '').strip().lower()
@@ -150,14 +207,19 @@ def project_edit(id: str = ''):
             return
         active_id = core.get_active_project_id()
         is_active = bool(current) and current['id'] == active_id
+        is_disabled = bool(current) and bool(current.get('disabled'))
 
         with ui.card().classes('w-full'):
             with ui.row().classes('items-center gap-2'):
                 ui.label(current['name'] if current else 'Nuevo proyecto').classes('text-xl font-semibold')
                 if is_active:
                     ui.badge('Activo', color='primary')
+                if is_disabled:
+                    ui.badge('Deshabilitado', color='grey-6')
             name = ui.input('Nombre', value=(current or {}).get('name', '')).props('outlined dense').classes('w-full').mark('project-name')
             description = ui.textarea('Descripción (opcional)', value=(current or {}).get('description', '')).props('outlined dense autogrow').classes('w-full')
+            if is_disabled:
+                ui.label('Este proyecto está deshabilitado: no se puede seleccionar como activo hasta que lo habilites.').classes('text-sm text-amber-700')
 
             def save():
                 if current:
@@ -174,18 +236,20 @@ def project_edit(id: str = ''):
                 core.set_active_project(current['id'])
                 ui.navigate.reload()
 
-            def remove():
-                core.delete_project(current['id'])
-                ui.notify('Proyecto eliminado', type='positive')
-                ui.navigate.to('/projects')
+            def toggle_enabled():
+                core.set_project_enabled(current['id'], is_disabled)  # flips: enables if currently disabled
+                ui.notify('Proyecto habilitado' if is_disabled else 'Proyecto deshabilitado', type='positive')
+                ui.navigate.to(f'/projects/edit?id={current["id"]}')
 
             with ui.row().classes('gap-2'):
                 ui.button('Guardar cambios' if current else 'Crear proyecto', icon='save', on_click=guard(save)).props('color=primary').mark('project-save')
-                if current and not is_active:
+                if current and not is_active and not is_disabled:
                     ui.button('Seleccionar', icon='check', on_click=guard(select)).props('outline').mark('project-select')
                 if current:
-                    ui.button('Eliminar', icon='delete', on_click=lambda: confirm(
-                        f'¿Eliminar el proyecto «{current["name"]}»? Solo es posible si no tiene recursos.', remove)).props('outline color=negative').mark('project-delete')
+                    ui.button('Habilitar' if is_disabled else 'Deshabilitar', icon='unarchive' if is_disabled else 'archive',
+                              on_click=guard(toggle_enabled)).props('outline').mark('project-toggle-enabled')
+                    ui.button('Eliminar', icon='delete', on_click=lambda: _request_delete(
+                        current, lambda: ui.navigate.to('/projects'))).props('outline color=negative').mark('project-delete')
 
         if not current:
             return

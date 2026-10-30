@@ -185,6 +185,76 @@ async def test_projects_detail_page_save_select_and_delete(user: User):
     assert core.get('projects', original_id) is None
 
 
+async def test_projects_detail_page_cascade_delete_requires_typing_the_name(user: User):
+    seed()
+    pid = core.list_items('projects')[0]['id']
+    await user.open(f'/projects/edit?id={pid}')
+    user.find('project-delete').click()
+    await user.should_see('¿Eliminar el proyecto')
+    user.find('confirm-dialog-accept').click()
+    await user.should_see('Eliminar el proyecto con todo su contenido')
+
+    user.find('project-cascade-phrase').type('nombre incorrecto')
+    user.find('project-cascade-accept').click()
+    await user.should_see('Escribe exactamente')
+    assert core.get('projects', pid) is not None  # the wrong phrase changed nothing
+
+    user.find('project-cascade-phrase').clear()
+    user.find('project-cascade-phrase').type('Demo Sample App')
+    user.find('project-cascade-accept').click()
+    await user.should_see('Proyecto y todo su contenido eliminados')
+    assert core.get('projects', pid) is None
+    assert core.list_items('cases') == []
+    assert core.list_items('modules') == []
+
+
+async def test_projects_table_cascade_delete(user: User):
+    from nicegui import ui
+    seed()
+    pid = core.list_items('projects')[0]['id']
+    await user.open('/projects')
+    interaction = user.find(kind=ui.table)
+    row = next(r for r in next(iter(interaction.elements)).rows if r['id'] == pid)
+    interaction.trigger('deleteProject', row)
+    await user.should_see('¿Eliminar el proyecto')
+    user.find('confirm-dialog-accept').click()
+    await user.should_see('Eliminar el proyecto con todo su contenido')
+    user.find('project-cascade-phrase').type('Demo Sample App')
+    user.find('project-cascade-accept').click()
+    await user.should_see('Proyecto y todo su contenido eliminados')
+    assert core.get('projects', pid) is None
+
+
+async def test_projects_detail_page_disable_and_enable(user: User):
+    project = core.create_project('A')
+    await user.open(f'/projects/edit?id={project["id"]}')
+    assert core.get_active_project_id() == project['id']
+
+    user.find('project-toggle-enabled').click()
+    await user.should_see('Proyecto deshabilitado')
+    assert core.get_active_project_id() is None
+    assert core.get('projects', project['id'])['disabled'] is True
+
+    # a fresh open (not just the in-app navigate.to the handler already did) guarantees we click the
+    # button rendered for the *current* state, not a stale one left over from the previous render
+    await user.open(f'/projects/edit?id={project["id"]}')
+    await user.should_not_see(marker='project-select')  # can't select a disabled project
+    user.find('project-toggle-enabled').click()
+    await user.should_see('Proyecto habilitado')
+    assert core.get('projects', project['id'])['disabled'] is False
+
+
+async def test_projects_table_toggle_enabled(user: User):
+    from nicegui import ui
+    project = core.create_project('A')
+    await user.open('/projects')
+    interaction = user.find(kind=ui.table)
+    row = next(r for r in next(iter(interaction.elements)).rows if r['id'] == project['id'])
+    interaction.trigger('toggleProject', row)
+    await eventually(lambda: core.get('projects', project['id']).get('disabled') is True)
+    assert core.get_active_project_id() is None
+
+
 async def test_projects_edit_page_shows_a_clear_message_for_a_missing_project(user: User):
     await user.open('/projects/edit?id=nope')
     await user.should_see('Este proyecto ya no existe.')
@@ -322,10 +392,10 @@ async def test_modules_warns_about_duplicate_import_by_source_url(user: User, tm
         user.find('URL del contrato, de su página de Swagger UI o un enlace de GitHub').type(spec_url)
         user.find('Importar desde URL').click()
         # run.io_bound: a real thread + HTTP round trip, slow and jittery under a loaded test run — poll the actual state, not a fixed retry budget
-        await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 2)
+        await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 2, seconds=20)
         user.find('URL del contrato, de su página de Swagger UI o un enlace de GitHub').type(spec_url)
         user.find('Importar desde URL').click()
-        await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 3)
+        await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 3, seconds=20)
         await user.should_see('Ya había 1 módulo')
     finally:
         server.shutdown()

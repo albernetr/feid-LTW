@@ -32,6 +32,11 @@
 - No toca los secretos del Administrador de credenciales: son por nombre, no por workspace, y podrían usarse en otro ambiente.
 - Por línea de comandos (`python run.py --reset-workspace --yes`) actúa sobre el workspace que `TEST_WORKSPACE_HOME` (o el valor por defecto) resuelva en ese momento; cierra el scheduler y la interfaz antes, o puede fallar por archivo en uso.
 
+## Eliminar un proyecto con su contenido
+- Irreversible y no hay papelera: exporta antes (`/portable`) si quieres conservar algo de ese proyecto.
+- No toca el historial del Laboratorio (`lab_history`): es por autor, no por proyecto, así que ese registro sigue existiendo.
+- No revierte un ambiente creado como copia en otro proyecto (p. ej. al correr una suite contra otro ambiente): esas copias son recursos independientes.
+
 ## Base de datos compartida
 - SQLite sobre un recurso de red depende de que el sistema de archivos respete los bloqueos; algunos NAS no lo hacen bien. Para uso concurrente intenso se necesitaría un servidor de base de datos (no incluido).
 - La detección de conflictos cubre la edición de casos, casos UI y suites; el resto de pantallas escribe «el último gana».
