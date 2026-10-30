@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+.claude/
 
 # Local workspace data: personal, may contain real request/response bodies. Never committed.
 data/
