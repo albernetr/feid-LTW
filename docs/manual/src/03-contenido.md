@@ -75,7 +75,7 @@ Un **ambiente** define *dónde* se ejecutan las pruebas.
 | **Header (solo API Key)** | Nombre del header donde viaja la clave (por defecto `X-API-Key`). |
 | **Variables** | Pares nombre/valor disponibles como `{{nombre}}` en rutas, headers, query, body y pasos UI. |
 
-Pulsa **Guardar ambiente**. Para modificar uno existente usa el icono ✎ de su tarjeta; el 🗑 lo elimina (no se puede si alguna suite lo usa).
+Pulsa **Nuevo ambiente** y luego **Guardar ambiente**. La lista es una tabla: haz clic en una fila (o en su icono ✎) para editarlo; el 🗑 lo elimina (no se puede si alguna suite lo usa).
 
 Con **Bearer**, LTW envía `Authorization: Bearer <valor del secreto>`; con **API Key**, el header elegido con el valor del secreto. Si falta el secreto o la variable de entorno, el caso termina en **Error** con ese mensaje y **no se envía**.
 

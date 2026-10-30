@@ -4,7 +4,7 @@ import pytest
 from nicegui.testing import User
 from app import core
 
-ROUTES = ['/', '/resumen', '/projects', '/projects/edit', '/workspace', '/lab', '/observer', '/observer/interface', '/modules', '/environments', '/cases', '/cases/edit', '/ui-cases',
+ROUTES = ['/', '/resumen', '/projects', '/projects/edit', '/workspace', '/lab', '/observer', '/observer/interface', '/modules', '/environments', '/environments/edit', '/cases', '/cases/edit', '/ui-cases',
           '/suites', '/schedules', '/runs', '/portable']
 
 
@@ -289,7 +289,7 @@ async def test_validation_messages(user: User):
     user.find('Nombre del caso').clear()
     user.find('Guardar').click()
     await user.should_see('El nombre es obligatorio')
-    await user.open('/environments')
+    await user.open('/environments/edit')
     user.find('Guardar ambiente').click()
     await user.should_see('URL base inválida')
     await user.open('/ui-cases?id=nope')
@@ -305,7 +305,7 @@ async def test_environments_edit_param_cannot_steal_another_projects_environment
     foreign_env = core.save('environments', {'name': 'Ajeno', 'project_id': other['id'], 'base_url': 'https://ajeno.example.com', 'auth': {'type': 'none'}, 'variables': {}})
     pid = [p for p in core.list_items('projects') if p['name'] == 'Demo Sample App'][0]['id']
     core.set_active_project(pid)
-    await user.open(f'/environments?edit={foreign_env["id"]}')
+    await user.open(f'/environments/edit?id={foreign_env["id"]}')
     await user.should_see('no pertenece al proyecto activo')
     assert user.find('env-name').elements.pop().value == 'QA'  # shows the "new environment" default, not the foreign one
     user.find('env-base-url').clear()
@@ -317,7 +317,7 @@ async def test_environments_edit_param_cannot_steal_another_projects_environment
 
 async def test_environments_rejects_duplicate_name_within_the_project(user: User):
     seed()
-    await user.open('/environments')
+    await user.open('/environments/edit')
     user.find('env-name').clear()
     user.find('env-name').type('Local')  # the name seed() already used in this project
     user.find('env-base-url').clear()
@@ -329,7 +329,7 @@ async def test_environments_rejects_duplicate_name_within_the_project(user: User
 
 async def test_environments_rejects_invalid_ui_base_url(user: User):
     seed()
-    await user.open('/environments')
+    await user.open('/environments/edit')
     user.find('env-name').clear()
     user.find('env-name').type('Nuevo')
     user.find('env-base-url').clear()
@@ -341,6 +341,7 @@ async def test_environments_rejects_invalid_ui_base_url(user: User):
 
 
 async def test_environments_delete_blocked_by_a_step_level_reference(user: User):
+    from nicegui import ui
     seed()
     pid = [p for p in core.list_items('projects') if p['name'] == 'Demo Sample App'][0]['id']
     other_env = core.save('environments', {'name': 'Solo en un paso', 'project_id': pid, 'base_url': 'https://solo-paso.example.com', 'auth': {'type': 'none'}, 'variables': {}})
@@ -349,7 +350,9 @@ async def test_environments_delete_blocked_by_a_step_level_reference(user: User)
     core.save_suite(suite['name'], suite['environment_id'], None, pid, id=suite['id'],
                      steps=[{'case_id': health['id'], 'alias': 'health', 'environment_id': other_env['id'], 'enrich': []}])
     await user.open('/environments')
-    user.find(f'env-delete-{other_env["id"]}').click()
+    interaction = user.find(kind=ui.table)
+    row = next(r for r in next(iter(interaction.elements)).rows if r['id'] == other_env['id'])
+    interaction.trigger('deleteEnv', row)
     await user.should_see('¿Eliminar el ambiente')
     user.find('confirm-dialog-accept').click()
     await user.should_see('paso(s) con ambiente propio')

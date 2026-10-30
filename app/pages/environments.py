@@ -2,22 +2,126 @@ from nicegui import ui
 from .. import core
 from .common import frame, guard, confirm, empty_state, require_project, kv_editor
 
+AUTH_LABELS = {'none': 'Sin autenticación', 'bearer': 'Bearer', 'api_key': 'API Key'}
+
+
+def _delete_environment(env_id, env_name, on_done):
+    def attempt():
+        affected, step_count = set(), 0
+        for s in core.list_items('suites'):
+            if s.get('environment_id') == env_id:
+                affected.add(s['id'])
+            for step in core.suite_steps(s):
+                if step.get('environment_id') == env_id:
+                    affected.add(s['id'])
+                    step_count += 1
+        if affected:
+            detail = f' ({step_count} paso(s) con ambiente propio)' if step_count else ''
+            ui.notify(f'No se puede eliminar: lo usan {len(affected)} suite(s){detail}', type='negative', multi_line=True)
+            return
+        core.delete('environments', env_id)
+        ui.notify('Ambiente eliminado', type='positive')
+        on_done()
+    confirm(f'¿Eliminar el ambiente «{env_name}»?', attempt)
+
 
 @ui.page('/environments')
-def environments(edit: str = ''):
+def environments_list():
     with frame('Ambientes y secretos', '/environments'):
         if not require_project():
             return
         pid = core.get_active_project_id()
-        current = core.get('environments', edit) if edit else None
+        items = core.list_project_items('environments', pid)
+
+        ui.button('Nuevo ambiente', icon='add', on_click=lambda: ui.navigate.to('/environments/edit')).props('color=primary')
+
+        if not items:
+            empty_state('No hay ambientes en este proyecto.')
+        else:
+            columns = [
+                {'name': 'name', 'label': 'Nombre', 'field': 'name', 'align': 'left', 'sortable': True},
+                {'name': 'base_url', 'label': 'URL base', 'field': 'base_url', 'align': 'left'},
+                {'name': 'auth', 'label': 'Autenticación', 'field': 'auth', 'align': 'left'},
+                {'name': 'variables', 'label': 'Variables', 'field': 'variables', 'align': 'center'},
+                {'name': 'actions', 'label': '', 'field': 'id', 'align': 'right'},
+            ]
+
+            def rows():
+                return [{'id': e['id'], 'name': e['name'], 'base_url': e['base_url'],
+                        'auth': AUTH_LABELS.get(e['auth']['type'], e['auth']['type']),
+                        'variables': len(e.get('variables') or {})} for e in items]
+
+            table = ui.table(columns=columns, rows=rows(), row_key='id', pagination=15).classes('w-full').mark('environments-table')
+            table.props('flat bordered')
+            table.add_slot('body-cell-base_url', '''<q-td :props="props"><span class="font-mono text-sm text-gray-700">{{ props.value }}</span></q-td>''')
+            table.add_slot('body-cell-auth', '''<q-td :props="props"><q-badge color="grey-6">{{ props.value }}</q-badge></q-td>''')
+            table.add_slot('body-cell-variables', r'''
+                <q-td :props="props">
+                    <q-chip v-if="props.value" dense size="sm" color="blue-1" text-color="dark">{{ props.value }}</q-chip>
+                    <span v-else class="text-grey-5">—</span>
+                </q-td>
+            ''')
+            table.add_slot('body-cell-actions', r'''
+                <q-td :props="props" class="text-right" @click.stop>
+                    <q-btn flat dense round icon="edit" color="grey-8" @click="$parent.$emit('editEnv', props.row)">
+                        <q-tooltip>Editar</q-tooltip>
+                    </q-btn>
+                    <q-btn flat dense round icon="delete" color="negative" @click="$parent.$emit('deleteEnv', props.row)">
+                        <q-tooltip>Eliminar</q-tooltip>
+                    </q-btn>
+                </q-td>
+            ''')
+            table.on('rowClick', lambda e: ui.navigate.to(f'/environments/edit?id={e.args[1]["id"]}'))
+            table.on('editEnv', lambda e: ui.navigate.to(f'/environments/edit?id={e.args["id"]}'))
+            table.on('deleteEnv', lambda e: _delete_environment(e.args['id'], e.args['name'], ui.navigate.reload))
+            ui.label('Haz clic en una fila (o en editar) para ver el detalle; elimina directamente con el icono.').classes('text-sm text-gray-500')
+
+        with ui.card().classes('w-full mt-2'):
+            ui.label('Secretos (almacén seguro del sistema operativo)').classes('text-lg font-semibold')
+            ui.label('Se guardan en Windows Credential Manager / Keychain / Secret Service. Úsalos como {{secret:nombre}} o en la autenticación del ambiente.').classes('text-gray-500 text-sm')
+            with ui.row().classes('items-end gap-3'):
+                secret_name = ui.input('Nombre').props('outlined dense').classes('w-52')
+                secret_value = ui.input('Valor', password=True, password_toggle_button=True).props('outlined dense').classes('w-72')
+
+                def store():
+                    core.secret_set((secret_name.value or '').strip(), secret_value.value or '')
+                    ui.notify('Secreto guardado', type='positive')
+                    ui.navigate.reload()
+                ui.button('Guardar secreto', icon='lock', on_click=guard(store)).props('outline')
+            names = core.secret_names()
+            if names:
+                with ui.row().classes('w-full gap-2 flex-wrap mt-2'):
+                    for secret_item in names:
+                        def drop(n=secret_item):
+                            core.secret_delete(n)
+                            ui.navigate.reload()
+                        with ui.row().classes('items-center gap-1 border rounded px-2 py-1'):
+                            ui.icon('key', color='grey').classes('text-sm')
+                            ui.label(secret_item).classes('font-mono text-sm')
+                            ui.button(icon='close', on_click=lambda _, n=secret_item, r=drop: confirm(f'¿Eliminar el secreto «{n}»?', r)).props('flat round dense size=sm color=negative')
+
+
+@ui.page('/environments/edit')
+def environment_edit(id: str = ''):
+    with frame('Ambiente' if id else 'Nuevo ambiente', '/environments'):
+        if not require_project():
+            return
+        pid = core.get_active_project_id()
+        current = core.get('environments', id) if id else None
+        if id and current is None:
+            ui.label('Este ambiente ya no existe.').classes('text-amber-700')
+            return
         if current and current.get('project_id') != pid:
             ui.notify('Ese ambiente no pertenece al proyecto activo; no se puede editar desde aquí.', type='warning')
             current = None
+        ui.link('← Volver a Ambientes', '/environments').classes('text-sm')
+
         variables = dict((current or {}).get('variables', {}))
         auth0 = (current or {}).get('auth', {'type': 'none'})
 
         with ui.card().classes('w-full'):
-            ui.label('Editar ambiente' if current else 'Nuevo ambiente').classes('text-lg font-semibold')
+            ui.label(current['name'] if current else 'Nuevo ambiente').classes('text-xl font-semibold')
+            ui.separator().classes('my-2')
             with ui.row().classes('w-full gap-3'):
                 name = ui.input('Nombre', value=(current or {}).get('name', 'QA')).props('outlined dense').classes('w-60').mark('env-name')
                 base = ui.input('URL base (API)', value=(current or {}).get('base_url', ''), placeholder='https://qa.ejemplo.com').props('outlined dense').classes('grow').mark('env-base-url')
@@ -29,7 +133,8 @@ def environments(edit: str = ''):
                     secret = ui.select(names, value=auth0.get('secret') if auth0.get('secret') in names else None, label='Secreto guardado en el sistema', clearable=True).props('outlined dense').classes('w-72')
                     envvar = ui.input('…o variable de entorno', value=auth0.get('env_var', ''), placeholder='QA_TOKEN').props('outlined dense').classes('w-60')
                     header_name = ui.input('Header (solo API Key)', value=auth0.get('header', 'X-API-Key')).props('outlined dense').classes('w-48')
-                ui.label('El valor nunca se guarda en la base ni en exportaciones. Créalo en «Secretos» más abajo.').classes('text-gray-500 text-sm')
+                ui.label('El valor nunca se guarda en la base ni en exportaciones. Créalo en «Secretos» desde la lista de ambientes.').classes('text-gray-500 text-sm')
+            ui.separator().classes('my-2')
             ui.label('Variables ({{nombre}} en rutas, headers, body y pasos UI)').classes('font-medium')
             kv_editor(variables, 'Variable', 'Valor')
 
@@ -53,58 +158,7 @@ def environments(edit: str = ''):
                 core.save('environments', item)
                 ui.notify('Ambiente guardado', type='positive')
                 ui.navigate.to('/environments')
+            ui.separator().classes('my-2')
             with ui.row().classes('gap-2'):
-                ui.button('Guardar ambiente', icon='save', on_click=guard(save)).props('color=primary')
-                if current:
-                    ui.button('Cancelar edición', on_click=lambda: ui.navigate.to('/environments')).props('flat')
-
-        items = core.list_project_items('environments', pid)
-        if not items:
-            empty_state('No hay ambientes en este proyecto.')
-        for env in items:
-            with ui.card().classes('w-full'):
-                with ui.row().classes('items-center gap-3 w-full'):
-                    ui.label(env['name']).classes('font-semibold')
-                    ui.label(env['base_url']).classes('font-mono text-sm text-gray-600')
-                    ui.badge({'none': 'Sin autenticación', 'bearer': 'Bearer', 'api_key': 'API Key'}.get(env['auth']['type'], env['auth']['type']), color='grey')
-                    ui.space()
-                    ui.button(icon='edit', on_click=lambda _, i=env['id']: ui.navigate.to(f'/environments?edit={i}')).props('flat round dense').tooltip('Editar').mark(f'env-edit-{env["id"]}')
-
-                    def remove(e=env):
-                        affected, step_count = set(), 0
-                        for s in core.list_items('suites'):
-                            if s.get('environment_id') == e['id']:
-                                affected.add(s['id'])
-                            for step in core.suite_steps(s):
-                                if step.get('environment_id') == e['id']:
-                                    affected.add(s['id'])
-                                    step_count += 1
-                        if affected:
-                            detail = f' ({step_count} paso(s) con ambiente propio)' if step_count else ''
-                            raise ValueError(f'No se puede eliminar: lo usan {len(affected)} suite(s){detail}')
-                        core.delete('environments', e['id'])
-                        ui.navigate.reload()
-                    ui.button(icon='delete', on_click=lambda _, e=env, r=remove: confirm(f'¿Eliminar el ambiente «{e["name"]}»?', r)).props('flat round dense color=negative').tooltip('Eliminar').mark(f'env-delete-{env["id"]}')
-
-        with ui.card().classes('w-full'):
-            ui.label('Secretos (almacén seguro del sistema operativo)').classes('text-lg font-semibold')
-            ui.label('Se guardan en Windows Credential Manager / Keychain / Secret Service. Úsalos como {{secret:nombre}} o en la autenticación del ambiente.').classes('text-gray-500 text-sm')
-            with ui.row().classes('items-end gap-3'):
-                secret_name = ui.input('Nombre').props('outlined dense').classes('w-52')
-                secret_value = ui.input('Valor', password=True, password_toggle_button=True).props('outlined dense').classes('w-72')
-
-                def store():
-                    core.secret_set((secret_name.value or '').strip(), secret_value.value or '')
-                    ui.notify('Secreto guardado', type='positive')
-                    ui.navigate.reload()
-                ui.button('Guardar secreto', icon='lock', on_click=guard(store)).props('outline')
-            for secret_item in core.secret_names():
-                with ui.row().classes('items-center gap-2'):
-                    ui.icon('key', color='grey')
-                    ui.label(secret_item).classes('font-mono')
-                    ui.label('••••••••').classes('text-gray-400')
-
-                    def drop(n=secret_item):
-                        core.secret_delete(n)
-                        ui.navigate.reload()
-                    ui.button(icon='delete', on_click=lambda _, n=secret_item, r=drop: confirm(f'¿Eliminar el secreto «{n}»?', r)).props('flat round dense color=negative')
+                ui.button('Guardar ambiente', icon='save', on_click=guard(save)).props('color=primary').mark('env-save')
+                ui.button('Cancelar', on_click=lambda: ui.navigate.to('/environments')).props('flat')
