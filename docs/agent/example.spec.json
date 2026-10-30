@@ -1,0 +1,109 @@
+{
+  "format": "ltw.spec/1",
+  "name": "Pedidos: humo de integración",
+  "project": "Integración",
+  "default_environment": "identidad",
+  "environments": [
+    {
+      "name": "identidad",
+      "base_url": "http://127.0.0.1:8765"
+    },
+    {
+      "name": "pedidos",
+      "base_url": "http://127.0.0.1:8766",
+      "auth": {
+        "type": "bearer",
+        "secret": "PEDIDOS_TOKEN"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "name": "login",
+      "method": "POST",
+      "path": "/api/login",
+      "body": {
+        "user": "qa",
+        "password": "{{secret:QA_PASSWORD}}"
+      },
+      "assertions": [
+        {
+          "type": "status",
+          "expected": 200
+        },
+        {
+          "type": "json_exists",
+          "path": "$.token"
+        }
+      ]
+    },
+    {
+      "name": "crear pedido",
+      "method": "POST",
+      "path": "/api/items",
+      "environment": "pedidos",
+      "assertions": [
+        {
+          "type": "status",
+          "expected": 201
+        },
+        {
+          "type": "json_equals",
+          "path": "$.name",
+          "expected": "qa"
+        }
+      ],
+      "tags": [
+        "smoke"
+      ],
+      "notes": "Debe exigir token y devolver el pedido creado",
+      "code_hints": {
+        "files": [
+          "src/orders/routes.py"
+        ],
+        "symbol": "create_item",
+        "repo": "orders-service",
+        "owner": "equipo-pedidos"
+      }
+    }
+  ],
+  "suites": [
+    {
+      "name": "flujo identidad → pedidos",
+      "environment": "identidad",
+      "on_failure": "continue",
+      "steps": [
+        {
+          "case": "login",
+          "alias": "login"
+        },
+        {
+          "case": "crear pedido",
+          "alias": "pedido",
+          "environment": "pedidos",
+          "enrich": [
+            {
+              "action": "set",
+              "target": "headers",
+              "path": "Authorization",
+              "source": {
+                "type": "template",
+                "value": "Bearer {{@login:$.token}}"
+              }
+            },
+            {
+              "action": "set",
+              "target": "body",
+              "path": "$.name",
+              "source": {
+                "type": "step",
+                "step": "login",
+                "path": "$.user.name"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

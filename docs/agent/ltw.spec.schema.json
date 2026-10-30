@@ -1,0 +1,372 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local-test-workspace/ltw.spec.1.schema.json",
+  "title": "ltw.spec/1",
+  "type": "object",
+  "required": [
+    "format",
+    "cases"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "const": "ltw.spec/1"
+    },
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "project": {
+      "type": "string",
+      "description": "Project to upsert into (default \"Agente\")"
+    },
+    "default_environment": {
+      "type": "string"
+    },
+    "environments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "base_url"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "base_url": {
+            "type": "string",
+            "pattern": "^https?://"
+          },
+          "variables": {
+            "type": "object"
+          },
+          "auth": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "none",
+                  "bearer",
+                  "api_key"
+                ]
+              },
+              "secret": {
+                "type": "string",
+                "description": "NAME of a stored secret / environment variable, never its value"
+              },
+              "env_var": {
+                "type": "string"
+              },
+              "header": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "method",
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "method": {
+            "enum": [
+              "GET",
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE",
+              "HEAD",
+              "OPTIONS"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "query": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "body": {},
+          "variables": {
+            "type": "object"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 300
+          },
+          "assertions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "type"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "enum": [
+                    "body_equals",
+                    "contains",
+                    "empty",
+                    "header_contains",
+                    "header_equals",
+                    "header_exists",
+                    "json_contains",
+                    "json_equals",
+                    "json_exists",
+                    "json_length",
+                    "json_matches",
+                    "json_not_equals",
+                    "json_not_exists",
+                    "json_regex",
+                    "json_schema",
+                    "json_type",
+                    "non_empty",
+                    "not_contains",
+                    "numeric_greater",
+                    "numeric_greater_equal",
+                    "numeric_less",
+                    "numeric_less_equal",
+                    "regex",
+                    "response_time_max",
+                    "status",
+                    "status_in"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "expected": {},
+                "schema": {
+                  "type": "object"
+                },
+                "ignore": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "extract": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "source": {
+                  "enum": [
+                    "json",
+                    "header",
+                    "status",
+                    "regex"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notes": {
+            "type": "string"
+          },
+          "code_hints": {
+            "type": "object",
+            "description": "Where the code behind this case lives (files, symbol, repo, owner...). Echoed in failures.",
+            "properties": {
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "symbol": {
+                "type": "string"
+              },
+              "repo": {
+                "type": "string"
+              },
+              "owner": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "suites": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "steps"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "environment": {
+            "type": "string"
+          },
+          "on_failure": {
+            "enum": [
+              "continue",
+              "stop"
+            ]
+          },
+          "retries": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5
+          },
+          "retry_delay_s": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 300
+          },
+          "variables": {
+            "type": "object"
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "case"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "case": {
+                  "type": "string"
+                },
+                "alias": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z_][\\w-]{0,40}$"
+                },
+                "environment": {
+                  "type": "string"
+                },
+                "enrich": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "action",
+                      "target"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "action": {
+                        "enum": [
+                          "merge",
+                          "remove",
+                          "set"
+                        ]
+                      },
+                      "target": {
+                        "enum": [
+                          "body",
+                          "headers",
+                          "path",
+                          "query"
+                        ]
+                      },
+                      "path": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "object",
+                        "required": [
+                          "type"
+                        ],
+                        "additionalProperties": false,
+                        "properties": {
+                          "type": {
+                            "enum": [
+                              "literal",
+                              "step",
+                              "template",
+                              "var"
+                            ]
+                          },
+                          "value": {},
+                          "step": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
