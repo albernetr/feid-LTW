@@ -121,8 +121,7 @@ async def test_modules_page_imports_from_a_swagger_ui_page_and_creates_the_envir
     assert [e['base_url'] for e in core.list_project_items('environments', project['id'])] == [docs + '/api/v3']
     module_id = core.list_project_items('modules', project['id'])[0]['id']
     await user.open(f'/modules/edit?id={module_id}')
-    await user.should_see('Servidor declarado: ' + docs + '/api/v3')
-    await user.should_see('ambiente «Tienda» ya registrado')  # no manual button left: already covered
+    await user.should_see(f'«Tienda» · {docs}/api/v3')  # already linked: shown directly, no manual button needed
 
 
 FASTAPI_DOCS = ('<html><head><link type="text/css" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"></head><body><div id="swagger-ui"></div>'

@@ -3,7 +3,6 @@
 import asyncio
 import json
 import pytest
-from nicegui import ui
 from app import core, explorer
 from sample_app.fixture_api import FixtureAPI, SPEC_V1, SPEC_V2
 
@@ -157,7 +156,7 @@ def test_stale_cases_finds_only_what_a_diff_actually_affects(world):
 async def test_modules_page_can_trigger_exploration_from_the_ui(user, world):
     project, module, env, _ = world
     core.set_active_project(project['id'])
-    await user.open('/modules')
+    await user.open(f'/modules/edit?id={module["id"]}')
     await user.should_see('Explorar automáticamente')
     user.find('Explorar automáticamente').click()
     await asyncio.sleep(8)  # discovery + run_plan make real HTTP calls in a worker thread
@@ -214,9 +213,7 @@ async def test_modules_page_header_field_authenticates_a_live_exploration(user, 
     core.secret_set('FIXTURE_TOKEN', 'secret-123')
     secure_module = core.import_openapi(json.dumps({**api.server.spec, 'paths': {**api.server.spec['paths'], **SECURE_OPERATION}}), project['id'])
     core.set_active_project(project['id'])
-    await user.open('/modules')
-    select = next(e for e in user.find('Módulo').elements if isinstance(e, ui.select))
-    select.set_value(secure_module['id'])
+    await user.open(f'/modules/edit?id={secure_module["id"]}')
     user.find('Valor').type('Bearer {{secret:FIXTURE_TOKEN}}')
     user.find('Explorar automáticamente').click()
     await asyncio.sleep(8)

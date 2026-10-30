@@ -431,6 +431,19 @@ async def test_modules_detail_page_shows_operations_and_creates_a_case(user: Use
     await eventually(lambda: user.client.page.path == '/cases/edit')
 
 
+async def test_modules_detail_page_shows_the_linked_environment_and_its_cases(user: User):
+    project = core.create_project('P')
+    env = core.save('environments', {'name': 'Local', 'project_id': project['id'], 'base_url': 'http://127.0.0.1:9999', 'auth': {'type': 'none'}, 'variables': {}})
+    raw = ('openapi: 3.0.3\ninfo: {title: X, version: "1"}\nservers: [{url: http://127.0.0.1:9999}]\n'
+           'paths: {"/x": {"get": {"responses": {"200": {"description": "ok"}}}}}\n')
+    module = core.import_openapi(raw, project['id'])
+    core.save('cases', {'name': 'Caso X', 'type': 'api', 'project_id': project['id'], 'method': 'GET', 'path': '/x', 'module_id': module['id'], 'assertions': []})
+    await user.open(f'/modules/edit?id={module["id"]}')
+    await user.should_see(f'«{env["name"]}»')  # already linked: no "Crear ambiente" button needed
+    await user.should_see('Casos de este módulo (1)')
+    await user.should_see('Caso X')
+
+
 async def test_modules_detail_page_delete_blocked_when_cases_use_it(user: User):
     seed()
     module = core.list_items('modules')[0]
@@ -463,7 +476,8 @@ async def test_modules_table_delete_removes_an_unused_module(user: User):
 async def test_modules_warns_about_empty_header_value(user: User):
     from nicegui import ui
     seed()
-    await user.open('/modules')
+    module = core.list_items('modules')[0]
+    await user.open(f'/modules/edit?id={module["id"]}')
     # "Cabecera (opcional)" defaults to "Authorization" with no value typed: a very easy slip.
     user.find('Explorar automáticamente').click()
     await user.should_see('el valor está vacío')
@@ -497,6 +511,7 @@ async def test_modules_warns_about_duplicate_import_by_source_url(user: User, tm
         user.find('Importar desde URL').click()
         # run.io_bound: a real thread + HTTP round trip, slow and jittery under a loaded test run — poll the actual state, not a fixed retry budget
         await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 2, seconds=40)
+        await user.open('/modules')  # a successful import now navigates to the module's own detail page
         user.find('URL del contrato, de su página de Swagger UI o un enlace de GitHub').type(spec_url)
         user.find('Importar desde URL').click()
         await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 3, seconds=40)

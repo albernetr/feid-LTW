@@ -36,7 +36,7 @@ def modules_list():
                 dup_note = f' Ya había {len(duplicates)} módulo(s) con este mismo origen en el proyecto: revisa si quieres eliminar el anterior.' if duplicates else ''
                 ui.notify(f'Importado «{module["name"]}»: {len(module["operations"])} operaciones. Origen: {module["source_url"]}.{_env_note(pid, module)}{dup_note}',
                           type='warning' if duplicates else 'positive', multi_line=True)
-                ui.navigate.reload()
+                ui.navigate.to(f'/modules/edit?id={module["id"]}')
             ui.button('Importar desde URL', icon='cloud_download', on_click=guard(from_url)).props('color=primary')
 
             async def upload(event):
@@ -48,7 +48,7 @@ def modules_list():
                     dup_note = f' Ya había {len(duplicates)} módulo(s) con el mismo nombre y versión: revisa si quieres eliminar el anterior.' if duplicates else ''
                     ui.notify(f'Importado «{module["name"]}»: {len(module["operations"])} operaciones.{_env_note(pid, module)}{dup_note}',
                               type='warning' if duplicates else 'positive', multi_line=True)
-                    ui.navigate.reload()
+                    ui.navigate.to(f'/modules/edit?id={module["id"]}')
                 except Exception as exc:
                     ui.notify(str(exc), type='negative', multi_line=True)
             ui.upload(label='O arrastra un archivo OpenAPI (.json/.yaml)', on_upload=upload, auto_upload=True,
@@ -59,77 +59,12 @@ def modules_list():
             empty_state('Este proyecto no tiene módulos. Importa un contrato o crea casos manualmente.')
             return
 
-        envs = core.list_project_items('environments', pid)
-        with ui.card().classes('w-full'):
-            ui.label('Exploración automática').classes('text-lg font-semibold')
-            ui.label('Lee el contrato, identifica qué operaciones son seguras de probar (GET), consigue identificadores reales de otros '
-                     'listados y arma las aserciones a partir de lo que el contrato declara. Solo lecturas: nada que escriba se ejecuta aquí, '
-                     'y el resultado no se guarda en el proyecto hasta que lo confirmes.').classes('text-xs text-gray-500')
-            if not envs:
-                ui.label('Registra un ambiente primero.').classes('text-xs text-amber-700')
-            else:
-                with ui.row().classes('items-end gap-2'):
-                    module_select = ui.select({m['id']: m['name'] for m in items}, value=items[0]['id'], label='Módulo').props('outlined dense').classes('w-64')
-                    env_select = ui.select({e['id']: e['name'] for e in envs}, value=envs[0]['id'], label='Ambiente').props('outlined dense').classes('w-64')
-                with ui.row().classes('items-end gap-2'):
-                    header_name = ui.input('Cabecera (opcional)', value='Authorization').props('outlined dense').classes('w-48')
-                    header_value = ui.input('Valor', placeholder='Bearer {{secret:NOMBRE}} o un valor literal').props('outlined dense').classes('grow')
-                ui.label('Si el servicio exige autenticación, pega aquí el token para esta exploración (se usa en las peticiones, nunca se guarda tal cual: usa '
-                         '{{secret:NOMBRE}} para no pegar el valor directamente). El ambiente también se usa si ya tiene su propia autenticación configurada.').classes('text-xs text-gray-500')
-                E = {'result': None, 'module': None}
-                result_box = ui.column().classes('w-full gap-2')
-
-                async def explore():
-                    module = core.get('modules', module_select.value)
-                    env = core.get('environments', env_select.value)
-                    header_key = (header_name.value or '').strip()
-                    if header_key and not (header_value.value or '').strip():
-                        ui.notify(f'Escribiste el nombre de la cabecera «{header_key}» pero el valor está vacío: no se enviará.', type='warning')
-                    extra_headers = {header_key: header_value.value} if header_key and (header_value.value or '').strip() else {}
-                    plan = await run.io_bound(explorer.discover, module, env, extra_headers)
-                    if not plan['ready']:
-                        ui.notify('Nada que ejecutar: ' + (f'{len(plan["blocked"])} operación(es) sin datos para resolver sus parámetros.' if plan['blocked'] else
-                                                            'el módulo no tiene lecturas (GET) sin autenticación.'), type='warning')
-                        return
-                    token = automation.new_cancel_token()
-                    progress = []
-                    with ui.dialog().props('persistent') as dialog, ui.card().classes('w-96'):
-                        ui.label(f'Explorando «{module["name"]}»').classes('text-lg font-semibold')
-                        bar = ui.linear_progress(value=0, show_value=False)
-                        status = ui.label(f'0 de {len(plan["ready"])} operación(es)').classes('text-gray-600 text-sm')
-
-                        def cancel():
-                            token.set()
-                            status.set_text('Cancelando tras la petición en curso…')
-                        ui.button('Cancelar', icon='stop', on_click=cancel).props('outline color=negative')
-                    dialog.open()
-
-                    def tick():
-                        status.set_text(f'{len(progress)} de {len(plan["ready"])} operación(es)')
-                        bar.set_value(len(progress) / len(plan['ready']))
-                    timer = ui.timer(0.3, tick)
-                    try:
-                        E['result'] = await run.io_bound(explorer.run_plan, plan, module, pid, env, extra_headers=extra_headers, on_progress=progress.append, cancel=token)
-                    finally:
-                        timer.cancel()
-                        dialog.close()
-                    E['module'] = module
-                    result_box.clear()
-                    with result_box:
-                        ui.code(explorer.narrate(module, E['result'], core.get('projects', pid)['name']), language='markdown').classes('w-full').style('max-height:50vh;overflow:auto')
-                        if E['result']['results']:
-                            ui.button('Guardar como casos', icon='save', on_click=guard(save_results)).props('dense size=sm no-caps color=primary')
-
-                def save_results():
-                    saved = explorer.save_generated_cases(E['result'], pid)
-                    ui.notify(f'{len(saved)} caso(s) guardados/actualizados en «Casos API» (etiqueta «{explorer.GENERATED_TAG}»)', type='positive')
-                ui.button('Explorar automáticamente', icon='travel_explore', on_click=guard(explore)).props('dense no-caps color=primary')
-
+        all_cases = core.list_project_items('cases', pid)
         columns = [
             {'name': 'name', 'label': 'Nombre', 'field': 'name', 'align': 'left', 'sortable': True},
             {'name': 'operations', 'label': 'Operaciones', 'field': 'operations', 'align': 'center', 'sortable': True},
-            {'name': 'origin', 'label': 'Origen', 'field': 'origin', 'align': 'left'},
             {'name': 'environment', 'label': 'Ambiente', 'field': 'environment', 'align': 'left'},
+            {'name': 'cases', 'label': 'Casos generados', 'field': 'cases', 'align': 'center', 'sortable': True},
             {'name': 'actions', 'label': '', 'field': 'id', 'align': 'right'},
         ]
 
@@ -139,18 +74,22 @@ def modules_list():
                 base = core.module_base_url(m)
                 env = _matching_environment(pid, base)
                 result.append({'id': m['id'], 'name': m['name'] + (f' · v{m["version"]}' if m.get('version') else ''),
-                               'operations': len(m['operations']), 'origin': m.get('source_url') or 'Subido',
-                               'environment': env['name'] if env else ('sin registrar' if base else '—'),
-                               'has_env': bool(env)})
+                               'operations': len(m['operations']), 'environment': env['name'] if env else ('sin registrar' if base else '—'),
+                               'has_env': bool(env), 'cases': sum(1 for c in all_cases if c.get('module_id') == m['id'])})
             return result
 
         table = ui.table(columns=columns, rows=rows(), row_key='id', pagination=15).classes('w-full').mark('modules-table')
         table.props('flat bordered')
-        table.add_slot('body-cell-origin', '''<q-td :props="props"><span class="font-mono text-xs text-gray-600">{{ props.value }}</span></q-td>''')
         table.add_slot('body-cell-environment', r'''
             <q-td :props="props">
                 <q-badge v-if="props.row.has_env" color="positive">{{ props.value }}</q-badge>
                 <span v-else class="text-grey-5 text-caption">{{ props.value }}</span>
+            </q-td>
+        ''')
+        table.add_slot('body-cell-cases', r'''
+            <q-td :props="props">
+                <q-chip v-if="props.value" dense size="sm" color="blue-1" text-color="dark">{{ props.value }}</q-chip>
+                <span v-else class="text-grey-5">—</span>
             </q-td>
         ''')
         table.add_slot('body-cell-actions', r'''
@@ -179,7 +118,7 @@ def modules_list():
                 ui.navigate.reload()
             confirm(f'¿Eliminar el módulo «{row["name"]}»?', attempt)
         table.on('deleteModule', on_delete)
-        ui.label('Haz clic en una fila para ver sus operaciones; elimina directamente con el icono.').classes('text-sm text-gray-500')
+        ui.label('Haz clic en una fila para ver su ambiente, explorarlo y sus casos; elimina directamente con el icono.').classes('text-sm text-gray-500')
 
 
 @ui.page('/modules/edit')
@@ -200,30 +139,9 @@ def module_detail(id: str = ''):
                 ui.label(module['name']).classes('text-xl font-semibold')
                 if module.get('version'):
                     ui.badge(f'v{module["version"]}', color='grey-6')
-            ui.label(f'{len(module["operations"])} operaciones').classes('text-sm text-gray-500')
+                ui.label(f'{len(module["operations"])} operaciones').classes('text-sm text-gray-500')
             if module.get('source_url'):
                 ui.label(f'Origen: {module["source_url"]}').classes('text-xs text-gray-500 font-mono')
-
-            ui.separator().classes('my-2')
-            base = core.module_base_url(module)
-            if base:
-                existing_env = _matching_environment(pid, base)
-
-                def make_env(m=module):
-                    env, created = core.ensure_environment_for_module(pid, m)
-                    ui.notify(f'Ambiente «{env["name"]}» {"creado" if created else "ya existía"} con {env["base_url"]}', type='positive')
-                    if created:
-                        ui.navigate.reload()
-                with ui.row().classes('items-center gap-2'):
-                    ui.label(f'Servidor declarado: {base}').classes('text-sm text-gray-700')
-                    if existing_env:
-                        ui.label(f'· ambiente «{existing_env["name"]}» ya registrado').classes('text-sm text-positive')
-                    else:
-                        ui.button('Crear ambiente con esta URL', icon='dns', on_click=guard(make_env)).props('flat dense size=sm no-caps color=primary')
-            elif module.get('servers') and any('{' in (server.get('url') or '') for server in module['servers']):
-                ui.label('El contrato declara variables de servidor sin resolver (p. ej. «{entorno}»); crea el ambiente a mano.').classes('text-sm text-amber-700')
-
-            ui.separator().classes('my-2')
 
             def remove(m=module):
                 used = [c for c in core.list_items('cases') if c.get('module_id') == m['id']]
@@ -232,17 +150,128 @@ def module_detail(id: str = ''):
                 core.delete('modules', m['id'])
                 ui.notify('Módulo eliminado', type='positive')
                 ui.navigate.to('/modules')
-            ui.button('Eliminar módulo', icon='delete', on_click=lambda: confirm(f'¿Eliminar el módulo «{module["name"]}»?', remove)).props('outline color=negative').mark('module-delete')
+            ui.button('Eliminar módulo', icon='delete', on_click=lambda: confirm(f'¿Eliminar el módulo «{module["name"]}»?', remove)) \
+                .props('flat dense color=negative').mark('module-delete')
 
-        ui.label('Operaciones').classes('text-lg font-semibold mt-2')
+        # ------------------------------------------------------------ environment
+        base = core.module_base_url(module)
+        env = _matching_environment(pid, base)
+        with ui.card().classes('w-full'):
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('dns', color='primary')
+                ui.label('Ambiente').classes('font-semibold')
+            if env:
+                with ui.row().classes('items-center gap-2'):
+                    ui.icon('check_circle', color='positive').classes('text-sm')
+                    ui.label(f'«{env["name"]}» · {env["base_url"]}').classes('text-sm text-gray-700')
+                    ui.button('Abrir ambiente', icon='open_in_new', on_click=lambda: ui.navigate.to(f'/environments/edit?id={env["id"]}')) \
+                        .props('flat dense size=sm no-caps')
+            elif base:
+                ui.label(f'Servidor declarado: {base}').classes('text-sm text-gray-600')
+
+                def make_env(m=module):
+                    new_env, created = core.ensure_environment_for_module(pid, m)
+                    ui.notify(f'Ambiente «{new_env["name"]}» {"creado" if created else "ya existía"} con {new_env["base_url"]}', type='positive')
+                    ui.navigate.reload()
+                ui.button('Crear ambiente con esta URL', icon='add', on_click=guard(make_env)).props('dense no-caps color=primary')
+            else:
+                ui.label('El contrato no declara un servidor absoluto; crea o elige el ambiente a mano en Ambientes.').classes('text-sm text-amber-700')
+                if module.get('servers') and any('{' in (server.get('url') or '') for server in module['servers']):
+                    ui.label('(declara variables de servidor sin resolver, p. ej. «{entorno}»)').classes('text-xs text-amber-700')
+
+        # ------------------------------------------------------------ exploration
+        with ui.card().classes('w-full'):
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('travel_explore', color='primary')
+                ui.label('Exploración automática').classes('font-semibold')
+            ui.label('Lee el contrato, identifica qué operaciones son seguras de probar (GET), consigue identificadores reales de otros '
+                     'listados y arma las aserciones a partir de lo que el contrato declara. Solo lecturas: nada que escriba se ejecuta aquí, '
+                     'y el resultado no se guarda hasta que lo confirmes.').classes('text-xs text-gray-500')
+            envs = core.list_project_items('environments', pid)
+            if not envs:
+                ui.label('Registra un ambiente primero.').classes('text-xs text-amber-700')
+            else:
+                env_select = ui.select({e['id']: e['name'] for e in envs}, value=(env or envs[0])['id'], label='Ambiente').props('outlined dense').classes('w-64')
+                with ui.row().classes('items-end gap-2'):
+                    header_name = ui.input('Cabecera (opcional)', value='Authorization').props('outlined dense').classes('w-48')
+                    header_value = ui.input('Valor', placeholder='Bearer {{secret:NOMBRE}} o un valor literal').props('outlined dense').classes('grow')
+                ui.label('Si el servicio exige autenticación, pega aquí el token para esta exploración (nunca se guarda tal cual: usa '
+                         '{{secret:NOMBRE}}). El ambiente también se usa si ya tiene su propia autenticación configurada.').classes('text-xs text-gray-500')
+                E = {'result': None}
+                result_box = ui.column().classes('w-full gap-2')
+
+                async def explore():
+                    explore_env = core.get('environments', env_select.value)
+                    header_key = (header_name.value or '').strip()
+                    if header_key and not (header_value.value or '').strip():
+                        ui.notify(f'Escribiste el nombre de la cabecera «{header_key}» pero el valor está vacío: no se enviará.', type='warning')
+                    extra_headers = {header_key: header_value.value} if header_key and (header_value.value or '').strip() else {}
+                    plan = await run.io_bound(explorer.discover, module, explore_env, extra_headers)
+                    if not plan['ready']:
+                        ui.notify('Nada que ejecutar: ' + (f'{len(plan["blocked"])} operación(es) sin datos para resolver sus parámetros.' if plan['blocked'] else
+                                                            'el módulo no tiene lecturas (GET) sin autenticación.'), type='warning')
+                        return
+                    token = automation.new_cancel_token()
+                    progress = []
+                    with ui.dialog().props('persistent') as dialog, ui.card().classes('w-96'):
+                        ui.label(f'Explorando «{module["name"]}»').classes('text-lg font-semibold')
+                        bar = ui.linear_progress(value=0, show_value=False)
+                        status = ui.label(f'0 de {len(plan["ready"])} operación(es)').classes('text-gray-600 text-sm')
+
+                        def cancel():
+                            token.set()
+                            status.set_text('Cancelando tras la petición en curso…')
+                        ui.button('Cancelar', icon='stop', on_click=cancel).props('outline color=negative')
+                    dialog.open()
+
+                    def tick():
+                        status.set_text(f'{len(progress)} de {len(plan["ready"])} operación(es)')
+                        bar.set_value(len(progress) / len(plan['ready']))
+                    timer = ui.timer(0.3, tick)
+                    try:
+                        E['result'] = await run.io_bound(explorer.run_plan, plan, module, pid, explore_env, extra_headers=extra_headers, on_progress=progress.append, cancel=token)
+                    finally:
+                        timer.cancel()
+                        dialog.close()
+                    result_box.clear()
+                    with result_box:
+                        ui.code(explorer.narrate(module, E['result'], core.get('projects', pid)['name']), language='markdown').classes('w-full').style('max-height:50vh;overflow:auto')
+                        if E['result']['results']:
+                            ui.button('Guardar como casos', icon='save', on_click=guard(save_results)).props('dense size=sm no-caps color=primary')
+
+                def save_results():
+                    saved = explorer.save_generated_cases(E['result'], pid)
+                    ui.notify(f'{len(saved)} caso(s) guardados/actualizados en «Casos API» (etiqueta «{explorer.GENERATED_TAG}»)', type='positive')
+                    ui.navigate.reload()
+                ui.button('Explorar automáticamente', icon='travel_explore', on_click=guard(explore)).props('dense no-caps color=primary').mark('module-explore')
+
+        # ------------------------------------------------------------ cases generated from this module
+        module_cases = [c for c in core.list_project_items('cases', pid) if c.get('module_id') == module['id']]
+        with ui.card().classes('w-full'):
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('http', color='primary')
+                ui.label(f'Casos de este módulo ({len(module_cases)})').classes('font-semibold')
+            if not module_cases:
+                ui.label('Ninguno todavía. Usa la exploración automática o elige una operación abajo.').classes('text-sm text-gray-400')
+            else:
+                for c in module_cases[:8]:
+                    with ui.row().classes('items-center gap-2 w-full cursor-pointer hover:bg-gray-50').on('click', lambda _, cid=c['id']: ui.navigate.to(f'/cases/edit?id={cid}')):
+                        ui.badge(c.get('method', ''), color='primary').classes('w-16 justify-center')
+                        ui.label(c.get('path', '')).classes('font-mono text-sm')
+                        ui.label(c['name']).classes('text-sm text-gray-600 grow truncate')
+                if len(module_cases) > 8:
+                    ui.label(f'y {len(module_cases) - 8} más… revísalos todos en Casos API.').classes('text-xs text-gray-400')
+
+        # ------------------------------------------------------------ operations (manual case creation)
+        ui.label('Elegir una operación manualmente').classes('text-lg font-semibold mt-2')
         columns = [
             {'name': 'method', 'label': 'Método', 'field': 'method', 'align': 'left'},
             {'name': 'path', 'label': 'Ruta', 'field': 'path', 'align': 'left'},
             {'name': 'summary', 'label': 'Resumen', 'field': 'summary', 'align': 'left'},
             {'name': 'actions', 'label': '', 'field': 'index', 'align': 'right'},
         ]
-        rows = [{'index': i, 'method': op['method'], 'path': op['path'], 'summary': op.get('summary', '')} for i, op in enumerate(module['operations'])]
-        op_table = ui.table(columns=columns, rows=rows, row_key='index', pagination=20).classes('w-full').mark('module-operations-table')
+        op_rows = [{'index': i, 'method': op['method'], 'path': op['path'], 'summary': op.get('summary', '')} for i, op in enumerate(module['operations'])]
+        op_table = ui.table(columns=columns, rows=op_rows, row_key='index', pagination=20).classes('w-full').mark('module-operations-table')
         op_table.props('flat bordered')
         op_table.add_slot('body-cell-method', '''<q-td :props="props"><q-badge color="primary">{{ props.value }}</q-badge></q-td>''')
         op_table.add_slot('body-cell-path', '''<q-td :props="props"><span class="font-mono text-sm">{{ props.value }}</span></q-td>''')
