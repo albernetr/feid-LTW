@@ -21,6 +21,11 @@ jobs:
           pip install -r requirements-dev.txt
           python -m playwright install chromium
 
+      - name: "Generar el manual (artefacto de build, no versionado)"
+        run: python scripts/build_manual.py
+        env:
+          PYTHONIOENCODING: utf-8
+
       - name: Ejecutar la batería de pruebas
         run: python -m pytest -q
         env:
