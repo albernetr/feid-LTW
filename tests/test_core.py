@@ -132,3 +132,25 @@ def test_export_import_keeps_projects(tmp_path):
     assert len(new_ids)==1
     copied=[m for m in core.list_items('modules') if m['project_id'] in new_ids]
     assert len(copied)==1
+
+
+def test_reset_workspace_wipes_everything():
+    a=core.create_project('A')
+    core.import_openapi(SPEC,a['id'])
+    shot=core.ARTIFACTS/'evidence.txt'
+    shot.write_text('x')
+    core.reset_workspace()
+    assert core.list_items('projects')==[]
+    assert core.list_items('modules')==[]
+    assert core.get_active_project_id() is None
+    assert not shot.exists()
+    assert core.DB.exists()  # the schema is recreated, usable right away
+
+
+def test_reset_workspace_can_keep_evidence():
+    core.create_project('A')
+    shot=core.ARTIFACTS/'evidence.txt'
+    shot.write_text('x')
+    core.reset_workspace(remove_evidence=False)
+    assert core.list_items('projects')==[]
+    assert shot.exists()

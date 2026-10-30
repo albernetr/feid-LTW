@@ -99,3 +99,33 @@ def portable():
                 logs.diagnostic_package(target)
                 ui.download(target)
             ui.button('Descargar diagnóstico', icon='bug_report', on_click=guard(diagnostics)).props('outline')
+
+        with ui.card().classes('w-full border-2 border-red-300'):
+            ui.label('Zona de peligro').classes('text-lg font-semibold text-red-700')
+            ui.label('Borra permanentemente TODO el workspace: proyectos, módulos, ambientes, casos, suites, '
+                      'programaciones e historial. No se puede deshacer; exporta antes si quieres conservar algo. '
+                      'Los secretos guardados en el Administrador de credenciales no se tocan.').classes('text-sm text-gray-600')
+            keep_evidence = ui.checkbox('Conservar evidencias (capturas y trazas)', value=False)
+
+            def do_reset():
+                core.reset_workspace(remove_evidence=not keep_evidence.value)
+                ui.notify('Workspace reiniciado: empiezas de cero.', type='positive')
+                ui.navigate.to('/')
+
+            def open_reset_dialog():
+                with ui.dialog() as dialog, ui.card():
+                    ui.label('Esto borra TODO el workspace y no se puede deshacer.').classes('font-semibold text-red-700')
+                    ui.label('Escribe REINICIAR para confirmar.').classes('text-sm text-gray-600')
+                    phrase = ui.input(label='Confirmación').props('outlined dense')
+                    with ui.row().classes('justify-end w-full gap-2'):
+                        ui.button('Cancelar', on_click=dialog.close).props('flat')
+
+                        async def accept():
+                            if phrase.value != 'REINICIAR':
+                                ui.notify('Escribe exactamente REINICIAR para confirmar.', type='warning')
+                                return
+                            dialog.close()
+                            await guard(do_reset)()
+                        ui.button('Borrar todo y reiniciar', on_click=accept, color='negative')
+                dialog.open()
+            ui.button('Reiniciar workspace (borra todo)', icon='delete_forever', on_click=open_reset_dialog).props('outline color=negative')

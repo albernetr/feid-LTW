@@ -89,6 +89,24 @@ async def test_workspace_import_preview_then_confirm(user: User, tmp_path):
     await user.should_see('ZIP válido')
 
 
+async def test_reset_workspace_requires_the_exact_phrase(user: User):
+    seed()
+    await user.open('/portable')
+    user.find('Reiniciar workspace (borra todo)').click()
+    await user.should_see('Escribe REINICIAR para confirmar.')
+    user.find('Confirmación').type('no')
+    user.find('Borrar todo y reiniciar').click()
+    await user.should_see('Escribe exactamente REINICIAR')
+    assert core.list_items('projects') != []  # the wrong phrase changed nothing
+
+    user.find('Confirmación').clear()
+    user.find('Confirmación').type('REINICIAR')
+    user.find('Borrar todo y reiniciar').click()
+    await user.should_see('Workspace reiniciado')
+    assert core.list_items('projects') == []
+    assert core.list_items('cases') == []
+
+
 async def test_validation_messages(user: User):
     seed()
     await user.open('/cases/edit')

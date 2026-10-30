@@ -27,6 +27,11 @@
 - Lo «obligatorio» y los cambios se infieren de lo observado: un campo que aún no apareció no se conoce, y un cambio de comportamiento que no altera la forma del JSON no se detecta (para eso están los casos de regresión).
 - Las interfaces se identifican por el nombre del módulo: tap e historial solo se unifican si usan el mismo nombre.
 
+## Reiniciar workspace
+- Borra la base y, por defecto, las evidencias; **no se puede deshacer** y no hay papelera. Exporta antes (`/portable`) si quieres conservar algo.
+- No toca los secretos del Administrador de credenciales: son por nombre, no por workspace, y podrían usarse en otro ambiente.
+- Por línea de comandos (`python run.py --reset-workspace --yes`) actúa sobre el workspace que `TEST_WORKSPACE_HOME` (o el valor por defecto) resuelva en ese momento; cierra el scheduler y la interfaz antes, o puede fallar por archivo en uso.
+
 ## Base de datos compartida
 - SQLite sobre un recurso de red depende de que el sistema de archivos respete los bloqueos; algunos NAS no lo hacen bien. Para uso concurrente intenso se necesitaría un servidor de base de datos (no incluido).
 - La detección de conflictos cubre la edición de casos, casos UI y suites; el resto de pantallas escribe «el último gana».

@@ -39,6 +39,8 @@
 - Aplicación de ejemplo `sample_app`, pruebas E2E, pruebas de páginas, scripts de Windows y empaquetado.
 - Documentación: ARCHITECTURE, USER_GUIDE, DEVELOPER_GUIDE, TEST_REPORT, KNOWN_LIMITATIONS.
 
+- **Reiniciar workspace** (Importar/Exportar → Zona de peligro, o `python run.py --reset-workspace --yes`): borra la base SQLite y, por defecto, las evidencias, para empezar de cero. Irreversible; en la interfaz exige escribir «REINICIAR» para confirmar y en la CLI el flag `--yes`. Los secretos del Administrador de credenciales no se tocan. `core.reset_workspace()`.
+
 ### Cambiado
 - La base SQLite, evidencias y logs viven en `data/` **dentro del paquete** (modo portable); migración única y no destructiva desde `~/.local_test_workspace`.
 - El ejecutor UI trata `get_by_text/label/placeholder` como Codegen (coincidencia parcial) salvo `exact=True`.

@@ -116,6 +116,23 @@ def initialize():
             con.execute(f'CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
 
 
+def reset_workspace(remove_evidence=True):
+    """Wipes the current workspace (database and, by default, evidence/): irreversible, meant for
+    "start from zero". Secrets in the OS credential manager are untouched; they are not tied to this database."""
+    for suffix in ('', '-wal', '-shm', '-journal'):
+        path = Path(str(DB) + suffix)
+        if path.exists():
+            try:
+                path.unlink()
+            except OSError as exc:
+                raise ValueError(
+                    f'No se pudo borrar «{path.name}»: está en uso. Cierra el scheduler (scheduler.bat) y '
+                    'cualquier otra ventana o proceso de la aplicación, y vuelve a intentar.') from exc
+    if remove_evidence and ARTIFACTS.exists():
+        shutil.rmtree(ARTIFACTS, ignore_errors=True)
+    initialize()
+
+
 def list_items(table):
     initialize()
     with _open() as con:
