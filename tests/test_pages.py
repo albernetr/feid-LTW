@@ -4,7 +4,7 @@ import pytest
 from nicegui.testing import User
 from app import core
 
-ROUTES = ['/', '/resumen', '/projects', '/workspace', '/lab', '/observer', '/observer/interface', '/modules', '/environments', '/cases', '/cases/edit', '/ui-cases',
+ROUTES = ['/', '/resumen', '/projects', '/projects/edit', '/workspace', '/lab', '/observer', '/observer/interface', '/modules', '/environments', '/cases', '/cases/edit', '/ui-cases',
           '/suites', '/schedules', '/runs', '/portable']
 
 
@@ -15,9 +15,9 @@ async def test_every_page_renders_without_a_project(user: User):
 
 
 async def test_projects_flow_and_filtering(user: User):
-    await user.open('/projects')
-    user.find('Nombre').type('Proyecto QA')
-    user.find('Crear proyecto').click()
+    await user.open('/projects/edit')
+    user.find('project-name').type('Proyecto QA')
+    user.find('project-save').click()
     await user.should_see('Proyecto creado y seleccionado')
     assert [p['name'] for p in core.list_items('projects')] == ['Proyecto QA']
     for route in ROUTES:
@@ -107,28 +107,62 @@ async def test_reset_workspace_requires_the_exact_phrase(user: User):
     assert core.list_items('cases') == []
 
 
-async def test_projects_page_hides_edit_fields_until_toggled(user: User):
+async def test_projects_table_row_click_opens_the_detail_page(user: User):
+    from nicegui import ui
     seed()
     pid = core.list_items('projects')[0]['id']
     await user.open('/projects')
-    await user.should_not_see(marker=f'project-save-{pid}')
-    user.find(f'project-edit-{pid}').click()
-    await user.should_see(marker=f'project-save-{pid}')
+    user.find(kind=ui.table).trigger('rowClick', [None, {'id': pid}, 0])
+    await user.should_see(marker='project-save')
+    assert user.find('project-name').elements.pop().value == 'Demo Sample App'
 
 
 async def test_projects_page_marks_duplicate_names_with_a_short_id(user: User):
+    from nicegui import ui
     core.save('projects', {'name': 'p', 'description': '', 'version': 1})  # bypasses create_project's own dedup check
     second = core.save('projects', {'name': 'p', 'description': '', 'version': 1})
     await user.open('/projects')
-    await user.should_see(f'#{second["id"][:8]}')
+    table = user.find(kind=ui.table).elements.pop()  # ui.table keeps cell text in `rows` data, not as discoverable element content
+    assert any(f'#{second["id"][:8]}' in row['name'] for row in table.rows)
 
 
-async def test_projects_page_search_filters_the_list(user: User):
-    created = [core.create_project(f'Proyecto {i}') for i in range(6)]
+async def test_projects_page_search_filters_the_table(user: User):
+    from nicegui import ui
+    for i in range(6):
+        core.create_project(f'Proyecto {i}')
     await user.open('/projects')
+    table = user.find(kind=ui.table).elements.pop()
     user.find('project-search').type('Proyecto 3')
-    await user.should_see('Proyecto 3')
-    await user.should_not_see(marker=f'project-edit-{created[0]["id"]}')  # filtered out, not just hidden elsewhere (e.g. the header's project selector)
+    await eventually(lambda: [row['name'] for row in table.rows] == ['Proyecto 3'])
+
+
+async def test_projects_detail_page_save_select_and_delete(user: User):
+    core.create_project('Original')
+    other = core.create_project('Otro activo')
+    core.set_active_project(other['id'])
+    original_id = [p for p in core.list_items('projects') if p['name'] == 'Original'][0]['id']
+
+    await user.open(f'/projects/edit?id={original_id}')
+    user.find('project-name').clear()
+    user.find('project-name').type('Renombrado')
+    user.find('project-save').click()
+    await user.should_see('Proyecto actualizado')
+    assert core.get('projects', original_id)['name'] == 'Renombrado'
+
+    user.find('project-select').click()
+    await user.should_see('Activo')
+    assert core.get_active_project_id() == original_id
+
+    user.find('project-delete').click()
+    await user.should_see('¿Eliminar el proyecto')
+    user.find('confirm-dialog-accept').click()
+    await user.should_see('Proyecto eliminado')
+    assert core.get('projects', original_id) is None
+
+
+async def test_projects_edit_page_shows_a_clear_message_for_a_missing_project(user: User):
+    await user.open('/projects/edit?id=nope')
+    await user.should_see('Este proyecto ya no existe.')
 
 
 async def test_validation_messages(user: User):
@@ -142,8 +176,8 @@ async def test_validation_messages(user: User):
     await user.should_see('URL base inválida')
     await user.open('/ui-cases?id=nope')
     await user.should_see('El caso no existe')
-    await user.open('/projects')
-    user.find('Crear proyecto').click()
+    await user.open('/projects/edit')
+    user.find('project-save').click()
     await user.should_see('El nombre del proyecto es obligatorio')
 
 
