@@ -101,7 +101,7 @@ def case_edit(id: str = '', module: str = '', op: int = -1):
                 path = ui.input('Ruta (admite {{variables}})', value=base.get('path', '/')).props('outlined dense').classes('grow')
                 timeout = ui.number('Timeout (s)', value=base.get('timeout', 20), min=1, max=300).props('outlined dense').classes('w-32')
             with ui.row().classes('w-full items-center gap-3'):
-                module_select = ui.select({m['id']: m['name'] for m in modules}, value=module_id, label='Módulo (opcional)', clearable=True).props('outlined dense').classes('w-72')
+                module_select = ui.select({m['id']: m['name'] for m in modules}, value=module_id, label='Componente (opcional)', clearable=True).props('outlined dense').classes('w-72')
                 operation_select = ui.select({}, label='Operación del contrato').props('outlined dense clearable').classes('grow')
 
                 def load_operations():
@@ -182,7 +182,7 @@ def case_edit(id: str = '', module: str = '', op: int = -1):
                     def add_contract():
                         selected = core.get('modules', module_select.value) if module_select.value else None
                         if not selected or operation_select.value in (None, ''):
-                            raise ValueError('Elige un módulo y una operación del contrato')
+                            raise ValueError('Elige un componente y una operación del contrato')
                         operation = selected['operations'][int(operation_select.value)]
                         codes = [c for c in operation.get('responses', {}) if str(c).startswith('2')]
                         schema = core.operation_response_schema(operation, codes[0]) if codes else None

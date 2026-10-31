@@ -98,7 +98,7 @@ def summary_page():
                             ui.label(f'⚠ {c["module"]}: {c["pending"]} cambio(s) sin aviso' + (f' · {c["owner"]}' if c['owner'] else '')).classes('text-sm text-amber-800')
                         ui.link('Abrir el Observador', '/observer').classes('text-sm')
                     else:
-                        ui.label(f'Sin cambios pendientes en {o["modules"]} módulo(s) observados.').classes('text-sm text-gray-600')
+                        ui.label(f'Sin cambios pendientes en {o["modules"]} componente(s) observados.').classes('text-sm text-gray-600')
                     ui.label(f'Programaciones: {sc["enabled"]} activa(s) de {sc["total"]}; vencidas: {sc["overdue"]}; scheduler {"en marcha" if sc["scheduler_running"] else "detenido"}.').classes('text-sm text-gray-600')
             ui.label(f'Criterio del semáforo: verde con éxito ≥ {report["thresholds"]["green_at_least"]:.0f}% y sin fallos pendientes; rojo si un flujo falla o el éxito baja de '
                      f'{report["thresholds"]["red_below"]:.0f}%; ámbar en el resto.').classes('text-xs text-gray-500')

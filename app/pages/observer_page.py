@@ -1,4 +1,4 @@
-"""Observer: what really enters and leaves each module."""
+"""Observer: what really enters and leaves each component."""
 import json
 from nicegui import ui
 from .. import core, observer as obs
@@ -18,7 +18,7 @@ def observer_page():
         if not require_project():
             return
         pid = core.get_active_project_id()
-        ui.label('Qué entra y qué sale de cada módulo, aprendido del tráfico real (solo JSON). Pon un tap entre quien llama y el módulo, '
+        ui.label('Qué entra y qué sale de cada componente, aprendido del tráfico real (solo JSON). Pon un tap entre quien llama y el componente, '
                  'o aprende de las ejecuciones ya registradas. Fija una línea base y el observador avisa de cambios sin anuncio.').classes('text-gray-600')
 
         summaries = obs.module_summaries(pid)
@@ -45,16 +45,16 @@ def observer_page():
         # ------------------------------------------------------------ taps
         taps = core.list_project_items('taps', pid)
         with ui.expansion('Nuevo tap (proxy de observación)', icon='compare_arrows', value=not taps).classes('w-full border rounded'):
-            ui.label('Un tap escucha en tu equipo (127.0.0.1) y reenvía todo al módulo destino sin modificarlo, registrando el JSON. '
-                     'Apunta al tap el módulo que llama, en lugar de apuntar directo al destino.').classes('text-sm text-gray-600')
+            ui.label('Un tap escucha en tu equipo (127.0.0.1) y reenvía todo al componente destino sin modificarlo, registrando el JSON. '
+                     'Apunta al tap el componente que llama, en lugar de apuntar directo al destino.').classes('text-sm text-gray-600')
             with ui.row().classes('w-full gap-3 items-start'):
-                name = ui.input('Módulo (nombre)').props('outlined dense').classes('w-52')
+                name = ui.input('Componente (nombre)').props('outlined dense').classes('w-52')
                 company = ui.input('Empresa / equipo (opcional)').props('outlined dense').classes('w-52')
                 owner = ui.input('Responsable (opcional)').props('outlined dense').classes('w-52')
             with ui.row().classes('w-full gap-3 items-start no-wrap'):
                 port = ui.number('Puerto local', value=9101 + len(core.list_items('taps')), min=1024, max=65535, precision=0).props('outlined dense').classes('w-36')
                 scheme = ui.select(['https', 'http'], value='https', label='Protocolo').props('outlined dense').classes('w-28')
-                target = ui.input('Dirección del módulo destino', placeholder='modulo.ejemplo.com:8443/base').props('outlined dense').classes('grow')
+                target = ui.input('Dirección del componente destino', placeholder='componente.ejemplo.com:8443/base').props('outlined dense').classes('grow')
 
                 def follow(event):
                     value = (event.value or '').strip().lower()
@@ -63,7 +63,7 @@ def observer_page():
                             scheme.set_value(candidate)
                 target.on_value_change(follow)
             contracts = core.list_project_items('modules', pid)
-            contract = ui.select({'': 'Sin contrato', **{m['id']: m['name'] for m in contracts}}, value='', label='Contrato OpenAPI del módulo (opcional: normaliza las rutas)').props('outlined dense').classes('w-96')
+            contract = ui.select({'': 'Sin contrato', **{m['id']: m['name'] for m in contracts}}, value='', label='Contrato OpenAPI del componente (opcional: normaliza las rutas)').props('outlined dense').classes('w-96')
 
             def create_tap():
                 tap = {'name': (name.value or '').strip(), 'company': (company.value or '').strip(), 'owner': (owner.value or '').strip(), 'project_id': pid,
@@ -115,9 +115,9 @@ def observer_page():
             empty_state('Todavía no se ha observado nada. Crea y arranca un tap, o aprende del historial.')
             return
         with ui.row().classes('items-center gap-3'):
-            filter_module = ui.select({'': 'Todos los módulos', **{i['module']: i['module'] for i in interfaces}}, value='', label='Módulo').props('outlined dense').classes('w-60')
+            filter_module = ui.select({'': 'Todos los componentes', **{i['module']: i['module'] for i in interfaces}}, value='', label='Componente').props('outlined dense').classes('w-60')
             text = ui.input('Buscar ruta').props('outlined dense clearable').classes('w-60')
-        columns = [{'name': 'module', 'label': 'Módulo', 'field': 'module', 'align': 'left', 'sortable': True},
+        columns = [{'name': 'module', 'label': 'Componente', 'field': 'module', 'align': 'left', 'sortable': True},
                    {'name': 'method', 'label': 'Método', 'field': 'method', 'align': 'left'},
                    {'name': 'path', 'label': 'Ruta', 'field': 'path', 'align': 'left'},
                    {'name': 'count', 'label': 'Llamadas', 'field': 'count', 'sortable': True},
@@ -236,7 +236,7 @@ def interface_detail(id: str = ''):
             with ui.tab_panel(tab_contract):
                 modules = core.list_project_items('modules', pid)
                 if not modules:
-                    ui.label('Importa el contrato OpenAPI del módulo (menú Módulos) para compararlo con lo observado.').classes('text-gray-600')
+                    ui.label('Importa el contrato OpenAPI del componente (menú Componentes) para compararlo con lo observado.').classes('text-gray-600')
                 else:
                     pick = ui.select({m['id']: m['name'] for m in modules}, label='Contrato OpenAPI', value=modules[0]['id']).props('outlined dense').classes('w-80')
                     out = ui.column().classes('w-full gap-1')

@@ -374,7 +374,7 @@ def cli(argv):
         return 2
     module = next((m for m in core.list_project_items('modules', project['id']) if m['name'].lower() == module_name.lower()), None)
     if module is None:
-        print(f'No existe el módulo «{module_name}» en «{project_name}»', file=sys.stderr)
+        print(f'No existe el componente «{module_name}» en «{project_name}»', file=sys.stderr)
         return 2
     envs = core.list_project_items('environments', project['id'])
     env = next((e for e in envs if e['name'].lower() == (env_name or '').lower()), None) if env_name else (envs[0] if len(envs) == 1 else None)

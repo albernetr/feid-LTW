@@ -49,7 +49,7 @@ def suites_list():
         ui.button('Nueva suite / flujo', icon='add', on_click=lambda: ui.navigate.to('/suites/edit')).props('color=primary')
         items = core.list_project_items('suites', pid)
         if not items:
-            empty_state('No hay suites. Agrupa casos en el orden en que deben ejecutarse; cada paso puede apuntar a otro módulo.')
+            empty_state('No hay suites. Agrupa casos en el orden en que deben ejecutarse; cada paso puede apuntar a otro ambiente/componente.')
         for suite in items:
             route, enriched = flow_summary(suite)
             with ui.card().classes('w-full'):
@@ -81,7 +81,7 @@ def enrichment_dialog(steps, index, on_close):
     previous = [s['alias'] for s in steps[:index]]
     with ui.dialog() as dialog, ui.card().classes('w-[1000px] max-w-full'):
         ui.label(f'Enriquecer el request del paso «{step["alias"]}»').classes('text-lg font-semibold')
-        ui.label('Agrega o modifica campos de lo que se enviará en este paso, con datos de la respuesta de pasos anteriores (incluso de otros módulos). '
+        ui.label('Agrega o modifica campos de lo que se enviará en este paso, con datos de la respuesta de pasos anteriores (incluso de otros componentes). '
                  'No cambia el caso: solo aplica dentro de esta suite.').classes('text-sm text-gray-600')
 
         @ui.refreshable
@@ -218,7 +218,7 @@ def suite_edit(id: str = ''):
                             ui.button(icon='add', on_click=lambda _, f=add: f()).props('flat round dense color=primary').tooltip('Agregar al final')
                 available()
             with ui.card().classes('w-2/3'):
-                ui.label('Orden de ejecución (cada paso puede apuntar a otro ambiente/módulo)').classes('font-semibold')
+                ui.label('Orden de ejecución (cada paso puede apuntar a otro ambiente/componente)').classes('font-semibold')
 
                 @ui.refreshable
                 def chosen():
@@ -231,7 +231,7 @@ def suite_edit(id: str = ''):
                                 ui.label(cases[step['case_id']]['name']).classes('font-medium')
                                 ui.input('Nombre del paso', value=step['alias']).props('outlined dense').classes('w-44') \
                                     .on_value_change(lambda e, s=step: s.__setitem__('alias', (e.value or '').strip()))
-                            ui.select({'': 'Ambiente por defecto', **{e['id']: e['name'] for e in envs}}, value=step.get('environment_id') or '', label='Ambiente / módulo') \
+                            ui.select({'': 'Ambiente por defecto', **{e['id']: e['name'] for e in envs}}, value=step.get('environment_id') or '', label='Ambiente') \
                                 .props('outlined dense').classes('w-52').on_value_change(lambda e, s=step: s.__setitem__('environment_id', e.value or None))
                             count = len(step.get('enrich') or [])
                             if cases[step['case_id']].get('type') != 'ui':

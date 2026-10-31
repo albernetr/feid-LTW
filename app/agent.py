@@ -385,7 +385,7 @@ def brief_markdown(f):
         lines += [f'- Pista del autor de la prueba: {json.dumps(hints, ensure_ascii=False)}']
     if where.get('contract'):
         c = where['contract']
-        lines += [f'- Contrato: módulo «{c["module"]}», operación `{c["operation"]}` ({c["summary"]}); códigos declarados: {", ".join(c["declared_status_codes"])}']
+        lines += [f'- Contrato: componente «{c["module"]}», operación `{c["operation"]}` ({c["summary"]}); códigos declarados: {", ".join(c["declared_status_codes"])}']
     for drift in where.get('observed_drift') or []:
         lines += [f'- Cambio observado en el tráfico: {drift["kind"]} — {drift["detail"]} ({drift["times"]} veces)']
     if not hints and not where.get('contract') and not where.get('observed_drift'):

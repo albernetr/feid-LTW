@@ -187,7 +187,7 @@ def _traffic_light(kpis, drift, overdue, enabled, scheduler_on):
     if failing:
         worsen('amber', f'{failing} caso(s) fallan en su última ejecución.')
     if drift:
-        worsen('amber', f'{sum(m["drift"] for m in drift)} cambio(s) sin aviso detectados en {len(drift)} módulo(s) observados.')
+        worsen('amber', f'{sum(m["drift"] for m in drift)} cambio(s) sin aviso detectados en {len(drift)} componente(s) observados.')
     if overdue:
         worsen('amber', f'{len(overdue)} programación(es) vencidas sin ejecutarse' + ('' if scheduler_on else ' (el scheduler está detenido).'))
     if kpis['suites_never_run']:
@@ -294,7 +294,7 @@ def render_markdown(report):
     o = report['observer']
     lines += ['## Cambios en interfaces observadas', '']
     lines += ([f'- **{c["module"]}**: {c["pending"]} cambio(s) pendiente(s)' + (f' · responsable: {c["owner"]}' if c['owner'] else '') + (f' ({c["company"]})' if c['company'] else '') for c in o['changes']]
-              or [f'Sin cambios pendientes en {o["modules"]} módulo(s) observados.'])
+              or [f'Sin cambios pendientes en {o["modules"]} componente(s) observados.'])
     s = report['schedules']
     lines += ['', '## Programaciones', '', f'{s["enabled"]} activa(s) de {s["total"]}; vencidas sin ejecutar: {s["overdue"]}; scheduler {"en marcha" if s["scheduler_running"] else "detenido"}.', '',
               f'_Criterio del semáforo: verde con éxito ≥ {report["thresholds"]["green_at_least"]:.0f}% y sin fallos pendientes; rojo si algún flujo falla o el éxito baja de {report["thresholds"]["red_below"]:.0f}%; ámbar en el resto._']
@@ -351,7 +351,7 @@ def render_html(report):
     o, s = report['observer'], report['schedules']
     changes = ''.join(f'<li><b>{e(m["module"])}</b>: {m["pending"]} cambio(s) pendiente(s)' + (f' · responsable: {e(m["owner"])}' if m['owner'] else '') +
                       (f' ({e(m["company"])})' if m['company'] else '') + '</li>' for m in o['changes'])
-    body.append(f'<h2>Cambios en interfaces observadas</h2>' + (f'<ul>{changes}</ul>' if changes else f'<div>Sin cambios pendientes en {o["modules"]} módulo(s) observados.</div>'))
+    body.append(f'<h2>Cambios en interfaces observadas</h2>' + (f'<ul>{changes}</ul>' if changes else f'<div>Sin cambios pendientes en {o["modules"]} componente(s) observados.</div>'))
     body.append(f'<h2>Programaciones</h2><div>{s["enabled"]} activa(s) de {s["total"]}; vencidas sin ejecutar: {s["overdue"]}; scheduler {"en marcha" if s["scheduler_running"] else "detenido"}.</div>')
     body.append(f'<div class="foot">Criterio del semáforo: verde con éxito ≥ {report["thresholds"]["green_at_least"]:.0f}% y sin fallos pendientes; rojo si algún flujo falla o el éxito baja de '
                 f'{report["thresholds"]["red_below"]:.0f}%; ámbar en el resto. Generado por Local Test Workspace · {e(FORMAT)}.</div>')

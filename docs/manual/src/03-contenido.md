@@ -1,6 +1,6 @@
 ---
 
-# 7. Proyectos, módulos y ambientes
+# 7. Proyectos, componentes y ambientes
 
 Estos tres elementos preparan el terreno para tus pruebas. Se configuran una vez y se reutilizan.
 
@@ -8,29 +8,32 @@ Estos tres elementos preparan el terreno para tus pruebas. Se configuran una vez
 
 ![Pantalla de Proyectos](img/02-proyectos.png)
 
-Un **proyecto** agrupa módulos, ambientes, casos, suites y programaciones de un mismo producto. Siempre hay **un proyecto activo** (el del selector del encabezado); las pantallas muestran y crean cosas en ese proyecto.
+Un **proyecto** agrupa componentes, ambientes, casos, suites y programaciones de un mismo producto. Siempre hay **un proyecto activo** (el del selector del encabezado); las pantallas muestran y crean cosas en ese proyecto.
 
 **Crear un proyecto.** En **Nuevo proyecto** escribe el **Nombre** (obligatorio) y una **Descripción** opcional, y pulsa **Crear proyecto**. El primero que crees queda activo automáticamente; cuando creas otros se te selecciona el nuevo.
 
-**Cada proyecto se muestra en una tarjeta** con su nombre, descripción editable y un resumen de recursos (módulos, ambientes, casos, suites, programaciones).
+**Los proyectos se listan en una tabla** (nombre, descripción, recursos, estado) con buscador; cada fila lleva a una página de detalle con el formulario, el desglose de recursos (componentes, ambientes, casos, suites, programaciones) y las acciones.
 
 | Acción | Efecto |
 |---|---|
 | **Guardar cambios** | Actualiza nombre y descripción. |
 | **Seleccionar** | Lo convierte en el proyecto activo (también desde el selector del encabezado). |
-| **Eliminar** | Pide confirmación. **Solo se puede eliminar un proyecto vacío**; si tiene módulos, ambientes, casos, suites, programaciones o taps, LTW lo impide para no perder trabajo. |
+| **Deshabilitar / Habilitar** | Mientras está deshabilitado no se puede seleccionar como activo desde ningún lado; si estaba activo, se desactiva solo. No pausa nada que ya esté corriendo, pero el scheduler omite sus programaciones. |
+| **Eliminar** | Pide confirmación. **Solo elimina un proyecto vacío**; si tiene componentes, ambientes, casos, suites, programaciones o taps, ofrece un segundo diálogo que exige escribir el nombre exacto del proyecto para borrar también todo ese contenido (irreversible). |
 
 > **Recursos sin proyecto (de versiones anteriores).** Si existen elementos sin proyecto, aparece un aviso **«Asignarlos al proyecto activo»** para adoptarlos; hasta entonces no se ven al filtrar por proyecto.
 
 > **Consejo.** Usa **un proyecto por producto o iniciativa**. Los ambientes, casos y suites no se comparten entre proyectos (al guardar desde el Espacio de trabajo en otro proyecto, el ambiente se copia).
 
-## 7.2 Módulos (contratos OpenAPI/Swagger)
+## 7.2 Componentes (backends, frontends, con o sin contrato)
 
-![Un módulo importado con sus operaciones](img/30-modulos.png)
+![Un componente importado con sus operaciones](img/30-modulos.png)
 
-Un **módulo** es la descripción de un servicio: sus operaciones (método + ruta), parámetros y respuestas. Importarlo no es obligatorio, pero habilita funciones muy útiles: crear casos con un clic desde una operación, **validar respuestas contra el contrato** y **comparar lo observado con lo declarado** (Observador).
+Un **componente** es una pieza de tu solución: un backend o un frontend. Si el backend publica un contrato OpenAPI/Swagger, impórtalo — habilita funciones muy útiles: crear casos con un clic desde una operación, **validar respuestas contra el contrato**, **comparar lo observado con lo declarado** (Observador) y la **exploración automática**. Si no tienes contrato (un frontend, o un backend sin documentar), **créalo a mano**: nombre, tipo (Backend/Frontend) y, si ya existe, el ambiente al que está ligado. Un componente manual no trae catálogo de operaciones ni exploración automática, pero igual sirve para que aparezca en el inventario del proyecto y puedas asociarle Casos API directamente (o, si es un frontend, Casos UI).
 
-**Importar.** En **Importar contrato** puedes:
+Registrar un componente **nunca es obligatorio**: puedes crear Casos API o Casos UI sin pasar por aquí.
+
+**Importar un contrato.** En **Importar contrato** puedes:
 
 - escribir una **URL** (`http` o `https`) y pulsar **Importar desde URL**; o
 - **arrastrar un archivo** `.json`, `.yaml` o `.yml`.
@@ -44,17 +47,19 @@ La URL puede ser cualquiera de estas:
 | Un enlace de **GitHub** de un archivo (`github.com/…/blob/…`) | Lo convierte al enlace «raw» y lo descarga. |
 | Un servicio que sirve su contrato en una ruta habitual (`/openapi.json`, `/swagger.json`, `/v3/api-docs`…) | Prueba esas rutas si la página no lo enlaza. |
 
-Al terminar, el aviso indica el **origen real** del contrato (por ejemplo, la página `https://petstore3.swagger.io/` resolvió a `…/api/v3/openapi.json`) y el módulo lo recuerda. Si la dirección escrita da error (por ejemplo, la raíz de una API sin página), también prueba esas rutas desde el mismo servidor. Si no encuentra ninguno, te lo dice y puedes pegar la URL directa o subir el archivo. Se prueban como máximo 14 direcciones.
+Al terminar, el aviso indica el **origen real** del contrato (por ejemplo, la página `https://petstore3.swagger.io/` resolvió a `…/api/v3/openapi.json`) y el componente lo recuerda. Si la dirección escrita da error (por ejemplo, la raíz de una API sin página), también prueba esas rutas desde el mismo servidor. Si no encuentra ninguno, te lo dice y puedes pegar la URL directa o subir el archivo. Se prueban como máximo 14 direcciones.
 
-**Servidor declarado y ambiente.** Cuando el contrato indica su servidor (OpenAPI `servers`, o `host` + `basePath` en Swagger 2.0; una dirección relativa se resuelve contra el origen; si no declara ninguno, como hace FastAPI, se usa el servidor desde el que se descargó), el módulo muestra **Servidor declarado** y el botón **Crear ambiente con esta URL**, que crea el ambiente con esa dirección base.
+**Servidor declarado y ambiente.** Cuando el contrato indica su servidor (OpenAPI `servers`, o `host` + `basePath` en Swagger 2.0; una dirección relativa se resuelve contra el origen; si no declara ninguno, como hace FastAPI, se usa el servidor desde el que se descargó), LTW **registra el ambiente automáticamente** al importar (lo crea, o reutiliza uno existente con esa misma URL) y lo dice en el aviso. Si en su momento no se pudo resolver, el detalle del componente muestra **Servidor declarado** y el botón **Crear ambiente con esta URL**.
 
-Se aceptan **OpenAPI 3.x** y **Swagger 2.0**, hasta **10 MB**. Tras importar verás un aviso con el nombre y el número de operaciones.
+Se aceptan **OpenAPI 3.x** y **Swagger 2.0**, hasta **10 MB**. Tras importar se te lleva directo al detalle del componente recién creado.
 
 **Referencias `$ref`.** Se resuelven las **locales** (`#/components/...`). Las **externas** (otros archivos o URL) se **rechazan** con un mensaje claro; no se descarga nada desde dentro del documento por seguridad. Los modelos **recursivos** (por ejemplo, un comentario con respuestas que son comentarios) sí se aceptan: la recursión se corta en el punto en que se repite y ahí el esquema queda abierto, de modo que la validación contra el contrato es más permisiva en ese nivel.
 
-**Usar un módulo.** Cada módulo aparece como un desplegable con su nombre, versión y número de operaciones. Dentro, cada operación muestra su **método**, **ruta** y resumen, con el botón **Crear caso**, que abre el editor de caso API con el método y la ruta ya rellenados.
+**Crear un componente manualmente.** En **Crear componente manualmente** escribe un **Nombre**, elige el **Tipo** (Backend/Frontend) y, si ya existe, el **Ambiente** al que está ligado (opcional; se puede dejar sin ambiente y enlazarlo después editando el componente). No trae operaciones ni exploración automática.
 
-**Eliminar un módulo.** Se bloquea si algún caso lo usa (te dice cuántos).
+**La lista de componentes** es una tabla (Nombre, Tipo, Operaciones, Ambiente, Casos generados); haz clic en una fila para ver su detalle. Ahí se ve el ambiente ya ligado (o el botón para crearlo), la exploración automática acotada a ese componente, los **casos ya generados** con enlace directo a cada uno y, si tiene contrato, sus operaciones en una tabla paginada con el botón **Crear caso** por fila (abre el editor de caso API con el método y la ruta ya rellenados).
+
+**Eliminar un componente.** Se bloquea si algún caso lo usa (te dice cuántos).
 
 ## 7.3 Ambientes y secretos
 
@@ -127,7 +132,7 @@ Un **caso API** es una petición HTTP guardada con las **aserciones** que debe c
 
 ## 8.2 El editor de casos
 
-Se abre con **Nuevo caso**, **Editar** o **Crear caso** desde una operación de un módulo.
+Se abre con **Nuevo caso**, **Editar** o **Crear caso** desde una operación de un componente.
 
 ![Editor de caso: pestaña Petición](img/33-caso-peticion.png)
 
@@ -139,7 +144,7 @@ Se abre con **Nuevo caso**, **Editar** o **Crear caso** desde una operación de 
 | **Método** | GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS. |
 | **Ruta** | Obligatoria; admite `{{variables}}` (por ejemplo `/api/users/{{id}}`). |
 | **Timeout (s)** | Tiempo máximo de espera (1–300; por defecto 20). |
-| **Módulo (opcional)** y **Operación del contrato** | Al elegir una operación se rellenan método y ruta, y se habilita «validación del contrato». |
+| **Componente (opcional)** y **Operación del contrato** | Al elegir una operación se rellenan método y ruta, y se habilita «validación del contrato». |
 
 **Pestaña Petición**
 
@@ -292,15 +297,15 @@ En la pestaña 💾 **Guardar** del panel derecho: **Ambiente de prueba**, **Tim
 
 ---
 
-# 10. Suites y flujos entre módulos
+# 10. Suites y flujos entre componentes
 
-Una **suite** es una lista ordenada de casos (API y UI) que se ejecutan **en secuencia**. Un **flujo** es una suite cuyos pasos apuntan a **distintos ambientes (módulos)** y se alimentan unos de otros.
+Una **suite** es una lista ordenada de casos (API y UI) que se ejecutan **en secuencia**. Un **flujo** es una suite cuyos pasos apuntan a **distintos ambientes (componentes)** y se alimentan unos de otros — por ejemplo, un frontend que inicia sesión y dos backends que responden a esa sesión.
 
 ## 10.1 La lista de suites
 
 ![Lista de suites](img/40-suites.png)
 
-Cada tarjeta muestra el nombre y un resumen: número de casos, **ruta de ambientes** (`Identidad → Pedidos` si cruza módulos), política de fallo, reintentos y cuántos pasos están enriquecidos. Botones: ▶ **Ejecutar**, ✎ **Editar**, 🗑 **Eliminar** (no se puede si tiene programaciones).
+Cada tarjeta muestra el nombre y un resumen: número de casos, **ruta de ambientes** (`Identidad → Pedidos` si cruza componentes), política de fallo, reintentos y cuántos pasos están enriquecidos. Botones: ▶ **Ejecutar**, ✎ **Editar**, 🗑 **Eliminar** (no se puede si tiene programaciones).
 
 ![Resultado de ejecutar una suite](img/41-suite-resultado.png)
 
@@ -325,7 +330,7 @@ Cada tarjeta muestra el nombre y un resumen: número de casos, **ruta de ambient
 | Elemento | Descripción |
 |---|---|
 | **Nombre del paso** (alias) | Identifica el paso; los pasos posteriores lo usan para referirse a su respuesta (`login`, `pedido`). Letras, números, `_` y `-`; único en la suite. |
-| **Ambiente / módulo** | **Ambiente por defecto** u otro del proyecto: así un paso puede llamar al módulo A y el siguiente al módulo B. |
+| **Ambiente** | **Ambiente por defecto** u otro del proyecto: así un paso puede llamar al componente A y el siguiente al componente B. |
 | **Enriquecer** | Abre las reglas de enriquecimiento (solo casos API). Muestra cuántas reglas tiene. |
 | ⬆ ⬇ ✕ | Reordenar o quitar. |
 
@@ -335,7 +340,7 @@ Cada tarjeta muestra el nombre y un resumen: número de casos, **ruta de ambient
 
 > Un paso solo puede usar respuestas de pasos que estén **antes** que él; si reordenas, se vuelve a validar al guardar.
 
-## 10.3 Enriquecer un paso (pasar datos de un módulo a otro)
+## 10.3 Enriquecer un paso (pasar datos de un componente a otro)
 
 ![Diálogo de enriquecimiento con vista previa](img/43-suite-enriquecer.png)
 
@@ -358,13 +363,13 @@ Notas:
 
 **Vista previa.** Pulsa **Vista previa** para ver el request resultante (método y ruta, headers —con tokens ocultos—, query y body) con la **última respuesta registrada** de cada paso anterior, las reglas aplicadas (✓), los problemas (✗) y qué pasos aún no tienen datos («ejecuta la suite una vez»). **No envía nada.**
 
-**Garantías.** Una regla solo puede apuntar a pasos *anteriores* (se valida al guardar). Si en la ejecución falta el dato o el paso previo falló, el paso termina en **Error** con el motivo (por ejemplo, «`$.token` no existe en la respuesta del paso `login`») **sin enviar nada** al módulo siguiente. El historial guarda lo que **salió** (body y query, con secretos ocultos) y las reglas aplicadas.
+**Garantías.** Una regla solo puede apuntar a pasos *anteriores* (se valida al guardar). Si en la ejecución falta el dato o el paso previo falló, el paso termina en **Error** con el motivo (por ejemplo, «`$.token` no existe en la respuesta del paso `login`») **sin enviar nada** al componente siguiente. El historial guarda lo que **salió** (body y query, con secretos ocultos) y las reglas aplicadas.
 
 ## 10.4 Ejemplo completo de flujo
 
 *«Iniciar sesión en Identidad y crear un pedido en Pedidos con el token y el nombre del usuario.»*
 
-1. Casos: **Login** (POST `/api/login`; extrae `token` y `usuario`) y **Crear pedido (módulo Pedidos)** (POST `/api/items`, espera 201).
+1. Casos: **Login** (POST `/api/login`; extrae `token` y `usuario`) y **Crear pedido (componente Pedidos)** (POST `/api/items`, espera 201).
 2. Suite **Flujo identidad → pedidos**, ambiente por defecto **Catálogo/Identidad**:
    - Paso 1: `login`, ambiente por defecto.
    - Paso 2: `pedido`, ambiente **Pedidos**, con tres reglas:

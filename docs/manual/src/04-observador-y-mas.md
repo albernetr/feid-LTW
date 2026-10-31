@@ -2,18 +2,18 @@
 
 # 11. Observador de interfaces
 
-El **Observador** responde a una pregunta difícil cuando hay varios módulos desarrollados por equipos o empresas distintas: **¿qué entra y qué sale realmente de cada uno?** Aprende, **solo de JSON**, la forma real de las llamadas y te avisa cuando alguien la cambia **sin avisar**.
+El **Observador** responde a una pregunta difícil cuando hay varios componentes desarrollados por equipos o empresas distintas: **¿qué entra y qué sale realmente de cada uno?** Aprende, **solo de JSON**, la forma real de las llamadas y te avisa cuando alguien la cambia **sin avisar**.
 
-![Catálogo del observador con un módulo y sus interfaces](img/51-observador-catalogo.png)
+![Catálogo del observador con un componente y sus interfaces](img/51-observador-catalogo.png)
 
 ## 11.1 Dos fuentes, un solo catálogo
 
 | Fuente | Cómo funciona | Cuándo usarla |
 |---|---|---|
-| **Tap** (proxy ligero) | Un pequeño proxy que escucha en tu equipo y **reenvía todo** al módulo destino **sin modificarlo**, registrando el JSON. Apuntas al tap el módulo que llama, en lugar de apuntarlo al destino. | Quieres ver el tráfico **real** entre módulos (en pruebas o preproducción). |
+| **Tap** (proxy ligero) | Un pequeño proxy que escucha en tu equipo y **reenvía todo** al componente destino **sin modificarlo**, registrando el JSON. Apuntas al tap el componente que llama, en lugar de apuntarlo al destino. | Quieres ver el tráfico **real** entre componentes (en pruebas o preproducción). |
 | **Historial** | **Aprender del historial** usa las peticiones y respuestas de tus **ejecuciones ya registradas**. Cada ejecución cuenta una sola vez. | No puedes (o no quieres) poner un proxy. |
 
-Las interfaces se agrupan por el **nombre del módulo**: tap e historial solo se unifican si usan el mismo nombre (en el historial, el nombre del **ambiente**).
+Las interfaces se agrupan por el **nombre del componente**: tap e historial solo se unifican si usan el mismo nombre (en el historial, el nombre del **ambiente**).
 
 ## 11.2 Crear y usar un tap
 
@@ -23,23 +23,23 @@ En **Nuevo tap (proxy de observación)** completa:
 
 | Campo | Descripción |
 |---|---|
-| **Módulo (nombre)** | Nombre del servicio observado. Obligatorio. |
-| **Empresa / equipo** y **Responsable** | Opcionales; se muestran en la tarjeta del módulo (útil con módulos de distintos equipos). |
+| **Componente (nombre)** | Nombre del servicio observado. Obligatorio. |
+| **Empresa / equipo** y **Responsable** | Opcionales; se muestran en la tarjeta del componente (útil con componentes de distintos equipos). |
 | **Puerto local** | Entre 1024 y 65535; no puede repetirse ni estar ocupado por otro programa. Sugiere `9101` más el número de taps ya creados. |
-| **Protocolo** y **Dirección del módulo destino** | `https` por defecto. Puede incluir un prefijo de ruta. |
-| **Contrato OpenAPI del módulo** (opcional) | Si lo eliges, las rutas se **normalizan con sus plantillas** (`/users/{userId}`) y puedes comparar lo observado con lo declarado. |
+| **Protocolo** y **Dirección del componente destino** | `https` por defecto. Puede incluir un prefijo de ruta. |
+| **Contrato OpenAPI del componente** (opcional) | Si lo eliges, las rutas se **normalizan con sus plantillas** (`/users/{userId}`) y puedes comparar lo observado con lo declarado. |
 
 Pulsa **Crear tap** y luego **Iniciar**. El tap queda activo con su dirección `http://127.0.0.1:PUERTO → destino` y un contador de llamadas. **Detener** lo para; el 🗑 lo elimina (el catálogo aprendido se conserva).
 
-**Para observar:** cambia la URL del módulo consumidor para que apunte a `http://127.0.0.1:PUERTO` en lugar del destino. Todo lo que pase se reenvía sin cambios y se registra.
+**Para observar:** cambia la URL del componente consumidor para que apunte a `http://127.0.0.1:PUERTO` en lugar del destino. Todo lo que pase se reenvía sin cambios y se registra.
 
 > Un tap **solo escucha en tu equipo** (`127.0.0.1`), habla HTTP simple con quien lo llama (hacia el destino sí puede usar https), reenvía una petición por conexión y rechaza cuerpos `chunked` o mayores de 5 MB. Se detiene al cerrar la aplicación.
 
 ## 11.3 El catálogo
 
-Arriba, una **tarjeta por módulo** con su empresa/responsable, número de interfaces y llamadas, y una insignia: *«n cambio(s) sin aprobar»* (rojo), *«n sin línea base»* (gris) o *«sin cambios»* (verde). Un clic en la tarjeta filtra el catálogo por ese módulo.
+Arriba, una **tarjeta por componente** con su empresa/responsable, número de interfaces y llamadas, y una insignia: *«n cambio(s) sin aprobar»* (rojo), *«n sin línea base»* (gris) o *«sin cambios»* (verde). Un clic en la tarjeta filtra el catálogo por ese componente.
 
-La tabla lista cada **interfaz** (módulo + método + ruta normalizada: `/api/users/42` → `/api/users/{id}`; los UUID se normalizan a `{uuid}` y las cadenas hexadecimales largas a `{hash}`) con **llamadas**, **códigos** (`200×4, 404×1`), **última vez** y **estado**. Puedes filtrar por módulo y buscar por ruta; un clic en una fila abre su detalle.
+La tabla lista cada **interfaz** (componente + método + ruta normalizada: `/api/users/42` → `/api/users/{id}`; los UUID se normalizan a `{uuid}` y las cadenas hexadecimales largas a `{hash}`) con **llamadas**, **códigos** (`200×4, 404×1`), **última vez** y **estado**. Puedes filtrar por componente y buscar por ruta; un clic en una fila abre su detalle.
 
 ## 11.4 Detalle de una interfaz
 
@@ -71,7 +71,7 @@ Resumen: llamadas, tiempo promedio, códigos, desde/hasta cuándo, parámetros d
 
 ![Cambios detectados respecto a la línea base](img/53-interfaz-cambios.png)
 
-El estado de la interfaz pasa a **«n cambio(s)»** (rojo) en el catálogo, la tarjeta del módulo y el detalle. Si el cambio es **legítimo**, pulsa **Aceptar cambios y fijar línea base**: lo nuevo pasa a ser lo conocido y la lista se vacía (queda registrado cuántos cambios se aceptaron).
+El estado de la interfaz pasa a **«n cambio(s)»** (rojo) en el catálogo, la tarjeta del componente y el detalle. Si el cambio es **legítimo**, pulsa **Aceptar cambios y fijar línea base**: lo nuevo pasa a ser lo conocido y la lista se vacía (queda registrado cuántos cambios se aceptaron).
 
 > **Límite.** El observador detecta cambios de **forma** del JSON. Un cambio de **comportamiento** que no altera la forma (otro valor, otra regla de negocio) no se detecta: para eso usa los **casos de regresión**.
 
@@ -79,7 +79,7 @@ El estado de la interfaz pasa a **«n cambio(s)»** (rojo) en el catálogo, la t
 
 ![Comparación con el contrato OpenAPI](img/54-interfaz-contrato.png)
 
-En la pestaña **Contrato** elige un módulo OpenAPI del proyecto y pulsa **Comparar con lo observado**. Se listan las diferencias: campos que se observan pero el contrato **no declara**, tipos que llegan **distintos**, campos requeridos por el contrato que **no siempre vienen** o nunca se observaron, y códigos de respuesta no declarados. Si el contrato no declara esa operación, se indica.
+En la pestaña **Contrato** elige un componente OpenAPI del proyecto y pulsa **Comparar con lo observado**. Se listan las diferencias: campos que se observan pero el contrato **no declara**, tipos que llegan **distintos**, campos requeridos por el contrato que **no siempre vienen** o nunca se observaron, y códigos de respuesta no declarados. Si el contrato no declara esa operación, se indica.
 
 ## 11.7 Privacidad
 
@@ -190,7 +190,7 @@ Las ejecuciones **canceladas u omitidas** no cuentan: no dicen nada sobre la sal
 - **Qué está fallando y desde cuándo:** cada caso cuya última ejecución no pasó, con la fecha de la **primera** falla de la racha, cuántas ejecuciones seguidas lleva fallando, el motivo y el responsable si el autor lo indicó en `code_hints`. **Detalle** abre la ejecución.
 - **Casos inestables:** pasan y fallan alternadamente (al menos dos cambios de estado) sin que nadie toque la prueba. Conviene revisarlos antes de confiar en ellos.
 - **Más lentos:** los 5 casos con mayor tiempo medio de respuesta.
-- **Interfaces observadas y programaciones:** módulos con cambios sin aviso (con su empresa y responsable, si se registraron en el tap) y estado del scheduler.
+- **Interfaces observadas y programaciones:** componentes con cambios sin aviso (con su empresa y responsable, si se registraron en el tap) y estado del scheduler.
 
 **Reporte de estatus.** Pulsa **Reporte de estatus** y elige el formato:
 
@@ -231,7 +231,7 @@ Elige **Qué exportar**:
 |---|---|
 | **Todo el workspace** | Todos los proyectos y sus recursos. Con **Incluir historial** agrega las ejecuciones **sin** cuerpos de petición ni respuesta. |
 | **Solo el proyecto activo** | El proyecto y todo lo suyo. |
-| **Suites seleccionadas** | Las suites elegidas **más sus dependencias** (casos, ambientes —también los de cada paso—, módulos y proyecto). |
+| **Suites seleccionadas** | Las suites elegidas **más sus dependencias** (casos, ambientes —también los de cada paso—, componentes y proyecto). |
 | **Casos seleccionados** | Los casos elegidos más sus dependencias. |
 
 Pulsa **Exportar (.zip)** y se descarga.

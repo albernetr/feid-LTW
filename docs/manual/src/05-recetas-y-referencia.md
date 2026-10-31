@@ -9,9 +9,9 @@ Ejemplos paso a paso para los usos más comunes. Cada receta indica en qué pant
 **Objetivo:** dejar listas pruebas de mi servicio y pasárselas a quien las ejecutará.
 
 1. **Proyectos → Crear proyecto** con el nombre de tu producto.
-2. **Módulos → Importar** tu OpenAPI (URL o archivo).
+2. **Componentes → Importar** tu OpenAPI (URL o archivo).
 3. **Ambientes → Nuevo ambiente**: `Local` con la URL de tu servicio; si usa token, guárdalo en **Secretos** y elígelo.
-4. En **Módulos**, abre la operación y pulsa **Crear caso**. En el editor agrega aserciones: **Código HTTP**, y con **Agregar validación del contrato** el JSON Schema de la respuesta.
+4. En **Componentes**, abre la operación y pulsa **Crear caso**. En el editor agrega aserciones: **Código HTTP**, y con **Agregar validación del contrato** el JSON Schema de la respuesta.
    - Alternativa rápida: en el **Espacio de trabajo** envía la petición, **Pruebas → Generar pruebas** y **Guardar**.
 5. Encadena casos que dependan unos de otros (login → crear → consultar) usando **Encadenamiento** y agrúpalos en una **Suite** con política **Detener al primer fallo**.
 6. Ejecuta la suite hasta que pase.
@@ -41,16 +41,16 @@ Ejemplos paso a paso para los usos más comunes. Cada receta indica en qué pant
 
 > Mantén abierto `scripts\scheduler.bat` en el equipo que ejecuta las programaciones.
 
-## 16.4 Responsable de integración: vigilar 8 módulos de distintos equipos
+## 16.4 Responsable de integración: vigilar 8 componentes de distintos equipos
 
-**Objetivo:** saber qué entra y qué sale de cada módulo y enterarse cuando algo cambia.
+**Objetivo:** saber qué entra y qué sale de cada componente y enterarse cuando algo cambia.
 
-1. **Observador → Nuevo tap** por módulo importante (con **Empresa/equipo** y **Responsable**) y, si tienes su OpenAPI, asócialo.
-2. Pon el consumidor a hablar con el tap en lugar de con el módulo (en preproducción) y deja pasar tráfico representativo.
+1. **Observador → Nuevo tap** por componente importante (con **Empresa/equipo** y **Responsable**) y, si tienes su OpenAPI, asócialo.
+2. Pon el consumidor a hablar con el tap en lugar de con el componente (en preproducción) y deja pasar tráfico representativo.
 3. Revisa el **catálogo** y, por interfaz, la pestaña **Campos**: ya sabes qué envían y qué reciben, aunque nadie te lo haya documentado.
 4. **Fijar línea base** de cada interfaz importante.
-5. Revisa periódicamente el catálogo: las insignias rojas **«n cambio(s)»** indican qué módulo cambió su formato. Abre la pestaña **Cambios** y **Contrato** para ver el detalle y contactar al responsable.
-6. Para **pasar datos de un módulo a otro** de forma verificable, crea un **flujo** (capítulo 10) con **enriquecimiento** y prográmalo.
+5. Revisa periódicamente el catálogo: las insignias rojas **«n cambio(s)»** indican qué componente cambió su formato. Abre la pestaña **Cambios** y **Contrato** para ver el detalle y contactar al responsable.
+6. Para **pasar datos de un componente a otro** de forma verificable, crea un **flujo** (capítulo 10) con **enriquecimiento** y prográmalo.
 7. Convierte interfaces críticas en **casos de regresión** con **Crear caso de regresión desde la última muestra**.
 
 ## 16.5 Agente: ciclo para reparar un servicio
@@ -382,11 +382,11 @@ Una aserción mal formada **no rompe** la ejecución: simplemente falla y muestr
 | **Caso** | Una prueba: petición + aserciones (API) o pasos de navegador (UI). |
 | **Contrato (OpenAPI)** | Descripción formal de lo que ofrece un servicio. |
 | **Enriquecimiento** | Reglas que añaden o modifican campos del request de un paso con datos de pasos anteriores. |
-| **Flujo** | Suite cuyos pasos cruzan ambientes (módulos). |
+| **Flujo** | Suite cuyos pasos cruzan ambientes (componentes). |
 | **JSON Schema** | Formato para describir la estructura de un JSON. |
 | **JSONPath** | Notación para señalar un campo dentro de un JSON. |
 | **Línea base** | Forma conocida y aceptada de una interfaz observada. |
-| **Módulo** | Contrato importado; o servicio observado por nombre. |
+| **Componente** | Un backend o un frontend: con contrato importado, o creado a mano (nombre, tipo, ambiente); también el nombre de un servicio observado por un tap. |
 | **Observador / tap** | Aprendizaje del tráfico real; el tap es el proxy que lo captura. |
 | **Preproducción** | Entorno de pruebas previo a producción. |
 | **Proyecto** | Agrupa todos los recursos de un producto. |

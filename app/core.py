@@ -277,7 +277,7 @@ def project_stats(project_id):
     }
 
 
-PROJECT_RESOURCE_LABELS = {'modules': 'módulo(s)', 'environments': 'ambiente(s)', 'cases': 'caso(s)', 'suites': 'suite(s)', 'schedules': 'programación(es)', 'taps': 'tap(s) de observación'}
+PROJECT_RESOURCE_LABELS = {'modules': 'componente(s)', 'environments': 'ambiente(s)', 'cases': 'caso(s)', 'suites': 'suite(s)', 'schedules': 'programación(es)', 'taps': 'tap(s) de observación'}
 
 
 def _purge_project_history(project_id):
@@ -489,11 +489,76 @@ def parse_openapi(raw):
 def import_openapi(raw, project_id=None, source_url=None):
     module = parse_openapi(raw)
     module['id'] = uid()
+    module['type'] = 'backend'    # an OpenAPI/Swagger contract always describes a backend
+    module['manual'] = False
     if source_url:
         module['source_url'] = source_url
     if project_id is not None:
         module['project_id'] = project_id
     return save('modules', module)
+
+
+COMPONENT_KINDS = ('backend', 'frontend')
+
+
+def create_component(name, project_id, kind='backend', environment_id=None):
+    """A component with no OpenAPI contract: just an inventory entry (name, kind, optionally linked to an
+    environment) for a piece of the solution with nothing to import — typically a frontend, or a backend you
+    haven't documented yet. No operations catalog: exploración automática and per-operation case creation
+    don't apply (there is nothing to read). Use import_openapi() instead when there is a contract."""
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('El nombre es obligatorio')
+    if kind not in COMPONENT_KINDS:
+        raise ValueError('Tipo de componente inválido')
+    if environment_id:
+        env = get('environments', environment_id)
+        if env is None:
+            raise ValueError('Ambiente inexistente')
+        if project_id is not None and env.get('project_id') != project_id:
+            raise ValueError('El ambiente no pertenece al proyecto activo')
+    item = {'name': name, 'type': kind, 'operations': [], 'servers': [], 'version': '',
+            'manual': True, 'environment_id': environment_id or None}
+    if project_id is not None:
+        item['project_id'] = project_id
+    return save('modules', item)
+
+
+def update_component(component_id, name, kind, environment_id=None):
+    """Renames a manual component, changes its type, or (re)links it to an environment. Imported ones (with
+    a contract) keep their name/version/operations as the source declares them; this is for manual ones only."""
+    component = get('modules', component_id)
+    if component is None:
+        raise ValueError('Componente inexistente')
+    if not component.get('manual'):
+        raise ValueError('Solo los componentes creados manualmente se pueden editar; los importados vienen del contrato.')
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('El nombre es obligatorio')
+    if kind not in COMPONENT_KINDS:
+        raise ValueError('Tipo de componente inválido')
+    if environment_id:
+        env = get('environments', environment_id)
+        if env is None:
+            raise ValueError('Ambiente inexistente')
+        if component.get('project_id') is not None and env.get('project_id') != component.get('project_id'):
+            raise ValueError('El ambiente no pertenece al proyecto activo')
+    component.update({'name': name, 'type': kind, 'environment_id': environment_id or None})
+    return save('modules', component)
+
+
+def component_environment(component):
+    """The environment linked to a component: explicit (manual components) or matched by the declared server
+    (imported ones, by exact base_url). None if neither applies."""
+    if component.get('environment_id'):
+        return get('environments', component['environment_id'])
+    base = module_base_url(component)
+    if not base or component.get('project_id') is None:
+        return None
+    for env in list_project_items('environments', component['project_id']):
+        if env.get('base_url', '').rstrip('/') == base.rstrip('/'):
+            return env
+    return None
 
 
 SPEC_GUESSES = ('openapi.json', 'openapi.yaml', 'swagger.json', 'swagger.yaml', 'v3/api-docs', 'v2/api-docs', 'api-docs', 'swagger/v1/swagger.json',

@@ -6,8 +6,8 @@
 
 - **Explorar** un servicio enviando peticiones y mirando las respuestas, como en un cliente de APIs, pero con historial, comparación de respuestas y edición rápida.
 - **Convertir lo que exploras en pruebas repetibles** (casos y suites) con una respuesta esperada, para saber si «algo cambió» cuando alguien modifica el servicio.
-- **Probar flujos entre varios módulos**: tomar la respuesta de un módulo, enriquecerla y usarla como entrada del siguiente.
-- **Observar el tráfico real** entre módulos para descubrir qué entra y qué sale de cada uno, y avisarte cuando alguien cambia un formato sin avisar.
+- **Probar flujos entre varios componentes** (backends, frontends): tomar la respuesta de uno, enriquecerla y usarla como entrada del siguiente.
+- **Observar el tráfico real** entre componentes para descubrir qué entra y qué sale de cada uno, y avisarte cuando alguien cambia un formato sin avisar.
 - **Probar interfaces web** (navegador real) con pasos que se editan visualmente o se graban.
 - **Programar** ejecuciones automáticas y **compartir** el trabajo mediante paquetes (ZIP) o una base de datos compartida.
 - **Trabajar con agentes**: un agente puede entregar casos de prueba en un formato definido y recibir los fallos en un formato pensado para ir directo al código a repararlos.
@@ -22,7 +22,7 @@
 | **Tester / QA** | Recibe el paquete, cambia parámetros y datos de entrada, crea lotes y regresiones, y detecta qué cambió entre versiones. |
 | **Product Owner / negocio** | Ejecuta las suites, mira si «todo sale como se espera», programa ejecuciones y revisa resultados en lenguaje claro. |
 | **Agente (automatización)** | Entrega especificaciones `ltw.spec/1`, ejecuta por línea de comandos o API y recibe fallos `ltw.failure/1`. |
-| **Responsable de integración** | Observa el tráfico entre módulos de distintos equipos o empresas y vigila los cambios sin aviso. |
+| **Responsable de integración** | Observa el tráfico entre componentes de distintos equipos o empresas y vigila los cambios sin aviso. |
 
 Las recetas paso a paso para cada perfil están en el [capítulo 16](#16-recetas-por-perfil).
 
@@ -42,7 +42,7 @@ No todas las partes tienen el mismo recorrido. Esto no mide «¿funciona?» sino
 | Nivel | Qué significa | Incluye |
 |---|---|---|
 | 🟢 **Estable** | Probado contra sistemas reales, con pruebas automáticas y fallos reales encontrados y corregidos. | Motor de aserciones y ejecución de casos API (26 tipos) · Protocolo para agentes (`ltw.spec`/`ltw.report`/`ltw.failure`) · Importar contratos OpenAPI (archivo, URL, Swagger UI/Redoc/FastAPI) · Exploración automática de contratos · Importar/Exportar del workspace · Seguridad de secretos |
-| 🟡 **Beta** | Funciona y tiene pruebas, pero con menos uso real sostenido o un límite conocido que conviene vigilar. | Suites y flujos con enriquecimiento entre módulos · Observador de interfaces (el tap/proxy en vivo, más que aprender del historial) · Resumen ejecutivo y reporte de estatus · Casos UI y el espacio de trabajo unificado · Actualización automática de token por petición HTTP |
+| 🟡 **Beta** | Funciona y tiene pruebas, pero con menos uso real sostenido o un límite conocido que conviene vigilar. | Suites y flujos con enriquecimiento entre componentes · Observador de interfaces (el tap/proxy en vivo, más que aprender del historial) · Resumen ejecutivo y reporte de estatus · Casos UI y el espacio de trabajo unificado · Actualización automática de token por petición HTTP · Componentes creados manualmente sin contrato |
 | ⚪ **Experimental** | Usable, pero la calidad depende de algo fuera de LTW (el modelo que conectes) o de un uso que casi no se ha probado. | Asistente con modelo de lenguaje (depende del modelo que conectes) · Programaciones de larga duración sin supervisión · Actualización automática de token por comando del sistema |
 
 Límites conocidos de cada sección, en detalle: [KNOWN_LIMITATIONS.md](../../KNOWN_LIMITATIONS.md).
@@ -112,7 +112,7 @@ Por defecto, **dentro de la carpeta del paquete**, en `data\`:
 
 | Ruta | Contenido |
 |---|---|
-| `data\workspace.sqlite3` | Toda la información: proyectos, módulos, ambientes, casos, suites, programaciones, historial, observador. |
+| `data\workspace.sqlite3` | Toda la información: proyectos, componentes, ambientes, casos, suites, programaciones, historial, observador. |
 | `data\evidence\` | Capturas de pantalla y trazas de los casos UI. |
 | `data\logs\` | Registros de la aplicación en formato JSON (con secretos ocultos). |
 
@@ -147,19 +147,19 @@ Antes de usar la herramienta conviene conocer su vocabulario. Cada término se e
 
 | Concepto | Qué es | Ejemplo |
 |---|---|---|
-| **Proyecto** | Agrupa todo lo que pertenece a un mismo producto o iniciativa. Todo lo que ves (módulos, ambientes, casos…) pertenece al **proyecto activo**. | «Tienda en línea» |
-| **Módulo** | Un contrato OpenAPI/Swagger importado: la lista de operaciones que ofrece un servicio. También se usa como nombre de un servicio en el Observador. | «Tienda API» |
+| **Proyecto** | Agrupa todo lo que pertenece a un mismo producto o iniciativa. Todo lo que ves (componentes, ambientes, casos…) pertenece al **proyecto activo**. | «Tienda en línea» |
+| **Componente** | Una pieza de la solución: un backend o un frontend. Con contrato OpenAPI/Swagger importado trae la lista de operaciones; sin contrato se crea a mano (nombre, tipo, ambiente ligado). Registrarlo nunca es obligatorio. | «Tienda API» (backend) · «Tienda Web» (frontend) |
 | **Ambiente** | Dónde se ejecutan las pruebas: URL base, autenticación y variables. | «QA» → `https://qa.empresa.com` |
 | **Caso API** | Una petición HTTP con sus **aserciones** (lo que debe cumplir la respuesta). | «Usuario 1 devuelve su ficha» |
 | **Caso UI** | Una secuencia de pasos en un navegador real (navegar, escribir, hacer clic, verificar). | «Login en la web» |
 | **Aserción** (prueba) | Una regla sobre la respuesta: «el código es 200», «`$.id` es un entero», «el cuerpo es idéntico al esperado»… | `status = 200` |
-| **Suite / flujo** | Una lista ordenada de casos. Cada paso puede apuntar a otro ambiente (módulo) y **enriquecer** su petición con datos de pasos anteriores. | «Flujo identidad → pedidos» |
+| **Suite / flujo** | Una lista ordenada de casos. Cada paso puede apuntar a otro ambiente (componente) y **enriquecer** su petición con datos de pasos anteriores. | «Flujo identidad → pedidos» |
 | **Ejecución** | El resultado de correr un caso o una suite: pasó, falló o error. Queda en el **Historial**. | — |
 | **Programación** | Ejecución automática de una suite (diaria, semanal, cada N minutos…). | «L–V 07:30» |
 | **Variable** | Un valor con nombre usado como `{{nombre}}` en rutas, headers, query o body. | `{{id}}` |
 | **Secreto** | Un valor sensible (token, clave) guardado en el almacén seguro del sistema y usado como `{{secret:NOMBRE}}`. | `{{secret:TOKEN_QA}}` |
 | **Campo volátil** | Un campo de la respuesta que cambia en cada llamada (fechas, identificadores, tokens). Se ignora al comparar. | `$.requested_at` |
-| **Tap** | Un proxy ligero que observa el tráfico entre dos módulos sin modificarlo. | `127.0.0.1:9301 → módulo` |
+| **Tap** | Un proxy ligero que observa el tráfico entre dos componentes sin modificarlo. | `127.0.0.1:9301 → componente` |
 | **Interfaz observada** | Una operación (método + ruta) aprendida del tráfico: sus campos, tipos y cambios. | `GET /api/users/{id}` |
 | **Línea base** | La forma «conocida y aceptada» de una interfaz. Lo que se aparte de ella se reporta como cambio. | — |
 | **Spec (`ltw.spec/1`)** | El formato JSON con el que un agente entrega casos de prueba. | — |
@@ -169,7 +169,7 @@ Antes de usar la herramienta conviene conocer su vocabulario. Cada término se e
 
 ```
 Proyecto
- ├─ Módulos (contratos OpenAPI)
+ ├─ Componentes (contratos OpenAPI, o creados a mano)
  ├─ Ambientes ── variables, autenticación (secretos en el sistema)
  ├─ Casos API / Casos UI ── aserciones, extracciones
  ├─ Suites / flujos ── pasos (caso + ambiente + enriquecimiento)
@@ -203,11 +203,11 @@ Espacio de trabajo: historial propio de peticiones sueltas (no necesita proyecto
 | **Resumen** | Semáforo, tendencia, qué falla y desde cuándo; exporta el reporte de estatus. |
 | **Espacio de trabajo** | Pantalla principal para enviar peticiones, editarlas y guardarlas. |
 | **Proyectos** | Crear, editar, seleccionar y eliminar proyectos. |
-| **Módulos** | Importar contratos OpenAPI/Swagger. |
+| **Componentes** | Importar contratos OpenAPI/Swagger, o crear backends/frontends a mano. |
 | **Ambientes** | Ambientes, variables y secretos. |
 | **Casos API** | Casos de petición HTTP guardados. |
 | **Casos UI** | Casos de navegador con pasos y grabador. |
-| **Suites** | Suites y flujos entre módulos. |
+| **Suites** | Suites y flujos entre componentes. |
 | **Observador** | Taps, catálogo de interfaces y cambios. |
 | **Programaciones** | Ejecuciones automáticas. |
 | **Historial** | Resultados de ejecuciones y evidencias. |
@@ -223,7 +223,7 @@ Espacio de trabajo: historial propio de peticiones sueltas (no necesita proyecto
 ## 4.2 Orden recomendado de trabajo
 
 1. **Proyectos** → crea o elige uno.
-2. **Módulos** → importa tu contrato (opcional pero muy útil).
+2. **Componentes** → importa tu contrato, o crea el componente a mano (opcional pero muy útil).
 3. **Ambientes** → registra dónde se prueba.
 4. **Espacio de trabajo** → explora y guarda casos.
 5. **Suites** → agrupa casos; **Programaciones** → automatiza.

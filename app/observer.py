@@ -516,7 +516,7 @@ class _Handler(BaseHTTPRequestHandler):
             response = self.server.client.request(self.command, tap['target'].rstrip('/') + self.path, content=body, headers=headers)
         except httpx.HTTPError as exc:
             logs.event('tap.upstream_error', tap=tap['name'], error=str(exc)[:200])
-            return self._send(502, json.dumps({'error': f'tap: el módulo destino no respondió ({type(exc).__name__})'}).encode(), [('Content-Type', 'application/json')])
+            return self._send(502, json.dumps({'error': f'tap: el componente destino no respondió ({type(exc).__name__})'}).encode(), [('Content-Type', 'application/json')])
         duration = (time.perf_counter() - started) * 1000
         out = [(k, v) for k, v in response.headers.multi_items() if k.lower() not in HOP_BY_HOP]
         try:                                              # recorded BEFORE answering, so the catalog never lags behind what was forwarded
@@ -538,7 +538,7 @@ def _templates_for(tap):
 
 def validate_tap(tap):
     if not (tap.get('name') or '').strip():
-        raise ValueError('El nombre del módulo es obligatorio')
+        raise ValueError('El nombre del componente es obligatorio')
     try:
         port = int(tap.get('listen_port'))
     except (TypeError, ValueError):

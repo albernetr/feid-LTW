@@ -72,7 +72,7 @@ def portable():
                 preview_box.clear()
                 with preview_box:
                     ui.label(f'Vista previa ({preview["scope"]}) — estrategia: {strategy.value}').classes('font-semibold')
-                    labels = {'projects': 'Proyectos', 'modules': 'Módulos', 'environments': 'Ambientes', 'cases': 'Casos', 'suites': 'Suites', 'schedules': 'Programaciones'}
+                    labels = {'projects': 'Proyectos', 'modules': 'Componentes', 'environments': 'Ambientes', 'cases': 'Casos', 'suites': 'Suites', 'schedules': 'Programaciones'}
                     for table, counts in preview['summary'].items():
                         if counts['total']:
                             ui.label(f'{labels[table]}: {counts["total"]} ({counts["new"]} nuevos, {counts["existing"]} existentes)')
@@ -102,7 +102,7 @@ def portable():
 
         with ui.card().classes('w-full border-2 border-red-300'):
             ui.label('Zona de peligro').classes('text-lg font-semibold text-red-700')
-            ui.label('Borra permanentemente TODO el workspace: proyectos, módulos, ambientes, casos, suites, '
+            ui.label('Borra permanentemente TODO el workspace: proyectos, componentes, ambientes, casos, suites, '
                       'programaciones e historial. No se puede deshacer; exporta antes si quieres conservar algo. '
                       'Los secretos guardados en el Administrador de credenciales no se tocan.').classes('text-sm text-gray-600')
             keep_evidence = ui.checkbox('Conservar evidencias (capturas y trazas)', value=False)

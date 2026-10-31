@@ -264,7 +264,7 @@ async def test_projects_detail_page_shows_its_resources(user: User):
     seed()
     pid = core.list_items('projects')[0]['id']
     await user.open(f'/projects/edit?id={pid}')
-    await user.should_see('Módulos')
+    await user.should_see('Componentes')
     await user.should_see('Sample API')
     await user.should_see('Ambientes')
     await user.should_see('Local')
@@ -440,7 +440,7 @@ async def test_modules_detail_page_shows_the_linked_environment_and_its_cases(us
     core.save('cases', {'name': 'Caso X', 'type': 'api', 'project_id': project['id'], 'method': 'GET', 'path': '/x', 'module_id': module['id'], 'assertions': []})
     await user.open(f'/modules/edit?id={module["id"]}')
     await user.should_see(f'«{env["name"]}»')  # already linked: no "Crear ambiente" button needed
-    await user.should_see('Casos de este módulo (1)')
+    await user.should_see('Casos de este componente (1)')
     await user.should_see('Caso X')
 
 
@@ -452,9 +452,9 @@ async def test_modules_detail_page_delete_blocked_when_cases_use_it(user: User):
     core.save('cases', case)
     await user.open(f'/modules/edit?id={module["id"]}')
     user.find('module-delete').click()
-    await user.should_see('¿Eliminar el módulo')
+    await user.should_see('¿Eliminar el componente')
     user.find('confirm-dialog-accept').click()
-    await user.should_see('caso(s) usan este módulo')
+    await user.should_see('caso(s) usan este componente')
     assert core.get('modules', module['id']) is not None
 
 
@@ -467,13 +467,55 @@ async def test_modules_table_delete_removes_an_unused_module(user: User):
     interaction = user.find(kind=ui.table)
     row = next(r for r in next(iter(interaction.elements)).rows if r['id'] == module['id'])
     interaction.trigger('deleteModule', row)
-    await user.should_see('¿Eliminar el módulo')
+    await user.should_see('¿Eliminar el componente')
     user.find('confirm-dialog-accept').click()
-    await user.should_see('Módulo eliminado')
+    await user.should_see('Componente eliminado')
     assert core.get('modules', module['id']) is None
 
 
-async def test_modules_warns_about_empty_header_value(user: User):
+async def test_modules_page_creates_a_manual_component(user: User):
+    project = core.create_project('P')
+    env = core.save('environments', {'name': 'QA', 'project_id': project['id'], 'base_url': 'https://x', 'auth': {'type': 'none'}, 'variables': {}})
+    await user.open('/modules')
+    user.find('component-name').type('Front web')
+    user.find('Tipo').click()
+    user.find('Frontend').click()
+    user.find('Ambiente (opcional)').click()
+    user.find(env['name']).click()
+    user.find('component-create').click()
+    await user.should_see('Componente «Front web» creado')
+    [component] = [m for m in core.list_items('modules') if m['name'] == 'Front web']
+    assert component['type'] == 'frontend' and component['manual'] is True and component['environment_id'] == env['id']
+
+
+async def test_modules_detail_page_edits_a_manual_component(user: User):
+    project = core.create_project('P')
+    component = core.create_component('Back manual', project['id'], 'backend')
+    await user.open(f'/modules/edit?id={component["id"]}')
+    user.find('component-edit-name').clear()
+    user.find('component-edit-name').type('Back renombrado')
+    user.find('component-save').click()
+    await user.should_see('Componente actualizado')
+    assert core.get('modules', component['id'])['name'] == 'Back renombrado'
+
+
+async def test_modules_detail_page_frontend_points_to_ui_cases(user: User):
+    project = core.create_project('P')
+    component = core.create_component('Front', project['id'], 'frontend')
+    await user.open(f'/modules/edit?id={component["id"]}')
+    await user.should_see('sus pruebas son Casos UI')
+    await user.should_not_see(marker='module-explore')
+
+
+async def test_modules_detail_page_hints_when_there_is_no_contract(user: User):
+    project = core.create_project('P')
+    component = core.create_component('Back sin contrato', project['id'], 'backend')
+    await user.open(f'/modules/edit?id={component["id"]}')
+    await user.should_see('no tiene un catálogo de operaciones')
+    await user.should_not_see(marker='module-explore')
+
+
+async def test_modules_table_delete_removes_an_unused_module(user: User):
     from nicegui import ui
     seed()
     module = core.list_items('modules')[0]
@@ -515,7 +557,7 @@ async def test_modules_warns_about_duplicate_import_by_source_url(user: User, tm
         user.find('URL del contrato, de su página de Swagger UI o un enlace de GitHub').type(spec_url)
         user.find('Importar desde URL').click()
         await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 3, seconds=40)
-        await user.should_see('Ya había 1 módulo')
+        await user.should_see('Ya había 1 componente')
     finally:
         server.shutdown()
 
@@ -622,7 +664,7 @@ async def test_observer_tap_form_validates(user: User):
     core.create_project('Obs')
     await user.open('/observer')
     user.find('Crear tap').click()
-    await user.should_see('El nombre del módulo es obligatorio')
+    await user.should_see('El nombre del componente es obligatorio')
     assert core.list_items('taps') == []
 
 

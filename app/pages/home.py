@@ -24,7 +24,7 @@ def home():
 
         steps = [
             ('Crear un proyecto', bool(project), '/projects'),
-            ('Importar un contrato OpenAPI (opcional)', counts['modules'] > 0, '/modules'),
+            ('Registrar un componente (opcional: con contrato, manual, o se omite y se crean casos directamente)', counts['modules'] > 0, '/modules'),
             ('Registrar un ambiente', counts['environments'] > 0, '/environments'),
             ('Crear un caso de prueba', counts['cases'] > 0, '/cases'),
             ('Agrupar casos en una suite', counts['suites'] > 0, '/suites'),
@@ -40,7 +40,7 @@ def home():
         ui.button('Ver el resumen ejecutivo (semáforo, tendencia y qué falla)', icon='monitor_heart', on_click=lambda: ui.navigate.to('/resumen')).props('outline color=primary')
         ui.button('Abrir el Espacio de trabajo (probar peticiones, lotes, conectividad y navegador)', icon='space_dashboard', on_click=lambda: ui.navigate.to('/workspace')).props('outline color=primary')
         with ui.row().classes('gap-3 flex-wrap'):
-            for label, key, route in (('Módulos', 'modules', '/modules'), ('Ambientes', 'environments', '/environments'),
+            for label, key, route in (('Componentes', 'modules', '/modules'), ('Ambientes', 'environments', '/environments'),
                                       ('Casos', 'cases', '/cases'), ('Suites', 'suites', '/suites'), ('Programaciones', 'schedules', '/schedules')):
                 with ui.card().classes('w-40 cursor-pointer').on('click', lambda _, r=route: ui.navigate.to(r)):
                     ui.label(str(counts[key])).classes('text-3xl font-bold text-primary')

@@ -81,6 +81,56 @@ def test_ensure_environment_for_module_returns_none_without_a_resolvable_server(
     assert env is None and created is False
 
 
+def test_create_component_requires_a_name_and_a_valid_kind():
+    project = core.create_project('P')
+    with pytest.raises(ValueError, match='nombre'):
+        core.create_component('', project['id'])
+    with pytest.raises(ValueError, match='Tipo'):
+        core.create_component('X', project['id'], kind='database')
+    component = core.create_component('Front web', project['id'], kind='frontend')
+    assert component['type'] == 'frontend' and component['manual'] is True and component['operations'] == []
+
+
+def test_create_component_links_an_environment_and_rejects_a_foreign_one():
+    project = core.create_project('P')
+    env = core.save('environments', {'name': 'QA', 'project_id': project['id'], 'base_url': 'https://x', 'auth': {'type': 'none'}, 'variables': {}})
+    component = core.create_component('Back sin contrato', project['id'], 'backend', env['id'])
+    assert component['environment_id'] == env['id']
+
+    other_project = core.create_project('Otro')
+    with pytest.raises(ValueError, match='no pertenece'):
+        core.create_component('X', other_project['id'], 'backend', env['id'])
+
+    with pytest.raises(ValueError, match='inexistente'):
+        core.create_component('Y', project['id'], 'backend', 'no-existe')
+
+
+def test_update_component_only_works_on_manual_ones():
+    project = core.create_project('P')
+    imported = core.import_openapi(SPEC, project['id'])
+    with pytest.raises(ValueError, match='manualmente'):
+        core.update_component(imported['id'], 'Nuevo nombre', 'backend')
+
+    manual = core.create_component('X', project['id'], 'backend')
+    updated = core.update_component(manual['id'], 'Y', 'frontend')
+    assert updated['name'] == 'Y' and updated['type'] == 'frontend'
+    with pytest.raises(ValueError, match='obligatorio'):
+        core.update_component(manual['id'], '', 'backend')
+
+
+def test_component_environment_prefers_the_explicit_link_over_url_matching():
+    project = core.create_project('P')
+    explicit_env = core.save('environments', {'name': 'Explícito', 'project_id': project['id'], 'base_url': 'https://explicit.example.com', 'auth': {'type': 'none'}, 'variables': {}})
+    core.save('environments', {'name': 'Por URL', 'project_id': project['id'], 'base_url': 'https://by-url.example.com', 'auth': {'type': 'none'}, 'variables': {}})
+    raw = ('openapi: 3.0.3\ninfo: {title: X, version: "1"}\nservers: [{url: https://by-url.example.com}]\n'
+           'paths: {"/x": {"get": {"responses": {"200": {"description": "ok"}}}}}\n')
+    module = core.import_openapi(raw, project['id'])
+    module['environment_id'] = explicit_env['id']  # simulates a manually-linked component that also happens to have a matching server
+    assert core.component_environment(module)['id'] == explicit_env['id']
+    del module['environment_id']
+    assert core.component_environment(module)['base_url'] == 'https://by-url.example.com'
+
+
 def test_projects_persist_and_select_active():
   project=core.create_project('Comercial', 'Pruebas del módulo comercial')
   module=core.import_openapi(SPEC, project['id'])
@@ -155,7 +205,7 @@ def test_delete_project_lists_every_blocking_resource_type():
     project = core.create_project('Con recursos')
     core.import_openapi(SPEC, project['id'])
     core.save('environments', {'name': 'E', 'project_id': project['id'], 'base_url': 'https://x', 'auth': {'type': 'none'}, 'variables': {}})
-    with pytest.raises(ValueError, match=r'1 módulo.*1 ambiente') as exc:
+    with pytest.raises(ValueError, match=r'1 componente.*1 ambiente') as exc:
         core.delete_project(project['id'])
     assert 'Bórralos' in str(exc.value)
 
@@ -188,7 +238,7 @@ def test_project_update_stats_and_safe_delete():
   assert updated['name']=='Temporal actualizado'
   core.import_openapi(SPEC, project['id'])
   assert core.project_stats(project['id'])['modules']==1
-  with pytest.raises(ValueError, match='1 módulo'):
+  with pytest.raises(ValueError, match='1 componente'):
     core.delete_project(project['id'])
   empty=core.create_project('Vacío')
   core.delete_project(empty['id'])

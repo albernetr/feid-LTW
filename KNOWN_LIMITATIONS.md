@@ -43,6 +43,11 @@
 - No pausa nada que ya esté corriendo; solo impide que se vuelva a **seleccionar** como activo (y lo desactiva si lo estaba). Una programación de ese proyecto no se dispara mientras está deshabilitado (el scheduler la omite), pero una suite ya en ejecución al momento de deshabilitarlo sigue hasta terminar.
 - Importar un workspace no pasa por la validación de nombre duplicado ni preserva automáticamente el estado `disabled` del destino con la estrategia «merge» (si el proyecto ya existe, «merge» no lo toca en absoluto: conserva el que ya tenías, no el del paquete).
 
+## Componentes creados manualmente (sin contrato)
+- Sin catálogo de operaciones: no hay exploración automática ni «Crear caso» por operación, porque no hay nada que leer. Sigue funcionando crear Casos API directamente y ligarlos al componente desde el propio editor del caso.
+- Solo se pueden editar (nombre, tipo, ambiente) si son manuales; uno importado desde un contrato mantiene nombre/versión/operaciones tal como los declara el origen — para cambiarlos hay que reimportar.
+- El tipo «Frontend» es solo informativo (para el inventario y el filtro); no cambia qué puede hacer el componente ni lo conecta con Casos UI automáticamente.
+
 ## Base de datos compartida
 - SQLite sobre un recurso de red depende de que el sistema de archivos respete los bloqueos; algunos NAS no lo hacen bien. Para uso concurrente intenso se necesitaría un servidor de base de datos (no incluido).
 - La detección de conflictos cubre la edición de casos, casos UI y suites; el resto de pantallas escribe «el último gana».
