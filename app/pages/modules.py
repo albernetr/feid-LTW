@@ -19,52 +19,7 @@ def modules_list():
         if not require_project():
             return
         pid = core.get_active_project_id()
-        with ui.card().classes('w-full'):
-            ui.label('Importar contrato').classes('text-lg font-semibold')
-            ui.label('Para un backend con contrato publicado. JSON o YAML; solo se resuelven referencias $ref locales (#/…), las externas se rechazan.').classes('text-gray-500 text-sm')
-            url = ui.input('URL del contrato, de su página de Swagger UI o un enlace de GitHub').props('outlined dense').classes('w-full')
-            ui.label('Acepta el enlace directo al .json/.yaml, la página de Swagger UI / Redoc (se busca el contrato enlazado) o un enlace github.com/…/blob/….').classes('text-xs text-gray-500')
-
-            async def from_url():
-                module = await run.io_bound(core.import_openapi_url, url.value, pid)
-                duplicates = [m for m in core.list_project_items('modules', pid) if m['id'] != module['id'] and m.get('source_url') == module.get('source_url')]
-                dup_note = f' Ya había {len(duplicates)} componente(s) con este mismo origen en el proyecto: revisa si quieres eliminar el anterior.' if duplicates else ''
-                ui.notify(f'Importado «{module["name"]}»: {len(module["operations"])} operaciones. Origen: {module["source_url"]}.{_env_note(pid, module)}{dup_note}',
-                          type='warning' if duplicates else 'positive', multi_line=True)
-                ui.navigate.to(f'/modules/edit?id={module["id"]}')
-            ui.button('Importar desde URL', icon='cloud_download', on_click=guard(from_url)).props('color=primary')
-
-            async def upload(event):
-                try:
-                    raw = await read_upload(event)
-                    module = core.import_openapi(raw.decode('utf-8'), pid)
-                    duplicates = [m for m in core.list_project_items('modules', pid)
-                                  if m['id'] != module['id'] and m['name'] == module['name'] and m.get('version') == module.get('version')]
-                    dup_note = f' Ya había {len(duplicates)} componente(s) con el mismo nombre y versión: revisa si quieres eliminar el anterior.' if duplicates else ''
-                    ui.notify(f'Importado «{module["name"]}»: {len(module["operations"])} operaciones.{_env_note(pid, module)}{dup_note}',
-                              type='warning' if duplicates else 'positive', multi_line=True)
-                    ui.navigate.to(f'/modules/edit?id={module["id"]}')
-                except Exception as exc:
-                    ui.notify(str(exc), type='negative', multi_line=True)
-            ui.upload(label='O arrastra un archivo OpenAPI (.json/.yaml)', on_upload=upload, auto_upload=True,
-                      max_file_size=MAX_SPEC_BYTES).props('accept=.json,.yaml,.yml flat bordered').classes('w-full')
-
-        with ui.card().classes('w-full'):
-            ui.label('Crear componente manualmente').classes('text-lg font-semibold')
-            ui.label('Para un frontend, o un backend sin contrato publicado: un nombre, un tipo y, si ya lo tienes, el ambiente donde vive. '
-                     'Sin catálogo de operaciones (no hay contrato que leer); puedes seguir creando Casos directamente.').classes('text-gray-500 text-sm')
-            with ui.row().classes('items-end gap-3 w-full'):
-                manual_name = ui.input('Nombre').props('outlined dense').classes('grow').mark('component-name')
-                manual_kind = ui.select(KIND_LABELS, value='backend', label='Tipo').props('outlined dense').classes('w-40').mark('component-kind')
-                envs_here = core.list_project_items('environments', pid)
-                manual_env = ui.select({e['id']: e['name'] for e in envs_here}, label='Ambiente (opcional)', clearable=True) \
-                    .props('outlined dense').classes('w-60').mark('component-env')
-
-            def create_manual():
-                component = core.create_component(manual_name.value, pid, manual_kind.value, manual_env.value)
-                ui.notify(f'Componente «{component["name"]}» creado', type='positive')
-                ui.navigate.to(f'/modules/edit?id={component["id"]}')
-            ui.button('Crear componente', icon='add', on_click=guard(create_manual)).props('outline').mark('component-create')
+        ui.button('Nuevo componente', icon='add', on_click=lambda: ui.navigate.to('/modules/edit')).props('color=primary')
 
         items = core.list_project_items('modules', pid)
         if not items:
@@ -135,17 +90,71 @@ def modules_list():
         ui.label('Haz clic en una fila para ver su ambiente, explorarlo y sus casos; elimina directamente con el icono.').classes('text-sm text-gray-500')
 
 
+def _new_component_form(pid):
+    mode = ui.radio({'contract': 'Importar contrato', 'manual': 'Crear manualmente'}, value='contract').props('inline')
+
+    with ui.card().classes('w-full').bind_visibility_from(mode, 'value', lambda v: v == 'contract'):
+        ui.label('Para un backend con contrato publicado. JSON o YAML; solo se resuelven referencias $ref locales (#/…), las externas se rechazan.').classes('text-gray-500 text-sm')
+        url = ui.input('URL del contrato, de su página de Swagger UI o un enlace de GitHub').props('outlined dense').classes('w-full')
+        ui.label('Acepta el enlace directo al .json/.yaml, la página de Swagger UI / Redoc (se busca el contrato enlazado) o un enlace github.com/…/blob/….').classes('text-xs text-gray-500')
+
+        async def from_url():
+            module = await run.io_bound(core.import_openapi_url, url.value, pid)
+            duplicates = [m for m in core.list_project_items('modules', pid) if m['id'] != module['id'] and m.get('source_url') == module.get('source_url')]
+            dup_note = f' Ya había {len(duplicates)} componente(s) con este mismo origen en el proyecto: revisa si quieres eliminar el anterior.' if duplicates else ''
+            ui.notify(f'Importado «{module["name"]}»: {len(module["operations"])} operaciones. Origen: {module["source_url"]}.{_env_note(pid, module)}{dup_note}',
+                      type='warning' if duplicates else 'positive', multi_line=True)
+            ui.navigate.to(f'/modules/edit?id={module["id"]}')
+        ui.button('Importar desde URL', icon='cloud_download', on_click=guard(from_url)).props('color=primary')
+
+        async def upload(event):
+            try:
+                raw = await read_upload(event)
+                module = core.import_openapi(raw.decode('utf-8'), pid)
+                duplicates = [m for m in core.list_project_items('modules', pid)
+                              if m['id'] != module['id'] and m['name'] == module['name'] and m.get('version') == module.get('version')]
+                dup_note = f' Ya había {len(duplicates)} componente(s) con el mismo nombre y versión: revisa si quieres eliminar el anterior.' if duplicates else ''
+                ui.notify(f'Importado «{module["name"]}»: {len(module["operations"])} operaciones.{_env_note(pid, module)}{dup_note}',
+                          type='warning' if duplicates else 'positive', multi_line=True)
+                ui.navigate.to(f'/modules/edit?id={module["id"]}')
+            except Exception as exc:
+                ui.notify(str(exc), type='negative', multi_line=True)
+        ui.upload(label='O arrastra un archivo OpenAPI (.json/.yaml)', on_upload=upload, auto_upload=True,
+                  max_file_size=MAX_SPEC_BYTES).props('accept=.json,.yaml,.yml flat bordered').classes('w-full')
+
+    with ui.card().classes('w-full').bind_visibility_from(mode, 'value', lambda v: v == 'manual'):
+        ui.label('Para un frontend, o un backend sin contrato publicado: un nombre, un tipo y, si ya lo tienes, el ambiente donde vive. '
+                 'Sin catálogo de operaciones (no hay contrato que leer); puedes seguir creando Casos directamente.').classes('text-gray-500 text-sm')
+        with ui.row().classes('items-end gap-3 w-full'):
+            manual_name = ui.input('Nombre').props('outlined dense').classes('grow').mark('component-name')
+            manual_kind = ui.select(KIND_LABELS, value='backend', label='Tipo').props('outlined dense').classes('w-40').mark('component-kind')
+            envs_here = core.list_project_items('environments', pid)
+            manual_env = ui.select({e['id']: e['name'] for e in envs_here}, label='Ambiente (opcional)', clearable=True) \
+                .props('outlined dense').classes('w-60').mark('component-env')
+
+        def create_manual():
+            component = core.create_component(manual_name.value, pid, manual_kind.value, manual_env.value)
+            ui.notify(f'Componente «{component["name"]}» creado', type='positive')
+            ui.navigate.to(f'/modules/edit?id={component["id"]}')
+        ui.button('Crear componente', icon='add', on_click=guard(create_manual)).props('outline').mark('component-create')
+
+
 @ui.page('/modules/edit')
 def module_detail(id: str = ''):
-    with frame('Componente', '/modules'):
+    with frame('Componente' if id else 'Nuevo componente', '/modules'):
         if not require_project():
             return
         pid = core.get_active_project_id()
-        module = core.get('modules', id) if id else None
+        ui.link('← Volver a Componentes', '/modules').classes('text-sm')
+
+        if not id:
+            _new_component_form(pid)
+            return
+
+        module = core.get('modules', id)
         if not module or module.get('project_id') != pid:
             ui.label('Este componente ya no existe en el proyecto activo.').classes('text-amber-700')
             return
-        ui.link('← Volver a Componentes', '/modules').classes('text-sm')
         is_manual = bool(module.get('manual'))
         kind = module.get('type', 'backend')
         operations = module.get('operations') or []

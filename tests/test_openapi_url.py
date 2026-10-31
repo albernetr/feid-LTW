@@ -111,7 +111,7 @@ def test_swagger2_host_and_basepath_become_a_server():
 async def test_modules_page_imports_from_a_swagger_ui_page_and_creates_the_environment(user, docs):
     project = core.create_project('Mod')
     core.set_active_project(project['id'])
-    await user.open('/modules')
+    await user.open('/modules/edit')
     user.find('URL del contrato, de su página de Swagger UI o un enlace de GitHub').type(docs + '/ui/')
     user.find('Importar desde URL').click()
     await asyncio.sleep(1.5)  # the download runs in a worker thread

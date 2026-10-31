@@ -65,7 +65,7 @@ async def test_openapi_upload_works_with_nicegui_3(user: User):
     from nicegui import ui
     from nicegui.elements.upload_files import SmallFileUpload
     core.create_project('P')
-    await user.open('/modules')
+    await user.open('/modules/edit')
     upload = user.find(kind=ui.upload).elements.pop()
     await upload.handle_uploads([SmallFileUpload(name='spec.yaml', content_type='text/yaml', _data=SPEC)])
     await user.should_see('Importado «Subida»')
@@ -476,7 +476,8 @@ async def test_modules_table_delete_removes_an_unused_module(user: User):
 async def test_modules_page_creates_a_manual_component(user: User):
     project = core.create_project('P')
     env = core.save('environments', {'name': 'QA', 'project_id': project['id'], 'base_url': 'https://x', 'auth': {'type': 'none'}, 'variables': {}})
-    await user.open('/modules')
+    await user.open('/modules/edit')
+    user.find('Crear manualmente').click()
     user.find('component-name').type('Front web')
     user.find('Tipo').click()
     user.find('Frontend').click()
@@ -515,7 +516,7 @@ async def test_modules_detail_page_hints_when_there_is_no_contract(user: User):
     await user.should_not_see(marker='module-explore')
 
 
-async def test_modules_table_delete_removes_an_unused_module(user: User):
+async def test_modules_warns_about_empty_header_value(user: User):
     from nicegui import ui
     seed()
     module = core.list_items('modules')[0]
@@ -548,12 +549,12 @@ async def test_modules_warns_about_duplicate_import_by_source_url(user: User, tm
     thread.start()
     try:
         spec_url = f'http://127.0.0.1:{server.server_port}/openapi.json'
-        await user.open('/modules')
+        await user.open('/modules/edit')
         user.find('URL del contrato, de su página de Swagger UI o un enlace de GitHub').type(spec_url)
         user.find('Importar desde URL').click()
         # run.io_bound: a real thread + HTTP round trip, slow and jittery under a loaded test run — poll the actual state, not a fixed retry budget
         await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 2, seconds=40)
-        await user.open('/modules')  # a successful import now navigates to the module's own detail page
+        await user.open('/modules/edit')  # a successful import now navigates to the module's own detail page
         user.find('URL del contrato, de su página de Swagger UI o un enlace de GitHub').type(spec_url)
         user.find('Importar desde URL').click()
         await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 3, seconds=40)
