@@ -42,7 +42,7 @@ No todas las partes tienen el mismo recorrido. Esto no mide «¿funciona?» sino
 | Nivel | Qué significa | Incluye |
 |---|---|---|
 | 🟢 **Estable** | Probado contra sistemas reales, con pruebas automáticas y fallos reales encontrados y corregidos. | Motor de aserciones y ejecución de casos API (26 tipos) · Protocolo para agentes (`ltw.spec`/`ltw.report`/`ltw.failure`) · Importar contratos OpenAPI (archivo, URL, Swagger UI/Redoc/FastAPI) · Exploración automática de contratos · Importar/Exportar del workspace · Seguridad de secretos |
-| 🟡 **Beta** | Funciona y tiene pruebas, pero con menos uso real sostenido o un límite conocido que conviene vigilar. | Suites y flujos con enriquecimiento entre componentes · Observador de interfaces (el tap/proxy en vivo, más que aprender del historial) · Resumen ejecutivo y reporte de estatus · Casos UI y el espacio de trabajo unificado · Actualización automática de token por petición HTTP · Componentes creados manualmente sin contrato |
+| 🟡 **Beta** | Funciona y tiene pruebas, pero con menos uso real sostenido o un límite conocido que conviene vigilar. | Suites y flujos con enriquecimiento entre componentes · Observador de interfaces (el tap/proxy en vivo, más que aprender del historial) · Resumen ejecutivo y reporte de estatus · Casos UI y el espacio de trabajo unificado · Actualización automática de token por petición HTTP · Componentes creados manualmente sin contrato · Módulos y Funcionalidades (agrupación por dominio y trazabilidad de negocio) · Componentes con múltiples ambientes y backend+frontend a la vez |
 | ⚪ **Experimental** | Usable, pero la calidad depende de algo fuera de LTW (el modelo que conectes) o de un uso que casi no se ha probado. | Asistente con modelo de lenguaje (depende del modelo que conectes) · Programaciones de larga duración sin supervisión · Actualización automática de token por comando del sistema |
 
 Límites conocidos de cada sección, en detalle: [KNOWN_LIMITATIONS.md](../../KNOWN_LIMITATIONS.md).
@@ -203,10 +203,12 @@ Espacio de trabajo: historial propio de peticiones sueltas (no necesita proyecto
 | **Resumen** | Semáforo, tendencia, qué falla y desde cuándo; exporta el reporte de estatus. |
 | **Espacio de trabajo** | Pantalla principal para enviar peticiones, editarlas y guardarlas. |
 | **Proyectos** | Crear, editar, seleccionar y eliminar proyectos. |
-| **Componentes** | Importar contratos OpenAPI/Swagger, o crear backends/frontends a mano. |
+| **Módulos** | Agrupan componentes por dominio o propiedad técnica (quién es dueño, dónde vive). |
+| **Componentes** | Registrar backends/frontends (o ambos); el contrato OpenAPI/Swagger se importa después, si aplica. |
 | **Ambientes** | Ambientes, variables y secretos. |
 | **Casos API** | Casos de petición HTTP guardados. |
 | **Casos UI** | Casos de navegador con pasos y grabador. |
+| **Funcionalidades** | Capacidades de negocio que pueden cruzar varios componentes/módulos; se validan con Suites. |
 | **Suites** | Suites y flujos entre componentes. |
 | **Observador** | Taps, catálogo de interfaces y cambios. |
 | **Programaciones** | Ejecuciones automáticas. |
@@ -223,7 +225,7 @@ Espacio de trabajo: historial propio de peticiones sueltas (no necesita proyecto
 ## 4.2 Orden recomendado de trabajo
 
 1. **Proyectos** → crea o elige uno.
-2. **Componentes** → importa tu contrato, o crea el componente a mano (opcional pero muy útil).
+2. **Componentes** → regístralos (nombre, lo que exponen); importa el contrato después, si aplica (opcional pero muy útil).
 3. **Ambientes** → registra dónde se prueba.
 4. **Espacio de trabajo** → explora y guarda casos.
 5. **Suites** → agrupa casos; **Programaciones** → automatiza.

@@ -6,8 +6,9 @@ from nicegui import ui
 from .. import core, automation
 
 NAV = [
-    ('Inicio', '/', 'home'), ('Resumen', '/resumen', 'monitor_heart'), ('Espacio de trabajo', '/workspace', 'space_dashboard'), ('Proyectos', '/projects', 'folder_open'), ('Componentes', '/modules', 'widgets'),
-    ('Ambientes', '/environments', 'dns'), ('Casos API', '/cases', 'http'), ('Casos UI', '/ui-cases', 'web'),
+    ('Inicio', '/', 'home'), ('Resumen', '/resumen', 'monitor_heart'), ('Espacio de trabajo', '/workspace', 'space_dashboard'), ('Proyectos', '/projects', 'folder_open'),
+    ('Módulos', '/module-groups', 'account_tree'), ('Componentes', '/modules', 'widgets'), ('Ambientes', '/environments', 'dns'),
+    ('Casos API', '/cases', 'http'), ('Casos UI', '/ui-cases', 'web'), ('Funcionalidades', '/features', 'flag'),
     ('Suites', '/suites', 'playlist_play'), ('Observador', '/observer', 'visibility'), ('Programaciones', '/schedules', 'schedule'),
     ('Historial', '/runs', 'history'), ('Importar / Exportar', '/portable', 'swap_vert'),
 ]

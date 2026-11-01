@@ -81,53 +81,69 @@ def test_ensure_environment_for_module_returns_none_without_a_resolvable_server(
     assert env is None and created is False
 
 
-def test_create_component_requires_a_name_and_a_valid_kind():
+def test_create_component_requires_a_name_and_at_least_one_kind():
     project = core.create_project('P')
     with pytest.raises(ValueError, match='nombre'):
         core.create_component('', project['id'])
-    with pytest.raises(ValueError, match='Tipo'):
-        core.create_component('X', project['id'], kind='database')
-    component = core.create_component('Front web', project['id'], kind='frontend')
-    assert component['type'] == 'frontend' and component['manual'] is True and component['operations'] == []
+    with pytest.raises(ValueError, match='backend, frontend'):
+        core.create_component('X', project['id'], is_backend=False, is_frontend=False)
+    component = core.create_component('Front web', project['id'], is_backend=False, is_frontend=True)
+    assert component['is_backend'] is False and component['is_frontend'] is True and component['manual'] is True and component['operations'] == []
+    assert core.component_kind_label(component) == 'Frontend'
+
+    full_stack = core.create_component('Monolito', project['id'], is_backend=True, is_frontend=True)
+    assert core.component_flags(full_stack) == (True, True)
+    assert core.component_kind_label(full_stack) == 'Backend + Frontend'
 
 
-def test_create_component_links_an_environment_and_rejects_a_foreign_one():
+def test_create_component_links_environments_and_rejects_a_foreign_one():
     project = core.create_project('P')
     env = core.save('environments', {'name': 'QA', 'project_id': project['id'], 'base_url': 'https://x', 'auth': {'type': 'none'}, 'variables': {}})
-    component = core.create_component('Back sin contrato', project['id'], 'backend', env['id'])
-    assert component['environment_id'] == env['id']
+    component = core.create_component('Back sin contrato', project['id'], environment_ids=[env['id']])
+    assert component['environment_ids'] == [env['id']]
 
     other_project = core.create_project('Otro')
     with pytest.raises(ValueError, match='no pertenece'):
-        core.create_component('X', other_project['id'], 'backend', env['id'])
+        core.create_component('X', other_project['id'], environment_ids=[env['id']])
 
     with pytest.raises(ValueError, match='inexistente'):
-        core.create_component('Y', project['id'], 'backend', 'no-existe')
+        core.create_component('Y', project['id'], environment_ids=['no-existe'])
 
 
-def test_update_component_only_works_on_manual_ones():
+def test_update_component_renames_and_reclassifies_any_component_imported_or_manual():
     project = core.create_project('P')
     imported = core.import_openapi(SPEC, project['id'])
-    with pytest.raises(ValueError, match='manualmente'):
-        core.update_component(imported['id'], 'Nuevo nombre', 'backend')
+    renamed = core.update_component(imported['id'], 'Nombre propio', True, True)
+    assert renamed['name'] == 'Nombre propio' and core.component_flags(renamed) == (True, True)
+    assert renamed['operations'] == imported['operations']   # contract-sourced fields untouched
 
-    manual = core.create_component('X', project['id'], 'backend')
-    updated = core.update_component(manual['id'], 'Y', 'frontend')
-    assert updated['name'] == 'Y' and updated['type'] == 'frontend'
+    manual = core.create_component('X', project['id'])
+    updated = core.update_component(manual['id'], 'Y', False, True)
+    assert updated['name'] == 'Y' and core.component_flags(updated) == (False, True)
     with pytest.raises(ValueError, match='obligatorio'):
-        core.update_component(manual['id'], '', 'backend')
+        core.update_component(manual['id'], '', True, False)
+    with pytest.raises(ValueError, match='backend, frontend'):
+        core.update_component(manual['id'], 'Y', False, False)
 
 
-def test_component_environment_prefers_the_explicit_link_over_url_matching():
+def test_set_component_environments_works_on_any_component_and_component_environment_resolves_first():
     project = core.create_project('P')
-    explicit_env = core.save('environments', {'name': 'Explícito', 'project_id': project['id'], 'base_url': 'https://explicit.example.com', 'auth': {'type': 'none'}, 'variables': {}})
+    dev = core.save('environments', {'name': 'Dev', 'project_id': project['id'], 'base_url': 'https://dev.example.com', 'auth': {'type': 'none'}, 'variables': {}})
+    qa = core.save('environments', {'name': 'QA', 'project_id': project['id'], 'base_url': 'https://qa.example.com', 'auth': {'type': 'none'}, 'variables': {}})
+    imported = core.import_openapi(SPEC, project['id'])  # works even on an imported (non-manual) component
+    core.set_component_environments(imported['id'], [dev['id'], qa['id']])
+    updated = core.get('modules', imported['id'])
+    envs = core.component_environments(updated)
+    assert [e['id'] for e in envs] == [dev['id'], qa['id']]
+    assert core.component_environment(updated)['id'] == dev['id']
+
+
+def test_component_environment_falls_back_to_url_matching_for_legacy_components():
+    project = core.create_project('P')
     core.save('environments', {'name': 'Por URL', 'project_id': project['id'], 'base_url': 'https://by-url.example.com', 'auth': {'type': 'none'}, 'variables': {}})
     raw = ('openapi: 3.0.3\ninfo: {title: X, version: "1"}\nservers: [{url: https://by-url.example.com}]\n'
            'paths: {"/x": {"get": {"responses": {"200": {"description": "ok"}}}}}\n')
     module = core.import_openapi(raw, project['id'])
-    module['environment_id'] = explicit_env['id']  # simulates a manually-linked component that also happens to have a matching server
-    assert core.component_environment(module)['id'] == explicit_env['id']
-    del module['environment_id']
     assert core.component_environment(module)['base_url'] == 'https://by-url.example.com'
 
 
@@ -253,7 +269,7 @@ def test_safe_delete_also_purges_orphaned_history_and_its_evidence():
     shot.write_text('x')
     run = core.save('runs', {'type': 'api', 'project_id': project['id'], 'status': 'passed', 'screenshot': 'suelto.png'})
     interface = core.save('interfaces', {'module': 'M', 'method': 'GET', 'project_id': project['id']})
-    assert core.project_stats(project['id']) == {'modules': 0, 'environments': 0, 'cases': 0, 'suites': 0, 'schedules': 0, 'taps': 0}
+    assert core.project_stats(project['id']) == {'module_groups': 0, 'modules': 0, 'environments': 0, 'cases': 0, 'features': 0, 'suites': 0, 'schedules': 0, 'taps': 0}
 
     core.delete_project(project['id'])
 
@@ -310,6 +326,19 @@ def test_token_needs_refresh():
     assert core.token_needs_refresh(env_fresh) is False
 
 
+def test_token_needs_refresh_respects_the_enabled_flag():
+    """A refresh mechanism can be configured (so 'Obtener token ahora' works) without being applied
+    automatically — the 'enabled' flag on the refresh config is what distinguishes the two; missing it
+    (old saved environments, before this flag existed) still defaults to automatic, same as before."""
+    core.secret_delete('tok-disabled')
+    env_disabled = {'auth': {'type': 'bearer', 'secret': 'tok-disabled',
+                    'refresh': {'mode': 'command', 'command': 'echo x', 'enabled': False}}}
+    assert core.token_needs_refresh(env_disabled) is False  # configured, but not automatic: never proactively refreshed
+
+    env_default = {'auth': {'type': 'bearer', 'secret': 'tok-disabled', 'refresh': {'mode': 'command', 'command': 'echo x'}}}
+    assert core.token_needs_refresh(env_default) is True  # no 'enabled' key: backward-compatible default is automatic
+
+
 def test_refresh_token_command_mode_writes_the_secret():
     env = core.save('environments', {'name': 'E', 'auth': {'type': 'bearer', 'secret': 'cmd-tok',
                     'refresh': {'mode': 'command', 'command': 'echo refreshed-value'}}})
@@ -317,6 +346,16 @@ def test_refresh_token_command_mode_writes_the_secret():
     assert token == 'refreshed-value'
     assert core.secret_get('cmd-tok') == 'refreshed-value'
     assert core.get('environments', env['id'])['auth']['token_refreshed_at']
+
+
+def test_refresh_token_works_even_when_automatic_refresh_is_disabled():
+    """'Obtener token ahora' (manual) must work regardless of the 'enabled' flag — that flag only gates
+    whether execute_api refreshes proactively/reactively on its own, never the manual action."""
+    env = core.save('environments', {'name': 'E', 'auth': {'type': 'bearer', 'secret': 'cmd-tok-2',
+                    'refresh': {'mode': 'command', 'command': 'echo manual-value', 'enabled': False}}})
+    token = core.refresh_token(env)
+    assert token == 'manual-value'
+    assert core.secret_get('cmd-tok-2') == 'manual-value'
 
 
 def test_refresh_token_command_mode_reports_a_failing_command():

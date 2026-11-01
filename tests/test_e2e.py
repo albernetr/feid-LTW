@@ -146,7 +146,7 @@ def test_portability_end_to_end(world, tmp_path):
     preview = core.preview_import(path, 'merge')
     assert preview['summary']['suites']['new'] == 1 and core.list_items('suites') == []
     counts = core.import_workspace(path, 'merge')
-    assert counts == {'projects': 1, 'modules': 0, 'environments': 1, 'cases': 1, 'suites': 1, 'schedules': 1}
+    assert counts == {'projects': 1, 'module_groups': 0, 'modules': 0, 'environments': 1, 'cases': 1, 'features': 0, 'suites': 1, 'schedules': 1}
     assert core.list_items('schedules')[0]['enabled'] is False
     imported_suite = core.list_items('suites')[0]
     assert core.get('cases', imported_suite['case_ids'][0])

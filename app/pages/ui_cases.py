@@ -42,7 +42,7 @@ def draft_from_case(case):
 
 
 @ui.page('/ui-cases')
-def ui_cases_page(id: str = ''):
+def ui_cases_page(id: str = '', name: str = '', url: str = ''):
     with frame('Casos UI (Playwright)', '/ui-cases', wide=True):
         if not require_project():
             return
@@ -53,6 +53,11 @@ def ui_cases_page(id: str = ''):
             ui.label('El caso no existe.')
             return
         d = draft_from_case(preset) if preset else new_draft()
+        if not preset and (name or url):   # arriving from a Vista cataloged on a component: start from its name/route
+            if name:
+                d['name'] = name
+            if url:
+                d['steps'] = [{'action': 'navigate', 'url': url}]
         if not d['env_id'] and len(envs) == 1:
             d['env_id'] = envs[0]['id']
         W = {}

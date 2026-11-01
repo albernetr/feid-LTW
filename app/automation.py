@@ -99,6 +99,99 @@ def _use_system_browsers():
     os.environ['PLAYWRIGHT_BROWSERS_PATH'] = cache
 
 
+NOT_FOUND_MARKERS = ('404', 'página no encontrada', 'pagina no encontrada', 'page not found', 'not found', 'no encontrada', 'no existe', 'no fue encontrada')
+
+
+def check_view(url, timeout_ms=10000):
+    """Carga una vista con un navegador real (headless), como la vería alguien de verdad — a diferencia de
+    una comprobación HTTP sola: una SPA con ruteo del lado del cliente normalmente responde 200 para
+    cualquier ruta (sirve siempre el mismo `index.html`) aunque la app renderice un «página no encontrada».
+    Heurístico: busca indicios de «no encontrado» en el título y el texto visible de la página."""
+    _use_system_browsers()
+    from playwright.sync_api import sync_playwright
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_default_timeout(timeout_ms)
+                response = page.goto(url, wait_until='networkidle')
+                status = response.status if response else None
+                title = page.title() or ''
+                try:
+                    body_text = page.inner_text('body')[:3000]
+                except Exception:
+                    body_text = ''
+                haystack = (title + ' ' + body_text).lower()
+                looks_missing = any(marker in haystack for marker in NOT_FOUND_MARKERS)
+                ok = bool(status) and status < 400 and not looks_missing
+                if looks_missing:
+                    detail = 'La página muestra un estado de «no encontrado»'
+                elif not ok:
+                    detail = f'HTTP {status}' if status else 'No se pudo cargar'
+                else:
+                    detail = f'Carga correctamente (HTTP {status})'
+                return {'ok': ok, 'status': status, 'looks_missing': looks_missing, 'title': title[:120], 'detail': detail}
+            finally:
+                browser.close()
+    except Exception as exc:
+        return {'ok': False, 'status': None, 'looks_missing': False, 'title': '', 'detail': str(exc)}
+
+
+def discover_views(base_url, start_path=None, max_pages=15, timeout_ms=8000, on_progress=None):
+    """Encuentra vistas reales navegando el sitio con un navegador real: parte de base_url (o de `start_path`,
+    para acotar el rastreo a una sección como «/admin» en vez de todo el sitio), sigue los enlaces ya
+    renderizados (después de que el JS corrió, así que funciona con ruteo del lado del cliente) que apunten
+    al mismo origen, y recoge ruta + título por cada página nueva. Acotado por `max_pages` para que sea
+    rápido y no termine rastreando un sitio entero sin querer; subir ese límite permite un escaneo completo."""
+    _use_system_browsers()
+    from playwright.sync_api import sync_playwright
+    parsed_base = urlparse(base_url)
+    origin = f'{parsed_base.scheme}://{parsed_base.netloc}'
+    start_path = start_path.strip() if start_path and start_path.strip() else (parsed_base.path or '/')
+    if not start_path.startswith('/'):
+        start_path = '/' + start_path
+    seen = {start_path}
+    queue = [start_path]
+    found = []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_default_timeout(timeout_ms)
+                while queue and len(found) < max_pages:
+                    path = queue.pop(0)
+                    try:
+                        page.goto(origin + path, wait_until='networkidle')
+                    except Exception:
+                        continue
+                    found.append({'path': path, 'title': (page.title() or '')[:120]})
+                    if on_progress:
+                        on_progress(len(found))
+                    try:
+                        hrefs = page.eval_on_selector_all('a[href]', 'els => els.map(e => e.getAttribute("href"))')
+                    except Exception:
+                        hrefs = []
+                    for href in hrefs or []:
+                        if not href or href.startswith(('#', 'mailto:', 'tel:', 'javascript:')):
+                            continue
+                        absolute = urljoin(origin + path, href)
+                        parsed = urlparse(absolute)
+                        if f'{parsed.scheme}://{parsed.netloc}' != origin:
+                            continue
+                        norm_path = parsed.path or '/'
+                        if norm_path in seen:
+                            continue
+                        seen.add(norm_path)
+                        queue.append(norm_path)
+            finally:
+                browser.close()
+        return {'ok': True, 'detail': f'{len(found)} vista(s) encontradas', 'views': found}
+    except Exception as exc:
+        return {'ok': False, 'detail': str(exc), 'views': []}
+
+
 def execute_ui(case, environment, variables=None):
     """Execute declarative UI steps; browser is isolated per case. Keeps screenshot (always) and trace (on failure)."""
     variables = {**environment.get('variables', {}), **(variables or {})}

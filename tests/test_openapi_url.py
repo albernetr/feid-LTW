@@ -108,20 +108,21 @@ def test_swagger2_host_and_basepath_become_a_server():
     assert core.module_base_url({'servers': [], 'source_url': 'http://h:8000/openapi.json'}) == 'http://h:8000'   # FastAPI declares no servers
 
 
-async def test_modules_page_imports_from_a_swagger_ui_page_and_creates_the_environment(user, docs):
+async def test_modules_page_registers_then_attaches_a_contract_and_creates_the_environment(user, docs):
     project = core.create_project('Mod')
     core.set_active_project(project['id'])
-    await user.open('/modules/edit')
+    component = core.create_component('Mi backend', project['id'])   # registered first, with its own name
+    await user.open(f'/modules/edit?id={component["id"]}')
     user.find('URL del contrato, de su página de Swagger UI o un enlace de GitHub').type(docs + '/ui/')
     user.find('Importar desde URL').click()
     await asyncio.sleep(1.5)  # the download runs in a worker thread
-    await user.should_see('Importado «Tienda»')
-    assert core.list_project_items('modules', project['id'])[0]['source_url'] == docs + '/api/v3/openapi.json'
-    await user.should_see('Ambiente «Tienda» creado')  # the environment is registered automatically on import now
+    await user.should_see('Contrato importado')
+    updated = core.get('modules', component['id'])
+    assert updated['name'] == 'Mi backend' and updated['source_url'] == docs + '/api/v3/openapi.json'   # the name chosen at registration survives the import
+    await user.should_see('Ambiente «Mi backend» creado')  # the environment is registered automatically on import now
     assert [e['base_url'] for e in core.list_project_items('environments', project['id'])] == [docs + '/api/v3']
-    module_id = core.list_project_items('modules', project['id'])[0]['id']
-    await user.open(f'/modules/edit?id={module_id}')
-    await user.should_see(f'«Tienda» · {docs}/api/v3')  # already linked: shown directly, no manual button needed
+    await user.open(f'/modules/edit?id={component["id"]}')
+    await user.should_see(f'«Mi backend» · {docs}/api/v3')  # already linked: shown directly
 
 
 FASTAPI_DOCS = ('<html><head><link type="text/css" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"></head><body><div id="swagger-ui"></div>'

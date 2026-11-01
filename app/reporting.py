@@ -18,6 +18,26 @@ STATUS_ES = {'passed': 'Pasó', 'failed': 'Falló', 'error': 'Error', 'cancelled
 STATUS_COLOR = {'passed': '#16a34a', 'failed': '#dc2626', 'error': '#d97706', 'cancelled': '#9ca3af', 'skipped': '#9ca3af'}
 
 
+def component_maturity(component_id):
+    """Nivel de madurez de un Componente, derivado de la estabilidad real de sus Casos (el mismo semáforo
+    verde/ámbar/rojo del Resumen ejecutivo) — no una etiqueta manual. El último run decisivo de cada caso
+    decide si ese caso cuenta como pasando hoy; el color sale de qué fracción de los casos *con datos* pasa."""
+    cases = [c for c in core.list_items('cases') if c.get('module_id') == component_id]
+    if not cases:
+        return {'rag': 'grey', 'passed': 0, 'with_data': 0, 'total': 0}
+    case_ids = {c['id'] for c in cases}
+    runs = sorted((r for r in core.list_items('runs') if r.get('type') in ('api', 'ui') and r.get('case_id') in case_ids and r.get('status') in DECISIVE),
+                  key=lambda r: r.get('started_at', ''))
+    latest = {}
+    for run in runs:
+        latest[run['case_id']] = run
+    passed = sum(1 for r in latest.values() if r['status'] == 'passed')
+    with_data = len(latest)
+    rate = _rate(passed, with_data)
+    rag = 'grey' if rate is None else ('green' if rate >= GREEN_RATE else ('amber' if rate >= AMBER_RATE else 'red'))
+    return {'rag': rag, 'passed': passed, 'with_data': with_data, 'total': len(cases)}
+
+
 def _when(iso):
     try:
         value = dt.datetime.fromisoformat(iso)

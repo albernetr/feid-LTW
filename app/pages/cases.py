@@ -40,33 +40,54 @@ def cases_list():
             env_select = ui.select({e['id']: e['name'] for e in envs}, value=envs[0]['id'] if envs else None, label='Ejecutar en ambiente').props('outlined dense').classes('w-60')
         if not envs:
             ui.label('Registra un ambiente para poder ejecutar casos.').classes('text-amber-700')
-        items = [c for c in core.list_project_items('cases', pid) if is_api(c)]
-        if not items:
+        all_items = [c for c in core.list_project_items('cases', pid) if is_api(c)]
+        if not all_items:
             empty_state('No hay casos API en este proyecto.')
-        for case in items:
-            with ui.card().classes('w-full'):
-                with ui.row().classes('items-center gap-3 w-full no-wrap'):
-                    ui.badge(case.get('method', ''), color='primary').classes('w-16 justify-center')
-                    with ui.column().classes('gap-0 grow'):
-                        ui.label(case['name']).classes('font-semibold')
-                        ui.label(f'{case.get("path", "")} · {len(case.get("assertions", []))} aserciones').classes('font-mono text-sm text-gray-500')
-                    ui.button(icon='play_arrow', on_click=guard(lambda c=case: run_case(c, env_select.value))).props('flat round color=positive').tooltip('Ejecutar')
-                    ui.button(icon='edit', on_click=lambda _, i=case['id']: ui.navigate.to(f'/cases/edit?id={i}')).props('flat round').tooltip('Editar')
+            return
 
-                    def duplicate(c=case):
-                        copy = {k: v for k, v in c.items() if k not in ('id', 'updated_at')}
-                        copy['name'] = c['name'] + ' (copia)'
-                        core.save('cases', copy)
-                        ui.navigate.reload()
-                    ui.button(icon='content_copy', on_click=guard(duplicate)).props('flat round').tooltip('Duplicar')
+        all_tags = sorted({t for c in all_items for t in c.get('tags', [])})
+        selected_tag = {'value': None}
+        if all_tags:
+            def pick_tag(tag):
+                selected_tag['value'] = None if selected_tag['value'] == tag else tag
+                render.refresh()
+            with ui.row().classes('items-center gap-1 flex-wrap'):
+                ui.label('Etiquetas del contrato:').classes('text-xs text-gray-500')
+                for tag in all_tags:
+                    ui.chip(tag, selectable=True, on_click=lambda _, t=tag: pick_tag(t)).props('dense size=sm outline color=primary')
 
-                    def remove(c=case):
-                        used = [s for s in core.list_items('suites') if c['id'] in s.get('case_ids', [])]
-                        if used:
-                            raise ValueError(f'No se puede eliminar: está en {len(used)} suite(s)')
-                        core.delete('cases', c['id'])
-                        ui.navigate.reload()
-                    ui.button(icon='delete', on_click=lambda _, c=case, r=remove: confirm(f'¿Eliminar el caso «{c["name"]}»?', r)).props('flat round color=negative').tooltip('Eliminar')
+        @ui.refreshable
+        def render():
+            items = [c for c in all_items if not selected_tag['value'] or selected_tag['value'] in c.get('tags', [])]
+            if not items:
+                ui.label('Ningún caso con esa etiqueta.').classes('text-gray-500')
+            for case in items:
+                with ui.card().classes('w-full'):
+                    with ui.row().classes('items-center gap-3 w-full no-wrap'):
+                        ui.badge(case.get('method', ''), color='primary').classes('w-16 justify-center')
+                        with ui.column().classes('gap-0 grow'):
+                            ui.label(case['name']).classes('font-semibold')
+                            extra_tags = [t for t in case.get('tags', []) if t != 'auto-explorado']
+                            tail = f' · {", ".join(extra_tags)}' if extra_tags else ''
+                            ui.label(f'{case.get("path", "")} · {len(case.get("assertions", []))} aserciones{tail}').classes('font-mono text-sm text-gray-500')
+                        ui.button(icon='play_arrow', on_click=guard(lambda c=case: run_case(c, env_select.value))).props('flat round color=positive').tooltip('Ejecutar')
+                        ui.button(icon='edit', on_click=lambda _, i=case['id']: ui.navigate.to(f'/cases/edit?id={i}')).props('flat round').tooltip('Editar')
+
+                        def duplicate(c=case):
+                            copy = {k: v for k, v in c.items() if k not in ('id', 'updated_at')}
+                            copy['name'] = c['name'] + ' (copia)'
+                            core.save('cases', copy)
+                            ui.navigate.reload()
+                        ui.button(icon='content_copy', on_click=guard(duplicate)).props('flat round').tooltip('Duplicar')
+
+                        def remove(c=case):
+                            used = [s for s in core.list_items('suites') if c['id'] in s.get('case_ids', [])]
+                            if used:
+                                raise ValueError(f'No se puede eliminar: está en {len(used)} suite(s)')
+                            core.delete('cases', c['id'])
+                            ui.navigate.reload()
+                        ui.button(icon='delete', on_click=lambda _, c=case, r=remove: confirm(f'¿Eliminar el caso «{c["name"]}»?', r)).props('flat round color=negative').tooltip('Eliminar')
+        render()
 
 
 @ui.page('/cases/edit')
@@ -82,13 +103,14 @@ def case_edit(id: str = '', module: str = '', op: int = -1):
         modules = core.list_project_items('modules', pid)
         envs = core.list_project_items('environments', pid)
         base = current or {'name': 'Nuevo caso API', 'method': 'GET', 'path': '/', 'module_id': module or None, 'assertions': [{'type': 'status', 'expected': 200}],
-                           'headers': {}, 'query': {}, 'body': None, 'extract': []}
+                           'headers': {}, 'query': {}, 'body': None, 'extract': [], 'tags': []}
         module_id = base.get('module_id') or (module or None)
         if module and not current and op >= 0:
             selected_module = core.get('modules', module)
             if selected_module and op < len(selected_module['operations']):
                 operation = selected_module['operations'][op]
-                base.update({'name': f'{operation["method"]} {operation["path"]}', 'method': operation['method'], 'path': operation['path']})
+                base.update({'name': f'{operation["method"]} {operation["path"]}', 'method': operation['method'], 'path': operation['path'],
+                             'tags': operation.get('tags', [])})
         rules = [dict(r) for r in base.get('assertions', [])]
         extracts = [dict(r) for r in base.get('extract', [])]
         headers = {k: str(v) for k, v in (base.get('headers') or {}).items()}
@@ -230,7 +252,7 @@ def case_edit(id: str = '', module: str = '', op: int = -1):
             item = {'name': name.value.strip(), 'type': 'api', 'project_id': pid, 'module_id': module_select.value, 'method': method.value,
                     'path': path.value.strip(), 'timeout': timeout.value or 20, 'body': data,
                     'headers': {k: v for k, v in headers.items() if k.strip()}, 'query': {k: v for k, v in query.items() if k.strip()},
-                    'assertions': rules, 'extract': [dict(r, name=r['name'].strip()) for r in extracts]}
+                    'assertions': rules, 'extract': [dict(r, name=r['name'].strip()) for r in extracts], 'tags': base.get('tags', [])}
             if current:
                 item['id'] = current['id']
             return item

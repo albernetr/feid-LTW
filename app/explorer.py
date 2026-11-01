@@ -186,7 +186,7 @@ def build_case(entry, module, project_id, environment_id, extra_headers=None):
     return {'name': f'[{GENERATED_TAG}] {op["method"]} {op["path"]}', 'method': op['method'], 'path': entry['resolved_path'],
             'project_id': project_id, 'environment_id': environment_id, 'module_id': module.get('id'), 'headers': dict(extra_headers or {}),
             'query': {}, 'body': None, 'assertions': assertions, 'variables': {}, 'extract': extract, 'timeout': 20,
-            'tags': [GENERATED_TAG], 'notes': op.get('summary', ''),
+            'tags': [GENERATED_TAG] + [t for t in op.get('tags', []) if t != GENERATED_TAG], 'notes': op.get('summary', ''),
             'explorer': {'module_id': module.get('id'), 'operation': f'{op["method"]} {op["path"]}', 'id_paths': id_paths, 'id_path_attempt': 0}}
 
 

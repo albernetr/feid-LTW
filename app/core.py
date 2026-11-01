@@ -45,7 +45,7 @@ ARTIFACTS = ROOT / 'evidence'
 SECRET_SERVICE = 'local-test-workspace'
 SENSITIVE_HEADERS = ('authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization')
 SENSITIVE_NAME = re.compile(r'token|password|passwd|secret|key|authorization|cookie', re.I)
-TABLES = ('projects', 'modules', 'environments', 'cases', 'suites', 'schedules')
+TABLES = ('projects', 'module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules')
 ALL_TABLES = TABLES + ('settings', 'runs', 'taps', 'interfaces', 'lab_history')
 UUID_RE = re.compile(r'^[0-9a-fA-F-]{8,64}$')
 
@@ -273,11 +273,12 @@ def project_stats(project_id):
         raise ValueError('Proyecto inexistente')
     return {
         table: sum(item.get('project_id') == project_id for item in list_items(table))
-        for table in ('modules', 'environments', 'cases', 'suites', 'schedules', 'taps')
+        for table in ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps')
     }
 
 
-PROJECT_RESOURCE_LABELS = {'modules': 'componente(s)', 'environments': 'ambiente(s)', 'cases': 'caso(s)', 'suites': 'suite(s)', 'schedules': 'programación(es)', 'taps': 'tap(s) de observación'}
+PROJECT_RESOURCE_LABELS = {'module_groups': 'módulo(s)', 'modules': 'componente(s)', 'environments': 'ambiente(s)', 'cases': 'caso(s)',
+                           'features': 'funcionalidad(es)', 'suites': 'suite(s)', 'schedules': 'programación(es)', 'taps': 'tap(s) de observación'}
 
 
 def _purge_project_history(project_id):
@@ -312,7 +313,7 @@ def delete_project(project_id):
         set_active_project(None)
 
 
-CASCADE_TABLES = ('modules', 'environments', 'cases', 'suites', 'schedules', 'taps')
+CASCADE_TABLES = ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps')
 
 
 def delete_project_cascade(project_id):
@@ -337,13 +338,136 @@ def adopt_unassigned(project_id):
     if get('projects', project_id) is None:
         raise ValueError('Proyecto inexistente')
     adopted = {}
-    for table in ('modules', 'environments', 'cases', 'suites', 'schedules', 'taps'):
+    for table in ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps'):
         pending = [item for item in list_items(table) if not item.get('project_id')]
         for item in pending:
             item['project_id'] = project_id
             save(table, item)
         adopted[table] = len(pending)
     return adopted
+
+
+# --------------------------------------------------------------------------- módulos (dominio/propiedad: agrupan componentes)
+
+def _module_group_name_taken(name, project_id, exclude_id=None):
+    return any(g['id'] != exclude_id and g.get('project_id') == project_id and g['name'].strip().lower() == name.lower()
+               for g in list_items('module_groups'))
+
+
+def create_module_group(name, project_id, description=''):
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('El nombre del módulo es obligatorio')
+    if _module_group_name_taken(name, project_id):
+        raise ValueError(f'Ya existe un módulo llamado «{name}» en este proyecto')
+    item = {'name': name, 'description': (description or '').strip()}
+    if project_id is not None:
+        item['project_id'] = project_id
+    return save('module_groups', item)
+
+
+def update_module_group(group_id, name, description=''):
+    group = get('module_groups', group_id)
+    if group is None:
+        raise ValueError('Módulo inexistente')
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('El nombre del módulo es obligatorio')
+    if _module_group_name_taken(name, group.get('project_id'), exclude_id=group_id):
+        raise ValueError(f'Ya existe un módulo llamado «{name}» en este proyecto')
+    group.update({'name': name, 'description': (description or '').strip()})
+    return save('module_groups', group)
+
+
+def delete_module_group(group_id):
+    if get('module_groups', group_id) is None:
+        raise ValueError('Módulo inexistente')
+    linked = [m for m in list_items('modules') if group_id in component_module_group_ids(m)]
+    if linked:
+        raise ValueError(f'No se puede eliminar: tiene {len(linked)} componente(s) ligado(s). Desvincúlalos primero.')
+    delete('module_groups', group_id)
+
+
+COMPONENT_STATUSES = ('development', 'qa', 'ready', 'production')
+COMPONENT_STATUS_LABELS = {'development': 'Desarrollo', 'qa': 'En pruebas (QA)', 'ready': 'Listo para producción', 'production': 'En producción'}
+
+
+def set_component_classification(component_id, module_group_ids=None, status=None):
+    """Liga un componente (manual o importado) a uno o varios Módulos y/o fija su Estado de ciclo de vida.
+    Un componente puede pertenecer a más de un Módulo a la vez (p. ej. un backend compartido entre dos
+    dominios). A diferencia de update_component(), funciona sobre cualquier componente: esto es metadata de
+    clasificación, no datos que el contrato declare."""
+    component = get('modules', component_id)
+    if component is None:
+        raise ValueError('Componente inexistente')
+    ids = list(dict.fromkeys(module_group_ids or []))
+    for group_id in ids:
+        group = get('module_groups', group_id)
+        if group is None:
+            raise ValueError('Módulo inexistente')
+        if component.get('project_id') is not None and group.get('project_id') != component.get('project_id'):
+            raise ValueError('El módulo no pertenece al proyecto activo')
+    if status is not None and status not in COMPONENT_STATUSES:
+        raise ValueError('Estado de componente inválido')
+    component['module_group_ids'] = ids
+    if status is not None:
+        component['status'] = status
+    return save('modules', component)
+
+
+# --------------------------------------------------------------------------- funcionalidades (capacidad de negocio: agrupan suites/flujos)
+
+def _feature_name_taken(name, project_id, exclude_id=None):
+    return any(f['id'] != exclude_id and f.get('project_id') == project_id and f['name'].strip().lower() == name.lower()
+               for f in list_items('features'))
+
+
+def create_feature(name, project_id, description='', external_ref=''):
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('El nombre de la funcionalidad es obligatorio')
+    if _feature_name_taken(name, project_id):
+        raise ValueError(f'Ya existe una funcionalidad llamada «{name}» en este proyecto')
+    item = {'name': name, 'description': (description or '').strip(), 'external_ref': (external_ref or '').strip()}
+    if project_id is not None:
+        item['project_id'] = project_id
+    return save('features', item)
+
+
+def update_feature(feature_id, name, description='', external_ref=''):
+    feature = get('features', feature_id)
+    if feature is None:
+        raise ValueError('Funcionalidad inexistente')
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('El nombre de la funcionalidad es obligatorio')
+    if _feature_name_taken(name, feature.get('project_id'), exclude_id=feature_id):
+        raise ValueError(f'Ya existe una funcionalidad llamada «{name}» en este proyecto')
+    feature.update({'name': name, 'description': (description or '').strip(), 'external_ref': (external_ref or '').strip()})
+    return save('features', feature)
+
+
+def delete_feature(feature_id):
+    if get('features', feature_id) is None:
+        raise ValueError('Funcionalidad inexistente')
+    linked = [s for s in list_items('suites') if s.get('feature_id') == feature_id]
+    if linked:
+        raise ValueError(f'No se puede eliminar: tiene {len(linked)} suite(s) ligada(s). Desvincúlalas primero.')
+    delete('features', feature_id)
+
+
+def last_run_for_suite(suite_id):
+    """El último run decisivo (no cancelado/omitido) de una suite, o None si nunca se ejecutó."""
+    runs = [r for r in list_items('runs') if r.get('type') == 'suite' and r.get('suite_id') == suite_id and r.get('status') in ('passed', 'failed', 'error')]
+    return max(runs, key=lambda r: r.get('started_at', '')) if runs else None
+
+
+def feature_health(feature_id):
+    """Para la trazabilidad de negocio: de las suites ligadas a la funcionalidad, cuántas pasan en su última corrida."""
+    suites = [s for s in list_items('suites') if s.get('feature_id') == feature_id]
+    rows = [{'suite': s, 'last_run': last_run_for_suite(s['id'])} for s in suites]
+    passing = sum(1 for r in rows if r['last_run'] and r['last_run']['status'] == 'passed')
+    return {'rows': rows, 'passing': passing, 'total': len(rows)}
 
 
 def suite_steps(suite):
@@ -361,7 +485,8 @@ def suite_steps(suite):
 def save_suite(name, environment_id, case_ids, project_id=None, **options):
     """Creates/updates a suite after checking that environment and cases share its project.
 
-    options: id, on_failure ('continue'|'stop'), retries, retry_delay_s, variables,
+    options: id, on_failure ('continue'|'stop'), retries, retry_delay_s, variables, feature_id (qué capacidad de
+             negocio valida este flujo; opcional),
              steps (list of {case_id, alias, environment_id, enrich}: a flow across modules; replaces case_ids),
              expected_updated_at (refuse the write if someone else saved the suite meanwhile).
     """
@@ -395,8 +520,15 @@ def save_suite(name, environment_id, case_ids, project_id=None, **options):
     variables = options.get('variables') or {}
     if not isinstance(variables, dict):
         raise ValueError('Las variables de suite deben ser un objeto')
+    feature_id = options.get('feature_id') or None
+    if feature_id:
+        feature = get('features', feature_id)
+        if feature is None:
+            raise ValueError('Funcionalidad inexistente')
+        if project_id is not None and feature.get('project_id') != project_id:
+            raise ValueError('La funcionalidad no pertenece al proyecto activo')
     item = {'name': name.strip(), 'environment_id': environment_id, 'case_ids': list(case_ids),
-            'on_failure': on_failure, 'retries': retries, 'retry_delay_s': delay, 'variables': variables}
+            'on_failure': on_failure, 'retries': retries, 'retry_delay_s': delay, 'variables': variables, 'feature_id': feature_id}
     if steps is not None:
         item['steps'] = _validated_steps(steps, environment, project_id)
     if options.get('id'):
@@ -478,7 +610,8 @@ def parse_openapi(raw):
         for method, spec in methods.items():
             if method.lower() not in ('get', 'post', 'put', 'patch', 'delete', 'head', 'options') or not isinstance(spec, dict):
                 continue
-            operations.append({'method': method.upper(), 'path': path, 'summary': spec.get('summary', ''), 'parameters': spec.get('parameters', []), 'requestBody': spec.get('requestBody', {}), 'responses': spec.get('responses', {})})
+            operations.append({'method': method.upper(), 'path': path, 'summary': spec.get('summary', ''), 'parameters': spec.get('parameters', []),
+                               'requestBody': spec.get('requestBody', {}), 'responses': spec.get('responses', {}), 'tags': spec.get('tags') or []})
     servers = data.get('servers') or []
     if not servers and data.get('host'):                                              # Swagger 2.0 declares host + basePath + schemes instead of servers
         schemes = data.get('schemes') or ['https']
@@ -489,7 +622,8 @@ def parse_openapi(raw):
 def import_openapi(raw, project_id=None, source_url=None):
     module = parse_openapi(raw)
     module['id'] = uid()
-    module['type'] = 'backend'    # an OpenAPI/Swagger contract always describes a backend
+    module['is_backend'] = True    # an OpenAPI/Swagger contract always describes a backend
+    module['is_frontend'] = False
     module['manual'] = False
     if source_url:
         module['source_url'] = source_url
@@ -498,67 +632,202 @@ def import_openapi(raw, project_id=None, source_url=None):
     return save('modules', module)
 
 
-COMPONENT_KINDS = ('backend', 'frontend')
+def component_flags(component):
+    """(is_backend, is_frontend): a component can be both at once — a full-stack monolith (Next.js with API
+    routes, Django/Rails serving HTML and API from one process) is ONE deployable unit that does both, not
+    two. Tolerant of records saved before this existed, which only had an exclusive `type` ('backend'|'frontend')."""
+    if 'is_backend' in component or 'is_frontend' in component:
+        return bool(component.get('is_backend')), bool(component.get('is_frontend'))
+    legacy = component.get('type', 'backend')
+    return legacy != 'frontend', legacy == 'frontend'
 
 
-def create_component(name, project_id, kind='backend', environment_id=None):
-    """A component with no OpenAPI contract: just an inventory entry (name, kind, optionally linked to an
-    environment) for a piece of the solution with nothing to import — typically a frontend, or a backend you
-    haven't documented yet. No operations catalog: exploración automática and per-operation case creation
-    don't apply (there is nothing to read). Use import_openapi() instead when there is a contract."""
+def component_kind_label(component):
+    backend, frontend = component_flags(component)
+    if backend and frontend:
+        return 'Backend + Frontend'
+    return 'Frontend' if frontend else 'Backend'
+
+
+def component_module_group_ids(component):
+    """Los Módulos de un componente. Tolerante de registros guardados antes de que un componente pudiera
+    pertenecer a más de uno a la vez (que solo tenían `module_group_id`, singular)."""
+    if 'module_group_ids' in component:
+        return list(component['module_group_ids'] or [])
+    legacy = component.get('module_group_id')
+    return [legacy] if legacy else []
+
+
+def environment_flags(env):
+    """(is_backend, is_frontend): what this environment is meant to be used for. Unset (any environment saved
+    before this existed) defaults to both — unrestricted, exactly the old behavior — so nothing that already
+    worked silently stops being offered; narrowing it (e.g. a pure frontend dev server like :4200 that has no
+    API of its own) is an explicit, opt-in choice."""
+    return bool(env.get('is_backend', True)), bool(env.get('is_frontend', True))
+
+
+def environment_kind_label(env):
+    backend, frontend = environment_flags(env)
+    if backend and frontend:
+        return 'Backend + Frontend'
+    if frontend:
+        return 'Frontend'
+    return 'Backend' if backend else 'Sin uso declarado'
+
+
+def create_component(name, project_id, is_backend=True, is_frontend=False, environment_ids=None, module_group_ids=None):
+    """A component with no OpenAPI contract: just an inventory entry (name, what it exposes, optionally linked
+    to one or more environments and Módulos) for a piece of the solution with nothing to import — typically a
+    frontend, a backend you haven't documented yet, or a full-stack component that is both at once. No
+    operations catalog: exploración automática and per-operation case creation don't apply (there is nothing
+    to read). Use import_openapi() instead when there is a contract."""
     name = (name or '').strip()
     if not name:
         raise ValueError('El nombre es obligatorio')
-    if kind not in COMPONENT_KINDS:
-        raise ValueError('Tipo de componente inválido')
-    if environment_id:
-        env = get('environments', environment_id)
-        if env is None:
-            raise ValueError('Ambiente inexistente')
-        if project_id is not None and env.get('project_id') != project_id:
-            raise ValueError('El ambiente no pertenece al proyecto activo')
-    item = {'name': name, 'type': kind, 'operations': [], 'servers': [], 'version': '',
-            'manual': True, 'environment_id': environment_id or None}
+    if not is_backend and not is_frontend:
+        raise ValueError('El componente debe exponer backend, frontend, o ambos')
+    env_ids = _validated_environment_ids(environment_ids, project_id)
+    group_ids = list(dict.fromkeys(module_group_ids or []))
+    for group_id in group_ids:
+        group = get('module_groups', group_id)
+        if group is None:
+            raise ValueError('Módulo inexistente')
+        if project_id is not None and group.get('project_id') != project_id:
+            raise ValueError('El módulo no pertenece al proyecto activo')
+    item = {'name': name, 'is_backend': bool(is_backend), 'is_frontend': bool(is_frontend), 'operations': [], 'servers': [], 'version': '',
+            'manual': True, 'environment_ids': env_ids, 'module_group_ids': group_ids, 'status': 'development'}
     if project_id is not None:
         item['project_id'] = project_id
     return save('modules', item)
 
 
-def update_component(component_id, name, kind, environment_id=None):
-    """Renames a manual component, changes its type, or (re)links it to an environment. Imported ones (with
-    a contract) keep their name/version/operations as the source declares them; this is for manual ones only."""
+def _validated_environment_ids(environment_ids, project_id):
+    ids = list(dict.fromkeys(environment_ids or []))   # de-dup, keep order
+    for env_id in ids:
+        env = get('environments', env_id)
+        if env is None:
+            raise ValueError('Ambiente inexistente')
+        if project_id is not None and env.get('project_id') != project_id:
+            raise ValueError('Un ambiente no pertenece al proyecto activo')
+    return ids
+
+
+def update_component(component_id, name, is_backend, is_frontend, environment_ids=None):
+    """Renames a component and/or changes what it exposes, for any component (manual or imported): the display
+    name and the backend/frontend classification are the user's own judgment, not something the contract
+    dictates. Never touches operations/version/servers/source_url — those stay exactly as the contract (or a
+    later re-import) declares them; re-importing the same source always creates a separate record, so renaming
+    here is never silently overwritten."""
     component = get('modules', component_id)
     if component is None:
         raise ValueError('Componente inexistente')
-    if not component.get('manual'):
-        raise ValueError('Solo los componentes creados manualmente se pueden editar; los importados vienen del contrato.')
     name = (name or '').strip()
     if not name:
         raise ValueError('El nombre es obligatorio')
-    if kind not in COMPONENT_KINDS:
-        raise ValueError('Tipo de componente inválido')
-    if environment_id:
-        env = get('environments', environment_id)
-        if env is None:
-            raise ValueError('Ambiente inexistente')
-        if component.get('project_id') is not None and env.get('project_id') != component.get('project_id'):
-            raise ValueError('El ambiente no pertenece al proyecto activo')
-    component.update({'name': name, 'type': kind, 'environment_id': environment_id or None})
+    if not is_backend and not is_frontend:
+        raise ValueError('El componente debe exponer backend, frontend, o ambos')
+    env_ids = _validated_environment_ids(environment_ids, component.get('project_id'))
+    component.update({'name': name, 'is_backend': bool(is_backend), 'is_frontend': bool(is_frontend), 'environment_ids': env_ids})
+    component.pop('type', None)
     return save('modules', component)
 
 
-def component_environment(component):
-    """The environment linked to a component: explicit (manual components) or matched by the declared server
-    (imported ones, by exact base_url). None if neither applies."""
-    if component.get('environment_id'):
-        return get('environments', component['environment_id'])
+def move_component_to_project(component_id, project_id):
+    """Moves a component to a different project — the fix for 'se creó bajo el proyecto activo equivocado',
+    ya que hoy no hay selector de proyecto por formulario (el activo del encabezado decide siempre). Bloqueado
+    si el componente ya tiene Casos: moverlos también es una operación mayor, fuera del alcance de deshacer un
+    clic equivocado — hay que moverlos o borrarlos primero. Los Ambientes y Módulos ligados pertenecen al
+    proyecto anterior y no tendrían sentido en el nuevo, así que se desligan (nunca se transfieren)."""
+    component = get('modules', component_id)
+    if component is None:
+        raise ValueError('Componente inexistente')
+    project = get('projects', project_id)
+    if project is None:
+        raise ValueError('Proyecto inexistente')
+    if component.get('project_id') == project_id:
+        raise ValueError('El componente ya pertenece a ese proyecto')
+    used = [c for c in list_items('cases') if c.get('module_id') == component_id]
+    if used:
+        raise ValueError(f'No se puede mover: {len(used)} caso(s) lo usan. Muévelos o bórralos primero.')
+    cleared = {'environments': len(component.get('environment_ids') or []), 'modules': len(component.get('module_group_ids') or [])}
+    component['project_id'] = project_id
+    component['environment_ids'] = []
+    component['module_group_ids'] = []
+    return save('modules', component), cleared
+
+
+def set_component_environments(component_id, environment_ids):
+    """Links any component (manual or imported) to the set of environments where it is known to run —
+    typically one per stage of the pipeline (dev/QA/staging/producción), since it's the same deployable
+    promoted across all of them, not a single fixed place."""
+    component = get('modules', component_id)
+    if component is None:
+        raise ValueError('Componente inexistente')
+    component['environment_ids'] = _validated_environment_ids(environment_ids, component.get('project_id'))
+    return save('modules', component)
+
+
+def link_component_environment(component_id, environment_id):
+    """Adds one environment to a component's known environments, idempotently (used right after a contract
+    import registers/reuses an environment, so the link survives instead of relying only on URL matching)."""
+    component = get('modules', component_id)
+    if component is None:
+        raise ValueError('Componente inexistente')
+    ids = list(component.get('environment_ids') or [])
+    if environment_id not in ids:
+        ids.append(environment_id)
+        component['environment_ids'] = ids
+        save('modules', component)
+    return component
+
+
+def component_tags(component):
+    """Las etiquetas (`tags`) que el propio contrato OpenAPI declara en sus operaciones — la misma
+    clasificación que agrupa los endpoints en Swagger UI — para filtrar un catálogo grande sin inventar
+    una jerarquía nueva encima."""
+    seen = []
+    for op in component.get('operations') or []:
+        for tag in op.get('tags') or []:
+            if tag not in seen:
+                seen.append(tag)
+    return sorted(seen)
+
+
+def component_environments(component):
+    """Every environment this component is known to run in: explicitly linked ones (any component can have
+    several — the same deployable promoted through dev/QA/staging/producción), plus, for components saved
+    before explicit linking existed, any environment whose base_url still matches the contract's declared
+    server (so they keep resolving without needing to be re-linked by hand)."""
+    ids = list(component.get('environment_ids') or ([component['environment_id']] if component.get('environment_id') else []))
+    envs = [e for e in (get('environments', i) for i in ids) if e]
     base = module_base_url(component)
-    if not base or component.get('project_id') is None:
-        return None
-    for env in list_project_items('environments', component['project_id']):
-        if env.get('base_url', '').rstrip('/') == base.rstrip('/'):
-            return env
-    return None
+    if base and component.get('project_id') is not None:
+        for env in list_project_items('environments', component['project_id']):
+            if env['id'] not in ids and env.get('base_url', '').rstrip('/') == base.rstrip('/'):
+                envs.append(env)
+    return envs
+
+
+def component_environment(component):
+    """The single 'default' environment of a component (first of component_environments()), for call sites
+    that only need one — e.g. preselecting exploración automática. None if it has none linked/resolvable."""
+    envs = component_environments(component)
+    return envs[0] if envs else None
+
+
+def component_features(component_id):
+    """Funcionalidades que dependen de este componente: cualquier Suite con un paso contra un Caso de este
+    componente, a través de su Funcionalidad (si la tiene) — la traza inversa de Funcionalidad → Suite."""
+    cases_here = {c['id'] for c in list_items('cases') if c.get('module_id') == component_id}
+    if not cases_here:
+        return []
+    feature_ids = []
+    for suite in list_items('suites'):
+        if not suite.get('feature_id') or suite['feature_id'] in feature_ids:
+            continue
+        if any(step.get('case_id') in cases_here for step in suite_steps(suite)):
+            feature_ids.append(suite['feature_id'])
+    return [f for f in (get('features', fid) for fid in feature_ids) if f]
 
 
 SPEC_GUESSES = ('openapi.json', 'openapi.yaml', 'swagger.json', 'swagger.yaml', 'v3/api-docs', 'v2/api-docs', 'api-docs', 'swagger/v1/swagger.json',
@@ -665,6 +934,141 @@ def import_openapi_url(url, project_id=None, client=None):
     return import_openapi(fetched['raw'], project_id, source_url=fetched['source_url'])
 
 
+def contract_tags(raw):
+    """Las etiquetas distintas que un contrato declara en sus operaciones, para poder elegir cuáles importar
+    antes de guardar nada (p. ej. un contrato con 500 operaciones del que solo interesan 10)."""
+    parsed = parse_openapi(raw)
+    seen = []
+    for op in parsed['operations']:
+        for tag in op.get('tags') or []:
+            if tag not in seen:
+                seen.append(tag)
+    return sorted(seen)
+
+
+def attach_contract(component_id, raw, source_url=None, tags=None):
+    """Enriches an EXISTING component with a contract's operations/version/servers, instead of creating a new
+    record: the component is registered first (name, lo que expone, ambientes) and the contract is an optional,
+    later step — only meaningful for a component that exposes backend. Never touches name, classification,
+    module or environment links: those are the user's own, set at registration time. With `tags`, only keeps
+    the operations that declare at least one of those tags — e.g. importing 10 of a contract's 500 operations
+    instead of all of it; the rest of the contract (version, servers) is still read normally."""
+    component = get('modules', component_id)
+    if component is None:
+        raise ValueError('Componente inexistente')
+    if not component_flags(component)[0]:
+        raise ValueError('Este componente no expone backend; actívalo en Identidad antes de importar un contrato.')
+    parsed = parse_openapi(raw)
+    operations = parsed['operations']
+    wanted = set(tags or [])
+    if wanted:
+        operations = [op for op in operations if wanted & set(op.get('tags') or [])]
+        if not operations:
+            raise ValueError('Ninguna operación del contrato tiene esas etiquetas.')
+    component.update({'operations': operations, 'version': parsed['version'], 'servers': parsed['servers'],
+                      'source_spec': parsed['source_spec'], 'manual': False})
+    if source_url:
+        component['source_url'] = source_url
+    return save('modules', component)
+
+
+def attach_contract_from_url(component_id, url, client=None, tags=None):
+    fetched = fetch_openapi(url, client)
+    return attach_contract(component_id, fetched['raw'], source_url=fetched['source_url'], tags=tags)
+
+
+HTTP_METHODS = ('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS')
+
+
+def add_manual_operation(component_id, method, path, summary=''):
+    """Cataloga un endpoint a mano en un componente backend, sin contrato: antes de escribir un Caso (con sus
+    aserciones), a veces solo hace falta dejar constancia de que el endpoint existe y cómo se llama. Se agrega
+    a la misma lista `operations` que usa un contrato importado, así que la tabla de operaciones y «Crear
+    caso» funcionan igual para ambos — lo único que falta son los detalles que solo un contrato declara
+    (parámetros, schema de respuesta)."""
+    component = get('modules', component_id)
+    if component is None:
+        raise ValueError('Componente inexistente')
+    if not component_flags(component)[0]:
+        raise ValueError('Este componente no expone backend.')
+    method = (method or '').strip().upper()
+    if method not in HTTP_METHODS:
+        raise ValueError('Método HTTP inválido')
+    path = (path or '').strip()
+    if not path:
+        raise ValueError('La ruta es obligatoria')
+    operations = list(component.get('operations') or [])
+    operations.append({'method': method, 'path': path, 'summary': (summary or '').strip(), 'parameters': [], 'requestBody': {},
+                       'responses': {}, 'tags': [], 'manual': True})
+    component['operations'] = operations
+    return save('modules', component)
+
+
+def update_manual_operation(component_id, index, method, path, summary=''):
+    """Edita un endpoint agregado a mano (nunca uno del contrato: esos solo cambian reimportando)."""
+    component = get('modules', component_id)
+    if component is None:
+        raise ValueError('Componente inexistente')
+    operations = list(component.get('operations') or [])
+    if not (0 <= index < len(operations)):
+        raise ValueError('Operación inexistente')
+    if not operations[index].get('manual'):
+        raise ValueError('Esta operación viene del contrato; solo se edita reimportando.')
+    method = (method or '').strip().upper()
+    if method not in HTTP_METHODS:
+        raise ValueError('Método HTTP inválido')
+    path = (path or '').strip()
+    if not path:
+        raise ValueError('La ruta es obligatoria')
+    operations[index] = {**operations[index], 'method': method, 'path': path, 'summary': (summary or '').strip()}
+    component['operations'] = operations
+    return save('modules', component)
+
+
+def remove_manual_operation(component_id, index):
+    """Quita un endpoint agregado a mano (nunca uno que vino del contrato: esos solo cambian reimportando)."""
+    component = get('modules', component_id)
+    if component is None:
+        raise ValueError('Componente inexistente')
+    operations = list(component.get('operations') or [])
+    if not (0 <= index < len(operations)):
+        raise ValueError('Operación inexistente')
+    if not operations[index].get('manual'):
+        raise ValueError('Esta operación viene del contrato; solo se quita reimportando.')
+    operations.pop(index)
+    component['operations'] = operations
+    return save('modules', component)
+
+
+def add_component_view(component_id, name, path=''):
+    """Cataloga una vista/pantalla a mano en un componente frontend — el equivalente a un endpoint, del lado
+    de la UI: antes de grabar un Caso UI completo, deja constancia de que esa pantalla existe y dónde vive."""
+    component = get('modules', component_id)
+    if component is None:
+        raise ValueError('Componente inexistente')
+    if not component_flags(component)[1]:
+        raise ValueError('Este componente no expone frontend.')
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('El nombre es obligatorio')
+    views = list(component.get('views') or [])
+    views.append({'name': name, 'path': (path or '').strip()})
+    component['views'] = views
+    return save('modules', component)
+
+
+def remove_component_view(component_id, index):
+    component = get('modules', component_id)
+    if component is None:
+        raise ValueError('Componente inexistente')
+    views = list(component.get('views') or [])
+    if not (0 <= index < len(views)):
+        raise ValueError('Vista inexistente')
+    views.pop(index)
+    component['views'] = views
+    return save('modules', component)
+
+
 # --------------------------------------------------------------------------- token refresh
 
 def token_needs_refresh(environment):
@@ -672,7 +1076,8 @@ def token_needs_refresh(environment):
     its known expiry (30s safety margin). With no known expiry, a token already present is trusted
     as-is (refreshing it is then only reactive, on a 401)."""
     auth = environment.get('auth') or {}
-    if not auth.get('refresh'):
+    refresh = auth.get('refresh')
+    if not refresh or not refresh.get('enabled', True):
         return False
     secret_name = auth.get('secret') or auth.get('env_var', '')
     if not (secret_name and secret_get(secret_name)):
@@ -785,7 +1190,8 @@ def ensure_environment_for_module(project_id, module):
         if env.get('base_url', '').rstrip('/') == normalized:
             return env, False
     env = save('environments', {'name': module['name'][:60], 'project_id': project_id, 'base_url': normalized,
-                                'auth': {'type': 'none', 'secret': '', 'env_var': '', 'header': 'X-API-Key'}, 'variables': {}})
+                                'auth': {'type': 'none', 'secret': '', 'env_var': '', 'header': 'X-API-Key'}, 'variables': {},
+                                'is_backend': True, 'is_frontend': False})   # always comes from an OpenAPI contract: unambiguously a backend
     return env, True
 
 
@@ -1362,7 +1768,7 @@ def add_cases_to_suite(suite_id, case_ids, origin=None):
         extra['steps'] = steps
     return save_suite(suite['name'], suite['environment_id'], ids, suite.get('project_id'), id=suite['id'],
                       on_failure=suite.get('on_failure', 'continue'), retries=suite.get('retries', 0),
-                      retry_delay_s=suite.get('retry_delay_s', 0), variables=suite.get('variables'), **extra)
+                      retry_delay_s=suite.get('retry_delay_s', 0), variables=suite.get('variables'), feature_id=suite.get('feature_id'), **extra)
 
 
 def check_connectivity(url, timeout=5.0):
@@ -1757,7 +2163,8 @@ def execute_api(case, environment, variables=None, persist=True, context=None, e
         kind = auth.get('type', 'none')
         if kind in ('bearer', 'api_key'):
             secret_name = auth.get('secret') or auth.get('env_var', '')
-            if auth.get('refresh') and token_needs_refresh(environment):
+            auto_refresh = bool(auth.get('refresh')) and auth['refresh'].get('enabled', True)
+            if auto_refresh and token_needs_refresh(environment):
                 try:
                     refresh_token(environment, variables)
                 except Exception as exc:
@@ -1774,7 +2181,7 @@ def execute_api(case, environment, variables=None, persist=True, context=None, e
             raise ValueError('Autenticación no soportada en esta versión.')
         with httpx.Client(timeout=case.get('timeout', 20), follow_redirects=False, trust_env=False) as client:
             response = client.request(case['method'], url, headers=headers, json=body if body is not None else None, params=query)
-            if response.status_code == 401 and kind in ('bearer', 'api_key') and auth.get('refresh'):
+            if response.status_code == 401 and kind in ('bearer', 'api_key') and auto_refresh:
                 try:
                     refresh_token(environment, variables)
                     retried_token = secret_get(secret_name)
@@ -1849,7 +2256,7 @@ MAX_ENTRY_BYTES = 10_000_000
 MAX_TOTAL_BYTES = 100_000_000
 MAX_ENTRIES = 5000
 REFERENCE_FIELDS = {'project_id': 'projects', 'module_id': 'modules', 'environment_id': 'environments',
-                    'case_id': 'cases', 'suite_id': 'suites'}
+                    'case_id': 'cases', 'suite_id': 'suites', 'feature_id': 'features'}
 
 
 def _sanitize_for_export(table, obj):
@@ -2002,6 +2409,12 @@ def preview_import(source, strategy='merge'):
         for case_id in obj.get('case_ids', []):
             if case_id not in ids and get('cases', case_id) is None:
                 warnings.append(f'suite {label}: el caso {case_id[:8]} no existe y se omitirá')
+        for env_id in obj.get('environment_ids', []):
+            if env_id not in ids and get('environments', env_id) is None:
+                warnings.append(f'{table}/{label}: un ambiente ligado ya no existe y se quitará')
+        for group_id in obj.get('module_group_ids', []):
+            if group_id not in ids and get('module_groups', group_id) is None:
+                warnings.append(f'{table}/{label}: un módulo ligado ya no existe y se quitará')
         if table == 'schedules':
             warnings.append(f'programación {label}: se importará desactivada')
     return {'scope': package['manifest'].get('scope', 'workspace'), 'summary': summary, 'items': items, 'warnings': sorted(set(warnings))}
@@ -2031,6 +2444,10 @@ def import_workspace(source, strategy='merge'):
                 obj[field] = None
         if 'case_ids' in obj:
             obj['case_ids'] = [id_map.get(x, x) for x in obj['case_ids'] if x in ids or get('cases', x) is not None]
+        if table == 'modules' and obj.get('environment_ids'):
+            obj['environment_ids'] = [id_map.get(e, e) for e in obj['environment_ids'] if e in ids or e in id_map or get('environments', e)]
+        if table == 'modules' and obj.get('module_group_ids'):
+            obj['module_group_ids'] = [id_map.get(g, g) for g in obj['module_group_ids'] if g in ids or g in id_map or get('module_groups', g)]
         if table == 'suites' and obj.get('steps'):    # flow steps (UI cases also have a 'steps' key: their browser steps): remap case / environment ids, drop steps whose case is gone
             kept = set(obj['case_ids'])
             steps = []

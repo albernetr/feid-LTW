@@ -64,12 +64,13 @@ async def test_pages_render_with_data(user: User):
 async def test_openapi_upload_works_with_nicegui_3(user: User):
     from nicegui import ui
     from nicegui.elements.upload_files import SmallFileUpload
-    core.create_project('P')
-    await user.open('/modules/edit')
+    project = core.create_project('P')
+    component = core.create_component('Mi backend', project['id'])
+    await user.open(f'/modules/edit?id={component["id"]}')
     upload = user.find(kind=ui.upload).elements.pop()
     await upload.handle_uploads([SmallFileUpload(name='spec.yaml', content_type='text/yaml', _data=SPEC)])
-    await user.should_see('Importado «Subida»')
-    assert core.list_items('modules')[0]['name'] == 'Subida'
+    await user.should_see('Contrato importado')
+    assert core.get('modules', component['id'])['name'] == 'Mi backend'   # registered name survives; the contract's own title ('Subida') does not override it
 
 
 async def test_workspace_import_preview_then_confirm(user: User, tmp_path):
@@ -369,7 +370,6 @@ async def test_environments_edit_saves_http_token_refresh_config(user: User):
     user.find('Autenticación').click()
     user.find('Bearer token').click()
     user.find('…o variable de entorno').type('MY_TOKEN_VAR')
-    user.find('env-refresh-enabled').click()
     user.find('env-refresh-url').type('https://auth.example.com/token')
     user.find('Guardar ambiente').click()
     await user.should_see('Ambiente guardado')
@@ -377,6 +377,30 @@ async def test_environments_edit_saves_http_token_refresh_config(user: User):
     assert env['auth']['refresh']['mode'] == 'http'
     assert env['auth']['refresh']['url'] == 'https://auth.example.com/token'
     assert env['auth']['refresh']['token_path'] == '$.access_token'
+    assert env['auth']['refresh']['enabled'] is True  # checked by default once you configure how to get the token
+
+
+async def test_environments_edit_can_configure_token_fetch_without_automatic_refresh(user: User):
+    """The fields that describe how to get a token (URL, body, paths) must be enterable even when the
+    user does not want it fetched automatically — before this, they were hidden behind a checkbox, and even
+    after that fix, behind a second, redundant one (selecting Bearer/API Key is enough)."""
+    seed()
+    await user.open('/environments/edit')
+    user.find('env-name').clear()
+    user.find('env-name').type('Sin automático')
+    user.find('env-base-url').clear()
+    user.find('env-base-url').type('https://api.example.com')
+    user.find('Autenticación').click()
+    user.find('Bearer token').click()
+    user.find('…o variable de entorno').type('MY_TOKEN_VAR')
+    user.find('env-refresh-url').type('https://auth.example.com/token')
+    user.find('env-refresh-auto').click()  # uncheck: configured, but not automatic
+    user.find('Guardar ambiente').click()
+    await user.should_see('Ambiente guardado')
+    env = [e for e in core.list_items('environments') if e['name'] == 'Sin automático'][0]
+    assert env['auth']['refresh']['url'] == 'https://auth.example.com/token'
+    assert env['auth']['refresh']['enabled'] is False
+    assert core.token_needs_refresh(env) is False  # configured, but never applied on its own
 
 
 async def test_environments_edit_test_refresh_button(user: User):
@@ -398,9 +422,8 @@ async def test_environments_edit_test_refresh_button(user: User):
         env = core.save('environments', {'name': 'E', 'project_id': project['id'], 'base_url': 'https://api.example.com',
                         'auth': {'type': 'bearer', 'secret': 'probe-tok'}, 'variables': {}})
         await user.open(f'/environments/edit?id={env["id"]}')
-        user.find('env-refresh-enabled').click()
         user.find('env-refresh-url').type(f'http://127.0.0.1:{server.server_port}/token')
-        user.find('Probar ahora').click()
+        user.find('Obtener token ahora').click()
         await eventually(lambda: core.secret_get('probe-tok') == 'abcdefgh')
         await user.should_see('Token actualizado')
     finally:
@@ -473,25 +496,36 @@ async def test_modules_table_delete_removes_an_unused_module(user: User):
     assert core.get('modules', module['id']) is None
 
 
-async def test_modules_page_creates_a_manual_component(user: User):
+async def test_modules_page_registers_a_component(user: User):
     project = core.create_project('P')
     env = core.save('environments', {'name': 'QA', 'project_id': project['id'], 'base_url': 'https://x', 'auth': {'type': 'none'}, 'variables': {}})
     await user.open('/modules/edit')
-    user.find('Crear manualmente').click()
     user.find('component-name').type('Front web')
-    user.find('Tipo').click()
-    user.find('Frontend').click()
-    user.find('Ambiente (opcional)').click()
+    user.find('component-is-backend').click()    # untick: pure frontend
+    user.find('component-is-frontend').click()
+    user.find('component-env').click()
     user.find(env['name']).click()
     user.find('component-create').click()
-    await user.should_see('Componente «Front web» creado')
+    await user.should_see('Componente «Front web» registrado')
     [component] = [m for m in core.list_items('modules') if m['name'] == 'Front web']
-    assert component['type'] == 'frontend' and component['manual'] is True and component['environment_id'] == env['id']
+    assert core.component_flags(component) == (False, True) and component['manual'] is True and component['environment_ids'] == [env['id']]
+
+
+async def test_modules_page_registers_a_component_with_a_new_origin_url(user: User):
+    core.create_project('P')
+    await user.open('/modules/edit')
+    user.find('component-name').type('Nuevo back')
+    user.find('component-new-origin').type('https://qa.ejemplo.com')
+    user.find('component-create').click()
+    await user.should_see('Componente «Nuevo back» registrado')
+    [component] = [m for m in core.list_items('modules') if m['name'] == 'Nuevo back']
+    [env] = core.component_environments(component)
+    assert env['base_url'] == 'https://qa.ejemplo.com'
 
 
 async def test_modules_detail_page_edits_a_manual_component(user: User):
     project = core.create_project('P')
-    component = core.create_component('Back manual', project['id'], 'backend')
+    component = core.create_component('Back manual', project['id'])
     await user.open(f'/modules/edit?id={component["id"]}')
     user.find('component-edit-name').clear()
     user.find('component-edit-name').type('Back renombrado')
@@ -502,15 +536,23 @@ async def test_modules_detail_page_edits_a_manual_component(user: User):
 
 async def test_modules_detail_page_frontend_points_to_ui_cases(user: User):
     project = core.create_project('P')
-    component = core.create_component('Front', project['id'], 'frontend')
+    component = core.create_component('Front', project['id'], is_backend=False, is_frontend=True)
     await user.open(f'/modules/edit?id={component["id"]}')
-    await user.should_see('sus pruebas son Casos UI')
+    await user.should_see('sus pruebas de UI son Casos UI')
     await user.should_not_see(marker='module-explore')
+
+
+async def test_modules_detail_page_full_stack_shows_both_hints(user: User):
+    project = core.create_project('P')
+    component = core.create_component('Monolito', project['id'], is_backend=True, is_frontend=True)
+    await user.open(f'/modules/edit?id={component["id"]}')
+    await user.should_see('sus pruebas de UI son Casos UI')
+    await user.should_see('no tiene un catálogo de operaciones')
 
 
 async def test_modules_detail_page_hints_when_there_is_no_contract(user: User):
     project = core.create_project('P')
-    component = core.create_component('Back sin contrato', project['id'], 'backend')
+    component = core.create_component('Back sin contrato', project['id'])
     await user.open(f'/modules/edit?id={component["id"]}')
     await user.should_see('no tiene un catálogo de operaciones')
     await user.should_not_see(marker='module-explore')
@@ -530,7 +572,7 @@ async def test_modules_warns_about_empty_header_value(user: User):
     await eventually(lambda: bool(user.find(kind=ui.code).elements))
 
 
-async def test_modules_warns_about_duplicate_import_by_source_url(user: User, tmp_path):
+async def test_modules_attach_contract_from_url_enriches_the_registered_component_without_duplicating_it(user: User, tmp_path):
     seed()
     import http.server, threading
     body = b'{"openapi":"3.0.3","info":{"title":"Dup"},"paths":{"/x":{"get":{"responses":{"200":{"description":"ok"}}}}}}'
@@ -549,16 +591,18 @@ async def test_modules_warns_about_duplicate_import_by_source_url(user: User, tm
     thread.start()
     try:
         spec_url = f'http://127.0.0.1:{server.server_port}/openapi.json'
-        await user.open('/modules/edit')
+        pid = core.get_active_project_id()
+        before = len(core.list_project_items('modules', pid))
+        component = core.create_component('Mi API', pid)
+        await user.open(f'/modules/edit?id={component["id"]}')
         user.find('URL del contrato, de su página de Swagger UI o un enlace de GitHub').type(spec_url)
         user.find('Importar desde URL').click()
         # run.io_bound: a real thread + HTTP round trip, slow and jittery under a loaded test run — poll the actual state, not a fixed retry budget
-        await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 2, seconds=40)
-        await user.open('/modules/edit')  # a successful import now navigates to the module's own detail page
-        user.find('URL del contrato, de su página de Swagger UI o un enlace de GitHub').type(spec_url)
-        user.find('Importar desde URL').click()
-        await eventually(lambda: len(core.list_project_items('modules', core.get_active_project_id())) == 3, seconds=40)
-        await user.should_see('Ya había 1 componente')
+        await eventually(lambda: bool(core.get('modules', component['id'])['operations']), seconds=40)
+        await user.should_see('Contrato importado')
+        # re-attaching the same contract refreshes the SAME component; it never creates a second one
+        assert len(core.list_project_items('modules', pid)) == before + 1
+        assert core.get('modules', component['id'])['name'] == 'Mi API'
     finally:
         server.shutdown()
 

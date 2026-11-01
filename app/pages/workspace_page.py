@@ -48,14 +48,14 @@ def lab_redirect():
 
 
 @ui.page('/workspace')
-def workspace_page(case: str = ''):
+def workspace_page(case: str = '', method: str = '', path: str = '', environment: str = ''):
     with frame('Espacio de trabajo', '/workspace', wide=True):
-        build(preset_case_id=case)
+        build(preset_case_id=case, prefill=(method, path, environment) if not case and method else None)
 
 
-def build(preset_case_id=None):
+def build(preset_case_id=None, prefill=None):
     projects_by_id = {p['id']: p['name'] for p in core.list_items('projects')}
-    all_envs = core.list_items('environments')
+    all_envs = [e for e in core.list_items('environments') if e.get('name')]  # tolerant of a malformed record missing even the name
     active_project = core.get_active_project_id()
     d = ws.new_draft()
     S = {'result': None, 'run': None, 'entry': None, 'previous': None, 'resp_tab': 'Cuerpo', 'view': 'Texto', 'conn': None, 'mine': True, 'q': '',
@@ -864,3 +864,8 @@ def build(preset_case_id=None):
             load_case(preset_case)
         elif preset_case is None:
             ui.notify('El caso que intentas abrir ya no existe.', type='warning')
+    elif prefill:
+        method_in, path_in, env_id = prefill
+        if env_id and core.get('environments', env_id) is None:
+            env_id = ''
+        load_draft({**ws.new_draft(), 'method': (method_in or 'GET').upper(), 'url': path_in or '', 'env_id': env_id})

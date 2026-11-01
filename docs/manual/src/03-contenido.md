@@ -29,11 +29,13 @@ Un **proyecto** agrupa componentes, ambientes, casos, suites y programaciones de
 
 ![Un componente importado con sus operaciones](img/30-modulos.png)
 
-Un **componente** es una pieza de tu solución: un backend o un frontend. Si el backend publica un contrato OpenAPI/Swagger, impórtalo — habilita funciones muy útiles: crear casos con un clic desde una operación, **validar respuestas contra el contrato**, **comparar lo observado con lo declarado** (Observador) y la **exploración automática**. Si no tienes contrato (un frontend, o un backend sin documentar), **créalo a mano**: nombre, tipo (Backend/Frontend) y, si ya existe, el ambiente al que está ligado. Un componente manual no trae catálogo de operaciones ni exploración automática, pero igual sirve para que aparezca en el inventario del proyecto y puedas asociarle Casos API directamente (o, si es un frontend, Casos UI).
+Un **componente** es una pieza desplegable de tu solución: un backend, un frontend, o ambos a la vez (un monolito full-stack que sirve API y UI desde el mismo proceso). Registrar un componente **nunca es obligatorio**: puedes crear Casos API o Casos UI sin pasar por aquí.
 
-Registrar un componente **nunca es obligatorio**: puedes crear Casos API o Casos UI sin pasar por aquí.
+**Registrar un componente.** En **Registrar componente** escribe un **Nombre**, marca lo que expone (**Expone backend (API)**, **Expone frontend (UI)**, o ambos) y, opcionalmente, dónde vive: elige uno o varios **ambientes existentes**, o escribe **un origen nuevo** (una URL) para que LTW registre ese ambiente de una vez. También puedes ligarlo a un **Módulo** (§7.4). Eso es todo lo que hace falta para que exista en el inventario del proyecto y puedas asociarle Casos directamente.
 
-**Importar un contrato.** En **Importar contrato** puedes:
+El **contrato OpenAPI/Swagger**, si el componente expone backend y lo tiene publicado, se importa **después**, como un paso aparte y opcional — no hace falta tenerlo a mano al registrar. Habilita funciones muy útiles: crear casos con un clic desde una operación, **validar respuestas contra el contrato**, **comparar lo observado con lo declarado** (Observador) y la **exploración automática**.
+
+**Importar el contrato.** Desde el detalle del componente, pestaña **Operaciones** (solo visible si expone backend y aún no tiene catálogo), puedes:
 
 - escribir una **URL** (`http` o `https`) y pulsar **Importar desde URL**; o
 - **arrastrar un archivo** `.json`, `.yaml` o `.yml`.
@@ -47,19 +49,28 @@ La URL puede ser cualquiera de estas:
 | Un enlace de **GitHub** de un archivo (`github.com/…/blob/…`) | Lo convierte al enlace «raw» y lo descarga. |
 | Un servicio que sirve su contrato en una ruta habitual (`/openapi.json`, `/swagger.json`, `/v3/api-docs`…) | Prueba esas rutas si la página no lo enlaza. |
 
-Al terminar, el aviso indica el **origen real** del contrato (por ejemplo, la página `https://petstore3.swagger.io/` resolvió a `…/api/v3/openapi.json`) y el componente lo recuerda. Si la dirección escrita da error (por ejemplo, la raíz de una API sin página), también prueba esas rutas desde el mismo servidor. Si no encuentra ninguno, te lo dice y puedes pegar la URL directa o subir el archivo. Se prueban como máximo 14 direcciones.
+Si el contrato declara etiquetas, antes de guardar nada se pregunta **¿importar todo, o solo algunas etiquetas?** — útil con contratos grandes de los que solo interesa una parte (p. ej. 10 de 500 operaciones); si no declara etiquetas, importa todo directamente. Al terminar, el aviso indica el **origen real** del contrato (por ejemplo, la página `https://petstore3.swagger.io/` resolvió a `…/api/v3/openapi.json`); el componente lo recuerda. Si la dirección escrita da error, también prueba esas rutas habituales desde el mismo servidor; se prueban como máximo 14 direcciones. La importación **nunca cambia el nombre** que le pusiste al registrarlo, ni su Módulo/Estado: solo trae operaciones, versión y servidor. Volver a importar (el mismo origen u otro) actualiza ese mismo componente, nunca crea uno duplicado. Se aceptan **OpenAPI 3.x** y **Swagger 2.0**, hasta **10 MB**.
 
-**Servidor declarado y ambiente.** Cuando el contrato indica su servidor (OpenAPI `servers`, o `host` + `basePath` en Swagger 2.0; una dirección relativa se resuelve contra el origen; si no declara ninguno, como hace FastAPI, se usa el servidor desde el que se descargó), LTW **registra el ambiente automáticamente** al importar (lo crea, o reutiliza uno existente con esa misma URL) y lo dice en el aviso. Si en su momento no se pudo resolver, el detalle del componente muestra **Servidor declarado** y el botón **Crear ambiente con esta URL**.
-
-Se aceptan **OpenAPI 3.x** y **Swagger 2.0**, hasta **10 MB**. Tras importar se te lleva directo al detalle del componente recién creado.
+**Servidor declarado y ambiente.** Cuando el contrato indica su servidor (OpenAPI `servers`, o `host` + `basePath` en Swagger 2.0; una dirección relativa se resuelve contra el origen; si no declara ninguno, como hace FastAPI, se usa el servidor desde el que se descargó), LTW **registra el ambiente automáticamente** al importar (lo crea, o reutiliza uno existente con esa misma URL) y lo liga al componente. Si en su momento no se pudo resolver, la pestaña **Ambientes** del componente muestra **Servidor declarado** y el botón **Crear ambiente con esta URL** para hacerlo a mano.
 
 **Referencias `$ref`.** Se resuelven las **locales** (`#/components/...`). Las **externas** (otros archivos o URL) se **rechazan** con un mensaje claro; no se descarga nada desde dentro del documento por seguridad. Los modelos **recursivos** (por ejemplo, un comentario con respuestas que son comentarios) sí se aceptan: la recursión se corta en el punto en que se repite y ahí el esquema queda abierto, de modo que la validación contra el contrato es más permisiva en ese nivel.
 
-**Crear un componente manualmente.** En **Crear componente manualmente** escribe un **Nombre**, elige el **Tipo** (Backend/Frontend) y, si ya existe, el **Ambiente** al que está ligado (opcional; se puede dejar sin ambiente y enlazarlo después editando el componente). No trae operaciones ni exploración automática.
+**El detalle de un componente** se organiza en pestañas:
 
-**La lista de componentes** es una tabla (Nombre, Tipo, Operaciones, Ambiente, Casos generados); haz clic en una fila para ver su detalle. Ahí se ve el ambiente ya ligado (o el botón para crearlo), la exploración automática acotada a ese componente, los **casos ya generados** con enlace directo a cada uno y, si tiene contrato, sus operaciones en una tabla paginada con el botón **Crear caso** por fila (abre el editor de caso API con el método y la ruta ya rellenados).
+| Pestaña | Qué tiene |
+|---|---|
+| **Resumen** | Identidad (nombre, qué expone — editable incluso si viene de un contrato), Módulo/Estado, y tarjetas con el conteo de ambientes, casos y funcionalidades (clic y te lleva a esa pestaña). |
+| **Ambientes** | Todos los ambientes ligados (puede ser más de uno: dev, QA, producción…), con **Verificar conexión** por ambiente individual o para todos a la vez, y el selector para ligar/desligar. |
+| **Catálogo** | El aviso de Casos UI si expone frontend; si expone backend y ya tiene operaciones, dos sub-pestañas **Automático** (exploración automática) y **Manual** (agregar/editar/quitar endpoints a mano) — el catálogo completo del contrato (filtrable por **etiqueta**, con «Probar» y «Crear caso» por fila) se ve en las dos, el modo elegido solo decide qué herramienta adicional ofrece; o el formulario para importar el contrato si todavía no lo tiene. |
+| **Casos y funcionalidades** | Los Casos generados desde este componente, y las **Funcionalidades** que dependen de él (§7.5) — si este componente se cae, qué le afecta al negocio. |
+
+**La lista de componentes** es una tabla (Nombre, Tipo, Módulo, Estado, Operaciones, Ambiente, Casos generados); haz clic en una fila para ver su detalle.
+
+**Catálogo manual, antes de tener un Caso.** En la pestaña Catálogo, un componente que expone backend puede «Agregar un endpoint a mano» (método, ruta, resumen opcional) aunque no tenga contrato — se guarda junto a las operaciones del contrato, con una etiqueta «a mano» que las distingue y las protege de borrarse al reimportar. Si el componente ya tiene operaciones (de un contrato), el formulario de agregar y los endpoints ya agregados a mano viven en la sub-pestaña **Manual**, separados del catálogo completo del contrato (sub-pestaña **Automático**) — así no hay que buscar uno entre cientos de filas para quitarlo; un icono de editar permite cambiarle método, ruta o resumen sin borrarlo y crearlo de nuevo. Cada fila del catálogo completo también tiene «Probar», que abre el **Espacio de trabajo** (§13) en una pestaña nueva con el método, la ruta y un ambiente ya precargados, para ejecutar la petición ad hoc y ajustar parámetros, headers o body ahí mismo antes de decidir si conviene un Caso. Uno que expone frontend puede catalogar **Vistas** (nombre y ruta); su botón «Crear caso UI» abre el grabador con el nombre y la navegación inicial ya puestos, un icono copia la URL completa al portapapeles, y «Verificar» carga la ruta en un navegador real (headless) e inspecciona el contenido ya renderizado — no solo el código HTTP, porque en una SPA con ruteo del lado del cliente el servidor suele responder 200 para cualquier ruta aunque la propia aplicación muestre «página no encontrada». Es un paso intermedio entre «sé que esto existe» y «ya tengo el Caso que lo prueba». Un icono junto a «Copiar URL» abre la vista en una pestaña nueva. «Detectar vistas automáticamente» recorre el sitio del ambiente ligado siguiendo sus enlaces ya renderizados (con una barra de progreso mientras escanea) y propone las rutas nuevas que encuentra para elegir cuáles agregar — por defecto hasta 15 páginas desde la raíz, pero un campo «Ruta inicial» lo acota a una sección (p. ej. «/admin») y «Escaneo completo» sube el límite a 200; no reemplaza una revisión manual, pero ahorra tipearlas una por una.
 
 **Eliminar un componente.** Se bloquea si algún caso lo usa (te dice cuántos).
+
+**Mover un componente a otro proyecto.** Como ningún formulario de creación tiene selector de proyecto (todo nace en el **Proyecto activo** del encabezado), si un componente terminó en el proyecto equivocado, «Mover a otro proyecto» (pestaña Resumen) lo corrige: elige el destino y confirma. Se bloquea si el componente ya tiene Casos (muévelos o bórralos primero); los Ambientes y Módulos ligados se desvinculan, no se transfieren, porque pertenecen al proyecto anterior.
 
 ## 7.3 Ambientes y secretos
 
@@ -84,16 +95,18 @@ Pulsa **Nuevo ambiente** y luego **Guardar ambiente**. La lista es una tabla: ha
 
 Con **Bearer**, LTW envía `Authorization: Bearer <valor del secreto>`; con **API Key**, el header elegido con el valor del secreto. Si falta el secreto o la variable de entorno, el caso termina en **Error** con ese mensaje y **no se envía**.
 
-### Actualización automática de token (opcional)
+### Obtención de token o clave (opcional)
 
-Con **Bearer** o **API Key** activos, puedes activar «Actualizar automáticamente si falta, expira, o el servicio responde 401»:
+Con **Bearer** o **API Key** activos, aparecen los mismos campos para describir cómo se obtiene el valor — el mecanismo es igual para los dos (ambos terminan siendo un valor guardado que se inyecta en un header), pero la pantalla lo llama «token» con Bearer y «clave» con API Key, porque en la práctica suelen obtenerse distinto (un Bearer casi siempre por login; una API Key casi siempre es estática, pegada desde un panel). Dejar los campos en blanco equivale a «no aplica»; completarlos **no** lo activa automáticamente, solo lo deja listo:
 
 | Mecanismo | Qué hace |
 |---|---|
 | **Petición HTTP** (beta) | Llama a un endpoint (típico de OAuth2: método, URL, headers y body, admiten `{{variables}}` y `{{secret:NOMBRE}}`), extrae el token de la respuesta con una ruta JSONPath (`$.access_token` por defecto) y, si das la ruta de duración (`expires_in`), recuerda cuándo vuelve a vencer. |
 | **Comando del sistema** (experimental) | Ejecuta un comando local y toma su salida estándar como el token. El scheduler lo corre sin supervisión en esta máquina: úsalo solo con scripts de confianza. |
 
-El token resultante se guarda en el secreto que indiques (o en el mismo que ya usa el ambiente, si lo dejas vacío). LTW refresca el token **antes** de ejecutar si no hay uno guardado o si ya venció, y además **reintenta una vez** si el servicio responde `401`, sin que tengas que hacer nada. El botón **Probar ahora** lo ejecuta de inmediato (requiere guardar el ambiente primero) para verificar que funciona antes de confiar en él en una programación.
+El token resultante se guarda en el secreto que indiques (o en el mismo que ya usa el ambiente, si lo dejas vacío). Una vez configurado, el botón **Obtener token ahora** lo ejecuta de inmediato (requiere guardar el ambiente primero) — sirve tanto para probarlo como para pedir un token puntual sin automatizar nada.
+
+Un segundo checkbox, **«Además, actualizarlo automáticamente si falta, expira, o el servicio responde 401»** (marcado por defecto al configurar el mecanismo), decide si esto corre solo: con él activo, LTW refresca el token **antes** de ejecutar un caso si no hay uno guardado o ya venció, y además **reintenta una vez** si el servicio responde `401`. Desmarcarlo deja el mecanismo configurado y disponible vía «Obtener token ahora», pero nunca se dispara por sí solo — útil para mantener el control manual de cuándo se pide un token nuevo.
 
 ### Secretos (almacén seguro del sistema)
 
@@ -108,6 +121,16 @@ Se usan:
 - en cualquier parte de una petición como **`{{secret:NOMBRE}}`** (por ejemplo, `Authorization: Bearer {{secret:TOKEN_QA}}`).
 
 La lista solo muestra los **nombres** (con `••••••••`); el valor nunca se muestra. Si no existe un secreto con ese nombre, LTW busca una **variable de entorno** con el mismo nombre. Los valores usados **se eliminan** de lo que se guarda en el historial y de los informes.
+
+Un ambiente también declara **qué sirve**: backend (API), frontend (UI), o ambos — por defecto ambos, para no restringir nada hasta que lo acotes a propósito. Un servidor de desarrollo de frontend (p. ej. `localhost:4200`) normalmente no tiene API propia: desmarcar «backend» evita que se ofrezca en la exploración automática de un contrato.
+
+## 7.4 Módulos (agrupar por dominio)
+
+Un **Módulo** (`/module-groups`) agrupa Componentes por dominio o propiedad técnica — quién es dueño de qué, dónde vive —, independiente de qué exponen técnicamente. Un componente puede pertenecer a más de un Módulo a la vez (p. ej. un backend compartido entre dos dominios). Se liga desde el propio Componente (pestaña Resumen → Clasificación). Un Módulo con componentes ligados no se puede eliminar hasta desligarlos.
+
+## 7.5 Funcionalidades (trazabilidad de negocio)
+
+Una **Funcionalidad** (`/features`) es una capacidad de negocio que puede cruzar varios Componentes y Módulos a la vez (p. ej. «Checkout» usa Pagos, Inventario y Notificaciones) — un eje distinto e independiente del Módulo. Se valida con una o más **Suites/flujos** ligadas a ella (al editar una suite, el campo «Funcionalidad»); su detalle muestra cada suite con el estado de su última corrida y un resumen agregado («3/4 pasan»).
 
 ---
 

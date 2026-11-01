@@ -27,6 +27,11 @@ async def run_suite(suite):
     return result
 
 
+def feature_name(suite):
+    feature = core.get('features', suite.get('feature_id')) if suite.get('feature_id') else None
+    return feature['name'] if feature else None
+
+
 def flow_summary(suite):
     """'Identidad → Pedidos' when the suite crosses environments (modules)."""
     names = []
@@ -55,7 +60,11 @@ def suites_list():
             with ui.card().classes('w-full'):
                 with ui.row().classes('items-center gap-3 w-full no-wrap'):
                     with ui.column().classes('gap-0 grow'):
-                        ui.label(suite['name']).classes('font-semibold')
+                        with ui.row().classes('items-center gap-2'):
+                            ui.label(suite['name']).classes('font-semibold')
+                            fname = feature_name(suite)
+                            if fname:
+                                ui.badge(fname, color='pink')
                         policy = 'se detiene al primer fallo' if suite.get('on_failure') == 'stop' else 'continúa tras fallos'
                         ui.label(f'{len(suite["case_ids"])} casos · {route} · {policy} · {suite.get("retries", 0)} reintento(s)'
                                  + (f' · {enriched} paso(s) enriquecido(s)' if enriched else '')).classes('text-sm text-gray-500')
@@ -187,10 +196,15 @@ def suite_edit(id: str = ''):
         steps = [s for s in steps if s['case_id'] in cases]
         variables = dict((current or {}).get('variables', {}))
 
+        features = core.list_project_items('features', pid)
         with ui.card().classes('w-full'):
             with ui.row().classes('w-full gap-3'):
                 name = ui.input('Nombre', value=(current or {}).get('name', 'Smoke')).props('outlined dense').classes('grow')
                 env = ui.select({e['id']: e['name'] for e in envs}, value=(current or {}).get('environment_id', envs[0]['id']), label='Ambiente por defecto').props('outlined dense').classes('w-60')
+                feature = ui.select({f['id']: f['name'] for f in features}, value=(current or {}).get('feature_id'), label='Funcionalidad (opcional)', clearable=True) \
+                    .props('outlined dense').classes('w-60').mark('suite-feature')
+                if not features:
+                    ui.label('Crea Funcionalidades para ligar esta suite a una capacidad de negocio.').classes('text-xs text-gray-500 self-center')
             with ui.row().classes('w-full gap-3 items-center'):
                 on_failure = ui.select({'continue': 'Continuar tras un fallo', 'stop': 'Detener al primer fallo'}, value=(current or {}).get('on_failure', 'continue'), label='Política de fallo').props('outlined dense').classes('w-64')
                 retries = ui.number('Reintentos por caso', value=(current or {}).get('retries', 0), min=0, max=5, precision=0).props('outlined dense').classes('w-44')
@@ -255,7 +269,7 @@ def suite_edit(id: str = ''):
 
         def save():
             options = dict(id=(current or {}).get('id'), on_failure=on_failure.value, retries=int(retries.value or 0), retry_delay_s=float(delay.value or 0),
-                           variables={k: v for k, v in variables.items() if k.strip()}, steps=steps)
+                           variables={k: v for k, v in variables.items() if k.strip()}, steps=steps, feature_id=feature.value)
             if current:
                 options['expected_updated_at'] = current.get('updated_at')       # refuse to overwrite someone else's changes
             saved = core.save_suite(name.value or '', env.value, [], pid, **options)
