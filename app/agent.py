@@ -243,7 +243,7 @@ def _kind(run):
     return 'extraction' if run.get('error') else 'assertion'
 
 
-def _diagnose(run, kind):
+def _diagnose(run, kind, case_name=None):
     status = run.get('http_status')
     body = (run.get('response') or {}).get('body', '')
     hints, category = [], 'unknown'
@@ -269,10 +269,18 @@ def _diagnose(run, kind):
             category, hints = 'contract_mismatch', ['La respuesta cambió de forma respecto a lo esperado (campos/tipos): ¿cambio intencional del contrato o regresión?']
         else:
             category, hints = 'data_mismatch', ['La respuesta es válida pero con valores distintos a los esperados.']
+    # Un caso auto-explorado guarda un ID real capturado al momento de explorar (no un placeholder): si ese
+    # dato se borra o cambia en el servicio, el caso empieza a fallar por sí solo — antes de asumir una
+    # regresión real, vale la pena saber que esta categoría de caso es la más propensa a quedar obsoleta.
+    if case_name and case_name.startswith('[auto-explorado]') and category in ('not_found', 'validation'):
+        hints.append('Este caso es auto-explorado: el ID que usa se capturó de un dato real al momento de explorar. '
+                      'Si ese registro ya no existe o cambió en el servicio, el caso queda obsoleto por sí solo — '
+                      'antes de tratarlo como una regresión, confirma que el dato de origen siga vigente.')
     return {'category': category, 'hints': hints, 'heuristic': True}
 
 
-def _contract_hint(run):
+def _match_operation(run):
+    """The contract operation behind this run's request (method + templated path), if an imported module declares one."""
     request = run.get('request') or {}
     if not request:
         return None
@@ -281,12 +289,44 @@ def _contract_hint(run):
         for operation in module.get('operations', []):
             from .observer import _template_regex
             if operation['method'] == request.get('method') and _template_regex(operation['path']).match(path):
-                status = str(run.get('http_status') or '')
-                codes = [c for c in operation.get('responses', {}) if str(c).startswith('2')]
-                schema = core.operation_response_schema(operation, status if status in {str(c) for c in operation.get('responses', {})} else (codes[0] if codes else '200'))
-                return {'module': module.get('name'), 'operation': f'{operation["method"]} {operation["path"]}', 'summary': operation.get('summary', ''),
-                        'declared_status_codes': sorted(str(c) for c in operation.get('responses', {})), 'expected_response_schema': schema}
+                return module, operation
     return None
+
+
+def _contract_hint(run):
+    match = _match_operation(run)
+    if not match:
+        return None
+    module, operation = match
+    status = str(run.get('http_status') or '')
+    codes = [c for c in operation.get('responses', {}) if str(c).startswith('2')]
+    schema = core.operation_response_schema(operation, status if status in {str(c) for c in operation.get('responses', {})} else (codes[0] if codes else '200'))
+    return {'module': module.get('name'), 'operation': f'{operation["method"]} {operation["path"]}', 'summary': operation.get('summary', ''),
+            'declared_status_codes': sorted(str(c) for c in operation.get('responses', {})), 'expected_response_schema': schema}
+
+
+def _corrected_request_example(run, category):
+    """Query/body the contract declares for this operation, merged on top of what was actually sent — only fills
+    in what's missing, never overwrites a sent value, never guesses business values (same placeholders «Probar»
+    already uses: example/default/enum from the schema, else a typed placeholder). Only offered for a rejected-
+    request diagnosis (validation): for auth/not_found/server_error a "corrected" request wouldn't mean anything,
+    and for a passing contract match it would have nothing to add."""
+    if category != 'validation':
+        return None
+    match = _match_operation(run)
+    if not match:
+        return None
+    _, operation = match
+    sample = core.sample_request_for_operation(operation)
+    request = run.get('request') or {}
+    sent_query, sent_body = request.get('query') or {}, request.get('body')
+    query = {**sample['query'], **sent_query}
+    body = sent_body
+    if sample['body'] is not None:
+        body = {**sample['body'], **sent_body} if isinstance(sent_body, dict) else (sample['body'] if sent_body is None else sent_body)
+    if query == sent_query and body == sent_body:
+        return None  # the contract doesn't require anything beyond what was already sent
+    return {'query': query, 'body': body}
 
 
 def _observed_drift(run):
@@ -322,6 +362,7 @@ def failure_from_run(run, suite_run=None, rerun_command=None):
     name = run.get('case_name') or snapshot.get('name') or ''
     title = (label if (not name or name.startswith(label)) else f'{name}: {label}') + ' → ' + (str(status) if status else 'sin respuesta')
     goal_rules = [describe_rule(r) for r in snapshot.get('assertions', [])]
+    diagnosis = _diagnose(run, kind, name)
     previous, step = [], None
     if suite_run:
         for index, entry in enumerate(suite_run.get('case_runs', [])):
@@ -342,8 +383,9 @@ def failure_from_run(run, suite_run=None, rerun_command=None):
         'response': {'status': status, 'duration_ms': run.get('duration_ms'), 'headers': response.get('headers') or {},
                      'body': _body_excerpt(response.get('body', ''))} if response else None,
         'error': run.get('error'),
-        'diagnosis': _diagnose(run, kind),
+        'diagnosis': diagnosis,
         'where_to_look': {'code_hints': snapshot.get('code_hints') or {}, 'contract': _contract_hint(run), 'observed_drift': _observed_drift(run)},
+        'corrected_request_example': _corrected_request_example(run, diagnosis['category']),
         'repro': {'curl': curl_command(request['method'], request['url'], request.get('headers'), request.get('body'), request.get('query')) if request else None,
                   'ltw': rerun_command},
         'fix_goal': 'Hacer que la prueba pase sin debilitar sus aserciones: ' + ('; '.join(goal_rules) if goal_rules else 'la petición debe responder correctamente') + '.',
@@ -378,6 +420,13 @@ def brief_markdown(f):
         lines += [f'## Respuesta recibida (HTTP {f["response"]["status"]}, {f["response"]["duration_ms"]} ms)', '```json',
                   body if isinstance(body, str) else json.dumps(body, indent=2, ensure_ascii=False), '```', '']
     lines += ['## Diagnóstico (heurístico, no definitivo)'] + [f'- {h}' for h in f['diagnosis']['hints']] + ['']
+    if f.get('corrected_request_example'):
+        ex = f['corrected_request_example']
+        lines += ['## Ejemplo de petición corregida',
+                   'Según el contrato, para esta operación falta(n) en la petición enviada. Query/body completados con lo que declara el contrato '
+                   '(`example`/`default`/`enum` si los hay, si no un valor de relleno según el tipo) — **no son valores de negocio reales**: '
+                   'reemplaza los que correspondan (ids, nombres) antes de reenviar.', '```json',
+                   json.dumps({k: v for k, v in ex.items() if v}, indent=2, ensure_ascii=False), '```', '']
     where = f['where_to_look']
     lines += ['## Dónde mirar']
     hints = where.get('code_hints') or {}

@@ -17,7 +17,7 @@ def _env_note(pid, module):
     return f' Ambiente «{env["name"]}» {"creado" if created else "reutilizado"} con {env["base_url"]}.'
 
 
-def _operations_catalog_table(module, operations, marked=True):
+def _operations_catalog_table(module, operations, marked=True, refreshers=None, subtab_key='automatico', count_label=None):
     """Tabla filtrable por etiqueta con TODAS las operaciones (del contrato y las agregadas a mano, marcadas
     aparte) — vive en ambas sub-pestañas de Catálogo (Automático y Manual): el catálogo completo siempre debe
     verse, sin importar qué modo de carga estés usando en ese momento; solo cambia qué más te ofrece cada modo."""
@@ -32,12 +32,20 @@ def _operations_catalog_table(module, operations, marked=True):
             tag_filter.mark('module-tag-filter')
     else:
         tag_filter = None
+    ui.label('Marca filas sueltas, o usa «Seleccionar todas» para elegir de golpe todo lo que está filtrado en este '
+             'momento (filtra por etiqueta primero si solo querés limpiar una parte) — el casillero del encabezado de '
+             'la tabla solo marca la página visible, por eso el botón de abajo es el que selecciona todo.').classes('text-xs text-gray-500')
+    # 'summary' es la única columna sin 'min-width' propio (las demás fijan un piso con su contenido real),
+    # y tiene un 'max-width' para no absorber todo el ancho sobrante (el bug que dejaba un hueco vacío antes
+    # de «Etiquetas»). El truco «width:1%» es más frágil: cuando la tabla no está forzada a 100% del
+    # contenedor, el navegador puede encogerla por debajo de lo que el contenido realmente necesita (p. ej.
+    # recortando el botón de eliminar) — 'min-width' es un piso real, no una pista que el layout puede ignorar.
     columns = [
-        {'name': 'method', 'label': 'Método', 'field': 'method', 'align': 'left'},
-        {'name': 'path', 'label': 'Ruta', 'field': 'path', 'align': 'left'},
-        {'name': 'summary', 'label': 'Resumen', 'field': 'summary', 'align': 'left'},
-        {'name': 'tags', 'label': 'Etiquetas', 'field': 'tags', 'align': 'left'},
-        {'name': 'actions', 'label': '', 'field': 'index', 'align': 'right'},
+        {'name': 'method', 'label': 'Método', 'field': 'method', 'align': 'left', 'style': 'min-width:84px;white-space:nowrap'},
+        {'name': 'path', 'label': 'Ruta', 'field': 'path', 'align': 'left', 'style': 'white-space:nowrap'},
+        {'name': 'summary', 'label': 'Resumen', 'field': 'summary', 'align': 'left', 'style': 'max-width:320px'},
+        {'name': 'tags', 'label': 'Etiquetas', 'field': 'tags', 'align': 'left', 'style': 'white-space:nowrap'},
+        {'name': 'actions', 'label': '', 'field': 'index', 'align': 'right', 'style': 'min-width:205px;white-space:nowrap'},
     ]
 
     def op_rows():
@@ -45,43 +53,161 @@ def _operations_catalog_table(module, operations, marked=True):
         return [{'index': i, 'method': op['method'], 'path': op['path'], 'summary': op.get('summary', ''),
                 'tags': ', '.join(op.get('tags', [])), 'manual': bool(op.get('manual'))}
                 for i, op in enumerate(operations) if not wanted or wanted in (op.get('tags') or [])]
-    op_table = ui.table(columns=columns, rows=op_rows(), row_key='index', pagination=20).classes('w-full')
+
+    top_bar = ui.row().classes('items-center gap-2')
+    op_table = ui.table(columns=columns, rows=op_rows(), row_key='index', pagination=20, selection='multiple')
     if marked:
         op_table.mark('module-operations-table')
-    op_table.props('flat bordered')
+    op_table.props('flat bordered wrap-cells')  # sin esto, Quasar no envuelve el texto de las celdas y la tabla crece sin
+    # límite para no envolverlo (clase q-table--no-wrap), ignorando el ancho del contenedor por completo — la causa real
+    # del scroll horizontal, no el ancho de las columnas en sí.
+    bottom_bar = ui.row().classes('items-center gap-2')
+
+    def bulk_bar(container):
+        with container:
+            label = ui.label('').classes('text-xs text-gray-500')
+            select_all_btn = ui.button('Seleccionar todas', icon='checklist').props('outline dense no-caps')
+            delete_btn = ui.button('Eliminar seleccionadas', icon='delete_sweep', color='negative').props('outline dense no-caps')
+            delete_btn.visible = False
+        return label, select_all_btn, delete_btn
+    top_label, top_select_all, top_delete = bulk_bar(top_bar)
+    bottom_label, bottom_select_all, bottom_delete = bulk_bar(bottom_bar)
+
+    def update_bulk_ui():
+        n = len(op_table.selected)
+        total = len(op_rows())
+        text = f'{n} de {total} seleccionada(s)' if n else ''
+        for label, delete_btn in ((top_label, top_delete), (bottom_label, bottom_delete)):
+            label.set_text(text)
+            delete_btn.visible = n > 0
+    op_table.on('selection', lambda _: update_bulk_ui())
+
+    def this_table_refresh():
+        op_table.rows = op_rows()
+        op_table.selected = []
+        op_table.update()
+        update_bulk_ui()
+    if refreshers is not None:
+        refreshers.append(this_table_refresh)
+
+    def refresh_catalog():
+        """Vuelve a leer el componente y refresca la tabla (y su contraparte en la otra sub-pestaña) sin
+        navegar — así el borrado/edición se queda en Catálogo en vez de volver a Resumen. Si el catálogo quedó
+        completamente vacío, la pantalla tiene que pasar al estado «sin catálogo» (otras tarjetas, otro layout),
+        algo que no se puede lograr solo actualizando la tabla: ahí sí hace falta recargar, pero preservando la
+        pestaña Catálogo."""
+        current = core.get('modules', module['id'])
+        fresh_ops = current.get('operations') or []
+        if not fresh_ops and operations:
+            ui.navigate.to(f'/modules/edit?id={module["id"]}&tab=catalogo&subtab={subtab_key}')
+            return
+        operations[:] = fresh_ops
+        if count_label:
+            count_label.set_text(f'{len(operations)} operaciones')
+        for refresh in (refreshers or [this_table_refresh]):
+            refresh()
+
+    def select_all():
+        op_table.selected = op_rows()
+        op_table.update()
+        update_bulk_ui()
+    top_select_all.on_click(select_all)
+    bottom_select_all.on_click(select_all)
+
+    def bulk_delete():
+        selected = list(op_table.selected)
+
+        def do_delete():
+            core.remove_operations(module['id'], [row['index'] for row in selected])
+            ui.notify(f'{len(selected)} operación(es) eliminada(s)', type='positive')
+            refresh_catalog()
+        confirm(f'¿Eliminar {len(selected)} operación(es) seleccionada(s) del catálogo? '
+                'Las que vienen del contrato reaparecen si lo reimportás.', do_delete)
+    top_delete.on_click(guard(bulk_delete))
+    bottom_delete.on_click(guard(bulk_delete))
     op_table.add_slot('body-cell-method', '''<q-td :props="props"><q-badge color="primary">{{ props.value }}</q-badge></q-td>''')
     op_table.add_slot('body-cell-path', '''<q-td :props="props"><span class="font-mono text-sm">{{ props.value }}</span></q-td>''')
     op_table.add_slot('body-cell-tags', r'''
         <q-td :props="props">
             <span class="text-xs text-grey-7">{{ props.value }}</span>
             <q-badge v-if="props.row.manual" outline color="grey-6" class="q-ml-xs">a mano</q-badge>
+            <q-badge v-else outline color="blue-6" class="q-ml-xs">contrato</q-badge>
         </q-td>
     ''')
     op_table.add_slot('body-cell-actions', r'''
         <q-td :props="props" class="text-right" @click.stop>
             <q-btn flat dense size="sm" no-caps icon="play_arrow" label="Probar" color="grey-8" @click="$parent.$emit('tryOp', props.row)" />
             <q-btn flat dense size="sm" no-caps icon="add" label="Crear caso" color="primary" @click="$parent.$emit('createCase', props.row)" />
+            <q-btn flat dense round size="sm" icon="edit" @click="$parent.$emit('editOp', props.row)" />
+            <q-btn flat dense round size="sm" icon="delete" color="negative" @click="$parent.$emit('deleteOp', props.row)" />
         </q-td>
     ''')
     backend_envs = [e for e in core.component_environments(module) if core.environment_flags(e)[0]]
     try_env = backend_envs[0]['id'] if backend_envs else ''
     op_table.on('createCase', lambda e: ui.navigate.to(f'/cases/edit?module={module["id"]}&op={e.args["index"]}'))
     op_table.on('tryOp', lambda e: ui.navigate.to(
-        f'/workspace?method={quote(e.args["method"])}&path={quote(e.args["path"], safe="")}&environment={try_env}', new_tab=True))
+        f'/workspace?method={quote(e.args["method"])}&path={quote(e.args["path"], safe="")}&environment={try_env}&module={module["id"]}', new_tab=True))
+
+    def edit_row(e):
+        idx = e.args['index']
+        current_op = operations[idx]
+        with ui.dialog() as edit_dialog, ui.card().classes('w-96'):
+            ui.label('Editar operación').classes('font-semibold')
+            if not current_op.get('manual'):
+                ui.label('Viene del contrato: el cambio se pierde si reimportás el mismo contrato.').classes('text-xs text-amber-700')
+            e_method = ui.select(list(core.HTTP_METHODS), value=current_op['method'], label='Método').props('outlined dense').classes('w-32')
+            e_path = ui.input('Ruta', value=current_op['path']).props('outlined dense').classes('w-full')
+            e_summary = ui.input('Resumen (opcional)', value=current_op.get('summary', '')).props('outlined dense').classes('w-full')
+            with ui.row().classes('justify-end w-full gap-2'):
+                ui.button('Cancelar', on_click=edit_dialog.close).props('flat')
+
+                def confirm_edit():
+                    core.update_operation(module['id'], idx, e_method.value, e_path.value, e_summary.value)
+                    edit_dialog.close()
+                    ui.notify('Operación actualizada', type='positive')
+                    refresh_catalog()
+                ui.button('Guardar', icon='save', on_click=guard(confirm_edit)).props('color=primary')
+        edit_dialog.open()
+
+    def delete_row(e):
+        idx = e.args['index']
+        row = e.args
+
+        def do_delete():
+            core.remove_operation(module['id'], idx)
+            ui.notify('Operación eliminada', type='positive')
+            refresh_catalog()
+        confirm(f'¿Eliminar {row["method"]} {row["path"]} del catálogo?', do_delete)
+    op_table.on('editOp', edit_row)
+    op_table.on('deleteOp', delete_row)
     if tag_filter:
         def refresh_ops():
             op_table.rows = op_rows()
+            op_table.selected.clear()
+            update_bulk_ui()
             op_table.update()
         tag_filter.on_value_change(refresh_ops)
 
 
-def _manual_operations_card(module, pid):
+def _manual_operations_card(module, pid, operations=None, refreshers=None, count_label=None):
     """Catálogo manual de endpoints: antes de escribir un Caso completo, deja constancia de que un endpoint
     existe (método, ruta, resumen), con o sin contrato. Se agrega a la misma lista de operaciones que usa un
     contrato importado, así que «Crear caso» funciona igual para ambos. Vive en su propia lista corta (no
     mezclada con las cientos de filas del contrato) para poder encontrar y quitar lo que agregaste sin buscarlo
     entre el resto del catálogo."""
     manual_box = ui.column().classes('w-full gap-1')
+
+    def sync_catalog_table():
+        """Mantiene sincronizada la tabla grande del catálogo (si existe en esta página) con lo que acaba de
+        cambiar acá — si no, quedaría mostrando datos viejos hasta recargar."""
+        if operations is None:
+            return
+        current = core.get('modules', module['id'])
+        operations[:] = current.get('operations') or []
+        if count_label:
+            count_label.set_text(f'{len(operations)} operaciones')
+        for refresh in (refreshers or []):
+            refresh()
 
     def render_manual():
         current = core.get('modules', module['id'])
@@ -109,20 +235,24 @@ def _manual_operations_card(module, pid):
                                     ui.button('Cancelar', on_click=edit_dialog.close).props('flat')
 
                                     def confirm_edit():
-                                        core.update_manual_operation(module['id'], idx, e_method.value, e_path.value, e_summary.value)
+                                        core.update_operation(module['id'], idx, e_method.value, e_path.value, e_summary.value)
                                         edit_dialog.close()
                                         ui.notify('Endpoint actualizado', type='positive')
                                         render_manual()
+                                        sync_catalog_table()
                                     ui.button('Guardar', icon='save', on_click=guard(confirm_edit)).props('color=primary')
                             edit_dialog.open()
                         ui.button(icon='edit', on_click=edit_op).props('flat dense round size=sm')
 
                         def remove_op(idx=i):
-                            core.remove_manual_operation(module['id'], idx)
+                            core.remove_operation(module['id'], idx)
                             ui.notify('Endpoint eliminado', type='positive')
                             render_manual()
+                            sync_catalog_table()
                         ui.button(icon='delete', on_click=remove_op).props('flat dense round size=sm color=negative')
     render_manual()
+    if refreshers is not None:
+        refreshers.append(render_manual)
 
     with ui.card().classes('w-full'):
         with ui.row().classes('items-center gap-2'):
@@ -141,6 +271,7 @@ def _manual_operations_card(module, pid):
                 op_summary.value = ''
                 ui.notify('Endpoint agregado', type='positive')
                 render_manual()
+                sync_catalog_table()
             ui.button('Agregar endpoint', icon='add', on_click=guard(add_operation)).props('outline no-caps').mark('component-add-operation')
 
 
@@ -278,570 +409,613 @@ def _register_component_form(pid):
 
 
 @ui.page('/modules/edit')
-def module_detail(id: str = ''):
-    with frame('Componente' if id else 'Registrar componente', '/modules'):
-        if not require_project():
-            return
-        pid = core.get_active_project_id()
-        ui.link('← Volver a Componentes', '/modules').classes('text-sm')
+def module_detail(id: str = '', tab: str = '', subtab: str = ''):
+    with frame('Componente' if id else 'Registrar componente', '/modules', wide=True):
+        with ui.column().classes('w-full p-4 gap-4'):
+            if not require_project():
+                return
+            pid = core.get_active_project_id()
+            ui.link('← Volver a Componentes', '/modules').classes('text-sm')
 
-        if not id:
-            _register_component_form(pid)
-            return
+            if not id:
+                with ui.column().classes('w-full max-w-6xl mx-auto gap-4'):
+                    ui.label('Registrar componente').classes('text-2xl font-semibold')
+                    _register_component_form(pid)
+                return
 
-        module = core.get('modules', id)
-        if not module or module.get('project_id') != pid:
-            ui.label('Este componente ya no existe en el proyecto activo.').classes('text-amber-700')
-            return
-        is_manual = bool(module.get('manual'))
-        is_backend, is_frontend = core.component_flags(module)
-        operations = module.get('operations') or []
+            module = core.get('modules', id)
+            if not module or module.get('project_id') != pid:
+                ui.label('Este componente ya no existe en el proyecto activo.').classes('text-amber-700')
+                return
+            is_manual = bool(module.get('manual'))
+            is_backend, is_frontend = core.component_flags(module)
+            operations = module.get('operations') or []
+            catalog_refreshers = []
 
-        module_cases = [c for c in core.list_project_items('cases', pid) if c.get('module_id') == module['id']]
-        dependent_features = core.component_features(module['id'])
-        envs = core.component_environments(module)
+            module_cases = [c for c in core.list_project_items('cases', pid) if c.get('module_id') == module['id']]
+            dependent_features = core.component_features(module['id'])
+            envs = core.component_environments(module)
 
-        # ------------------------------------------------------------ compact header: just orientation (which component), no editing here
-        with ui.row().classes('items-center gap-2'):
-            ui.icon('widgets' if is_frontend and not is_backend else ('hub' if is_backend and is_frontend else 'api'), color='primary').classes('text-2xl')
-            ui.label(module['name']).classes('text-xl font-semibold')
-            ui.badge(core.component_kind_label(module), color='teal' if (is_backend and is_frontend) else ('purple' if is_frontend else 'blue-grey'))
-            if module.get('version'):
-                ui.badge(f'v{module["version"]}', color='grey-6')
-            if operations:
-                ui.label(f'{len(operations)} operaciones').classes('text-sm text-gray-500')
-            maturity = reporting.component_maturity(module['id'])
-            with ui.row().classes('items-center gap-1').tooltip('Madurez: casos que pasan en su última corrida (semáforo del Resumen ejecutivo), no una etiqueta manual'):
-                ui.badge(f'Madurez: {maturity["passed"]}/{maturity["with_data"]}' if maturity['with_data'] else f'Madurez: {reporting.RAG["grey"]}',
-                         color=RAG_BADGE_COLOR[maturity['rag']])
+            # ------------------------------------------------------------ compact header: just orientation (which component), no editing here
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('widgets' if is_frontend and not is_backend else ('hub' if is_backend and is_frontend else 'api'), color='primary').classes('text-2xl')
+                ui.label(module['name']).classes('text-xl font-semibold')
+                ui.badge(core.component_kind_label(module), color='teal' if (is_backend and is_frontend) else ('purple' if is_frontend else 'blue-grey'))
+                if module.get('version'):
+                    ui.badge(f'v{module["version"]}', color='grey-6')
+                op_count_label = ui.label(f'{len(operations)} operaciones').classes('text-sm text-gray-500')
+                op_count_label.visible = bool(operations)
+                maturity = reporting.component_maturity(module['id'])
+                with ui.row().classes('items-center gap-1').tooltip('Madurez: casos que pasan en su última corrida (semáforo del Resumen ejecutivo), no una etiqueta manual'):
+                    ui.badge(f'Madurez: {maturity["passed"]}/{maturity["with_data"]}' if maturity['with_data'] else f'Madurez: {reporting.RAG["grey"]}',
+                             color=RAG_BADGE_COLOR[maturity['rag']])
 
-        with ui.tabs().classes('w-full') as tabs:
-            tab_summary = ui.tab('Resumen')
-            tab_envs = ui.tab('Ambientes' + (f' ({len(envs)})' if envs else ''))
-            tab_ops = ui.tab('Catálogo')
-            tab_trace = ui.tab('Casos y funcionalidades')
-        with ui.tab_panels(tabs, value=tab_summary).classes('w-full'):
+            with ui.tabs().classes('w-full') as tabs:
+                tab_summary = ui.tab('Resumen')
+                tab_envs = ui.tab('Ambientes' + (f' ({len(envs)})' if envs else ''))
+                tab_ops = ui.tab('Catálogo')
+                tab_trace = ui.tab('Casos y funcionalidades')
+            initial_tab = {'catalogo': tab_ops, 'ambientes': tab_envs, 'casos': tab_trace}.get(tab, tab_summary)
+            with ui.tab_panels(tabs, value=initial_tab).classes('w-full'):
 
-            # -------------------------------------------------------- Resumen: identidad editable + clasificación + conteos
-            with ui.tab_panel(tab_summary):
-                with ui.card().classes('w-full'):
-                    with ui.row().classes('items-center gap-2'):
-                        ui.icon('edit', color='primary')
-                        ui.label('Identidad').classes('font-semibold')
-                    if module.get('source_url'):
-                        ui.label(f'Origen: {module["source_url"]}').classes('text-xs text-gray-500 font-mono')
-                        if not is_manual:
-                            ui.label('El nombre y lo que expone son tuyos para ajustar; las operaciones, la versión y el servidor siguen viniendo del contrato '
-                                     '(solo cambian si lo vuelves a importar).').classes('text-xs text-gray-400')
-                    edit_name = ui.input('Nombre', value=module['name']).props('outlined dense').classes('w-full').mark('component-edit-name')
-                    with ui.row().classes('items-center gap-4'):
-                        edit_backend = ui.checkbox('Expone backend (API)', value=is_backend).mark('component-edit-is-backend')
-                        edit_frontend = ui.checkbox('Expone frontend (UI)', value=is_frontend).mark('component-edit-is-frontend')
+                # -------------------------------------------------------- Resumen: identidad editable + clasificación + conteos
+                with ui.tab_panel(tab_summary):
+                    with ui.column().classes('w-full max-w-6xl mx-auto gap-4'):
+                        with ui.card().classes('w-full'):
+                            with ui.row().classes('items-center gap-2'):
+                                ui.icon('edit', color='primary')
+                                ui.label('Identidad').classes('font-semibold')
+                            if module.get('source_url'):
+                                ui.label(f'Origen: {module["source_url"]}').classes('text-xs text-gray-500 font-mono')
+                                if not is_manual:
+                                    ui.label('El nombre y lo que expone son tuyos para ajustar; las operaciones, la versión y el servidor siguen viniendo del contrato '
+                                             '(solo cambian si lo vuelves a importar).').classes('text-xs text-gray-400')
+                            edit_name = ui.input('Nombre', value=module['name']).props('outlined dense').classes('w-full').mark('component-edit-name')
+                            with ui.row().classes('items-center gap-4'):
+                                edit_backend = ui.checkbox('Expone backend (API)', value=is_backend).mark('component-edit-is-backend')
+                                edit_frontend = ui.checkbox('Expone frontend (UI)', value=is_frontend).mark('component-edit-is-frontend')
 
-                    def save_identity():
-                        core.update_component(module['id'], edit_name.value, edit_backend.value, edit_frontend.value, module.get('environment_ids') or [])
-                        ui.notify('Componente actualizado', type='positive')
-                        ui.navigate.to(f'/modules/edit?id={module["id"]}')
-                    ui.button('Guardar cambios', icon='save', on_click=guard(save_identity)).props('dense no-caps color=primary mt-2').mark('component-save')
+                            def save_identity():
+                                core.update_component(module['id'], edit_name.value, edit_backend.value, edit_frontend.value, module.get('environment_ids') or [])
+                                ui.notify('Componente actualizado', type='positive')
+                                ui.navigate.to(f'/modules/edit?id={module["id"]}')
+                            ui.button('Guardar cambios', icon='save', on_click=guard(save_identity)).props('dense no-caps color=primary mt-2').mark('component-save')
 
-                    def remove(m=module):
-                        used = [c for c in core.list_items('cases') if c.get('module_id') == m['id']]
-                        if used:
-                            raise ValueError(f'No se puede eliminar: {len(used)} caso(s) usan este componente')
-                        core.delete('modules', m['id'])
-                        ui.notify('Componente eliminado', type='positive')
-                        ui.navigate.to('/modules')
-                    ui.button('Eliminar componente', icon='delete', on_click=lambda: confirm(f'¿Eliminar el componente «{module["name"]}»?', remove)) \
-                        .props('flat dense color=negative mt-2').mark('module-delete')
+                            def remove(m=module):
+                                used = [c for c in core.list_items('cases') if c.get('module_id') == m['id']]
+                                if used:
+                                    raise ValueError(f'No se puede eliminar: {len(used)} caso(s) usan este componente')
+                                core.delete('modules', m['id'])
+                                ui.notify('Componente eliminado', type='positive')
+                                ui.navigate.to('/modules')
+                            ui.button('Eliminar componente', icon='delete', on_click=lambda: confirm(f'¿Eliminar el componente «{module["name"]}»?', remove)) \
+                                .props('flat dense color=negative mt-2').mark('module-delete')
 
-                    other_projects = [p for p in core.list_items('projects') if p['id'] != pid]
-                    if other_projects:
-                        def open_move_dialog():
-                            with ui.dialog() as move_dialog, ui.card():
-                                ui.label(f'Mover «{module["name"]}» a otro proyecto').classes('font-semibold')
-                                ui.label('Los ambientes y módulos ligados se desvinculan (pertenecen al proyecto actual); '
-                                         'bloqueado si el componente ya tiene Casos.').classes('text-xs text-gray-500')
-                                target = ui.select({p['id']: p['name'] for p in other_projects}, label='Proyecto destino') \
-                                    .props('outlined dense').classes('w-72')
-                                with ui.row().classes('justify-end w-full gap-2'):
-                                    ui.button('Cancelar', on_click=move_dialog.close).props('flat')
+                            other_projects = [p for p in core.list_items('projects') if p['id'] != pid]
+                            if other_projects:
+                                def open_move_dialog():
+                                    with ui.dialog() as move_dialog, ui.card():
+                                        ui.label(f'Mover «{module["name"]}» a otro proyecto').classes('font-semibold')
+                                        ui.label('Los ambientes y módulos ligados se desvinculan (pertenecen al proyecto actual); '
+                                                 'bloqueado si el componente ya tiene Casos.').classes('text-xs text-gray-500')
+                                        target = ui.select({p['id']: p['name'] for p in other_projects}, label='Proyecto destino') \
+                                            .props('outlined dense').classes('w-72')
+                                        with ui.row().classes('justify-end w-full gap-2'):
+                                            ui.button('Cancelar', on_click=move_dialog.close).props('flat')
 
-                                    def confirm_move():
-                                        if not target.value:
-                                            raise ValueError('Elige un proyecto destino')
-                                        _, cleared = core.move_component_to_project(module['id'], target.value)
-                                        move_dialog.close()
-                                        extra = []
-                                        if cleared['environments']:
-                                            extra.append(f'{cleared["environments"]} ambiente(s) desligado(s)')
-                                        if cleared['modules']:
-                                            extra.append(f'{cleared["modules"]} módulo(s) desligado(s)')
-                                        msg = 'Componente movido.' + ((' ' + ', '.join(extra) + '.') if extra else '')
-                                        ui.notify(msg, type='positive', multi_line=True)
-                                        ui.navigate.to('/modules')
-                                    ui.button('Mover', icon='drive_file_move', on_click=guard(confirm_move)).props('color=primary')
-                            move_dialog.open()
-                        ui.button('Mover a otro proyecto', icon='drive_file_move', on_click=open_move_dialog) \
-                            .props('flat dense no-caps mt-2').mark('component-move-project')
-                with ui.card().classes('w-full'):
-                    with ui.row().classes('items-center gap-2'):
-                        ui.icon('account_tree', color='primary')
-                        ui.label('Clasificación').classes('font-semibold')
-                    with ui.row().classes('items-end gap-3 w-full'):
-                        groups_here = core.list_project_items('module_groups', pid)
-                        group_select = ui.select({g['id']: g['name'] for g in groups_here}, value=core.component_module_group_ids(module),
-                                                  label='Módulos', multiple=True, clearable=True) \
-                            .props('outlined dense use-chips').classes('grow').mark('component-classify-group')
-                        status_select = ui.select(STATUS_LABELS, value=module.get('status', 'development'),
-                                                   label='Estado').props('outlined dense').classes('w-60').mark('component-classify-status')
+                                            def confirm_move():
+                                                if not target.value:
+                                                    raise ValueError('Elige un proyecto destino')
+                                                _, cleared = core.move_component_to_project(module['id'], target.value)
+                                                move_dialog.close()
+                                                extra = []
+                                                if cleared['environments']:
+                                                    extra.append(f'{cleared["environments"]} ambiente(s) desligado(s)')
+                                                if cleared['modules']:
+                                                    extra.append(f'{cleared["modules"]} módulo(s) desligado(s)')
+                                                msg = 'Componente movido.' + ((' ' + ', '.join(extra) + '.') if extra else '')
+                                                ui.notify(msg, type='positive', multi_line=True)
+                                                ui.navigate.to('/modules')
+                                            ui.button('Mover', icon='drive_file_move', on_click=guard(confirm_move)).props('color=primary')
+                                    move_dialog.open()
+                                ui.button('Mover a otro proyecto', icon='drive_file_move', on_click=open_move_dialog) \
+                                    .props('flat dense no-caps mt-2').mark('component-move-project')
+                        with ui.card().classes('w-full'):
+                            with ui.row().classes('items-center gap-2'):
+                                ui.icon('account_tree', color='primary')
+                                ui.label('Clasificación').classes('font-semibold')
+                            with ui.row().classes('items-end gap-3 w-full'):
+                                groups_here = core.list_project_items('module_groups', pid)
+                                group_select = ui.select({g['id']: g['name'] for g in groups_here}, value=core.component_module_group_ids(module),
+                                                          label='Módulos', multiple=True, clearable=True) \
+                                    .props('outlined dense use-chips').classes('grow').mark('component-classify-group')
+                                status_select = ui.select(STATUS_LABELS, value=module.get('status', 'development'),
+                                                           label='Estado').props('outlined dense').classes('w-60').mark('component-classify-status')
 
-                        def save_classification():
-                            core.set_component_classification(module['id'], list(group_select.value or []), status_select.value)
-                            ui.notify('Clasificación actualizada', type='positive')
-                            ui.navigate.to(f'/modules/edit?id={module["id"]}')
-                        ui.button('Guardar clasificación', icon='save', on_click=guard(save_classification)).props('dense no-caps color=primary').mark('component-classify-save')
-                    if not groups_here:
-                        ui.label('Crea un Módulo para agrupar componentes por dominio o propiedad técnica.').classes('text-xs text-gray-500')
-                with ui.row().classes('w-full gap-4 flex-wrap'):
-                    for icon, label, count, tab in (('dns', 'Ambientes', len(envs), tab_envs), ('http', 'Casos', len(module_cases), tab_trace),
-                                                     ('flag', 'Funcionalidades', len(dependent_features), tab_trace)):
-                        with ui.card().classes('flex-1 min-w-[160px] cursor-pointer hover:bg-gray-50').on('click', lambda _, t=tab: tabs.set_value(t)):
-                            ui.label(str(count)).classes('text-2xl font-semibold')
-                            with ui.row().classes('items-center gap-1'):
-                                ui.icon(icon, color='primary').classes('text-sm')
-                                ui.label(label).classes('text-sm text-gray-600')
+                                def save_classification():
+                                    core.set_component_classification(module['id'], list(group_select.value or []), status_select.value)
+                                    ui.notify('Clasificación actualizada', type='positive')
+                                    ui.navigate.to(f'/modules/edit?id={module["id"]}')
+                                ui.button('Guardar clasificación', icon='save', on_click=guard(save_classification)).props('dense no-caps color=primary').mark('component-classify-save')
+                            if not groups_here:
+                                ui.label('Crea un Módulo para agrupar componentes por dominio o propiedad técnica.').classes('text-xs text-gray-500')
+                        with ui.row().classes('w-full gap-4 flex-wrap'):
+                            for icon, label, count, tab in (('dns', 'Ambientes', len(envs), tab_envs), ('http', 'Casos', len(module_cases), tab_trace),
+                                                             ('flag', 'Funcionalidades', len(dependent_features), tab_trace)):
+                                with ui.card().classes('flex-1 min-w-[160px] cursor-pointer hover:bg-gray-50').on('click', lambda _, t=tab: tabs.set_value(t)):
+                                    ui.label(str(count)).classes('text-2xl font-semibold')
+                                    with ui.row().classes('items-center gap-1'):
+                                        ui.icon(icon, color='primary').classes('text-sm')
+                                        ui.label(label).classes('text-sm text-gray-600')
 
-            # -------------------------------------------------------- Ambientes: el mismo desplegable puede vivir en varios (dev/QA/prod…)
-            with ui.tab_panel(tab_envs):
-                base = core.module_base_url(module)
-                with ui.card().classes('w-full'):
-                    with ui.row().classes('items-center gap-2'):
-                        ui.icon('dns', color='primary')
-                        ui.label(f'Ambientes ({len(envs)})' if envs else 'Ambientes').classes('font-semibold')
-                    if envs:
-                        def render_conn_result(box, e, result):
-                            box.clear()
-                            with box:
+                # -------------------------------------------------------- Ambientes: el mismo desplegable puede vivir en varios (dev/QA/prod…)
+                with ui.tab_panel(tab_envs):
+                    with ui.column().classes('w-full max-w-6xl mx-auto gap-4'):
+                        base = core.module_base_url(module)
+                        with ui.card().classes('w-full'):
+                            with ui.row().classes('items-center gap-2'):
+                                ui.icon('dns', color='primary')
+                                ui.label(f'Ambientes ({len(envs)})' if envs else 'Ambientes').classes('font-semibold')
+                            if envs:
+                                def render_conn_result(box, e, result):
+                                    box.clear()
+                                    with box:
+                                        with ui.row().classes('items-center gap-2'):
+                                            ui.icon('check_circle' if result['ok'] else 'cancel', color='positive' if result['ok'] else 'negative')
+                                            ui.label(f'{e["name"]}: ' + ('arriba' if result['ok'] else 'no se pudo conectar')).classes('text-sm font-semibold')
+                                        for step in result['steps']:
+                                            with ui.row().classes('items-center gap-2 pl-6'):
+                                                ui.icon('check' if step['ok'] else 'close', color='positive' if step['ok'] else 'negative', size='xs')
+                                                ui.label(f'{step["name"]} · {step["ms"]} ms').classes('w-32 text-xs')
+                                                ui.label(step['detail']).classes('text-xs text-gray-600')
+
+                                row_boxes = []
+
+                                def make_verify_one(e, box):
+                                    async def verify_one():
+                                        result = await run.io_bound(core.check_connectivity, e['base_url'])
+                                        render_conn_result(box, e, result)
+                                    return verify_one
+
+                                for e in envs:
+                                    with ui.column().classes('gap-0 w-full') as env_block:
+                                        with ui.row().classes('items-center gap-2'):
+                                            ui.icon('check_circle', color='positive').classes('text-sm')
+                                            ui.label(f'«{e["name"]}» · {e["base_url"]}').classes('text-sm text-gray-700')
+                                            flags = core.environment_flags(e)
+                                            if flags != (True, True):
+                                                ui.badge(core.environment_kind_label(e), color='purple' if flags == (False, True) else 'blue-grey').props('outline')
+                                            ui.button('Abrir ambiente', icon='open_in_new', on_click=lambda _, eid=e['id']: ui.navigate.to(f'/environments/edit?id={eid}')) \
+                                                .props('flat dense size=sm no-caps')
+                                            verify_button = ui.button('Verificar', icon='wifi_tethering').props('flat dense size=sm no-caps')
+                                        row_box = ui.column().classes('gap-0 pl-6')
+                                    verify_button.on_click(guard(make_verify_one(e, row_box)))
+                                    row_boxes.append(row_box)
+
+                                if len(envs) > 1:
+                                    async def verify_all():
+                                        results = await run.io_bound(lambda: [(e, core.check_connectivity(e['base_url'])) for e in envs])
+                                        for box, (e, result) in zip(row_boxes, results):
+                                            render_conn_result(box, e, result)
+                                    ui.button('Verificar conexión (todos)', icon='wifi_tethering', on_click=guard(verify_all)) \
+                                        .props('outline dense no-caps mt-1').mark('component-verify-connection')
+                            elif base:
+                                ui.label(f'Servidor declarado: {base}').classes('text-sm text-gray-600')
+
+                                def make_env(m=module):
+                                    new_env, created = core.ensure_environment_for_module(pid, m)
+                                    core.link_component_environment(m['id'], new_env['id'])
+                                    ui.notify(f'Ambiente «{new_env["name"]}» {"creado" if created else "ya existía"} con {new_env["base_url"]}', type='positive')
+                                    ui.navigate.reload()
+                                ui.button('Crear ambiente con esta URL', icon='add', on_click=guard(make_env)).props('dense no-caps color=primary')
+                            else:
+                                ui.label('Aún no está ligado a ningún ambiente.').classes('text-sm text-gray-500')
+                                if module.get('servers') and any('{' in (server.get('url') or '') for server in module['servers']):
+                                    ui.label('(el contrato declara variables de servidor sin resolver, p. ej. «{entorno}»)').classes('text-xs text-amber-700')
+
+                            ui.separator().classes('my-2')
+                            linked_ids = {e['id'] for e in envs}
+
+                            def _compatible(e):
+                                env_backend, env_frontend = core.environment_flags(e)
+                                return (is_backend and env_backend) or (is_frontend and env_frontend)
+                            all_envs_here = core.list_project_items('environments', pid)
+                            # "ligar" means "este desplegable vive aquí": un componente solo-backend ligado a un ambiente solo-frontend sería una
+                            # afirmación falsa (y "Verificar conexión" confirmaría "arriba" sobre una URL que no es la de este componente). Se ofrecen
+                            # los compatibles, más los ya ligados (para poder quitarlos aunque hayan dejado de coincidir); lo excluido se nombra abajo.
+                            candidates = [e for e in all_envs_here if e['id'] in linked_ids or _compatible(e)]
+                            excluded = [e for e in all_envs_here if e not in candidates]
+                            link_select = ui.select({e['id']: f'{e["name"]} ({core.environment_kind_label(e)})' for e in candidates}, value=[e['id'] for e in envs],
+                                                     label='Ligar ambientes (dev, QA, prod…)', multiple=True, clearable=True) \
+                                .props('outlined dense use-chips').classes('w-full').mark('component-link-envs')
+                            if excluded:
+                                names = ', '.join(f'«{e["name"]}» ({core.environment_kind_label(e)})' for e in excluded)
+                                ui.label(f'No se muestra: {names} — este componente no expone lo que ese(os) ambiente(s) sirve(n). '
+                                         'Ajusta el tipo en Ambientes o en Identidad si de verdad debería ligarse.').classes('text-xs text-gray-500')
+
+                            def save_envs():
+                                core.set_component_environments(module['id'], link_select.value)
+                                ui.notify('Ambientes actualizados', type='positive')
+                                ui.navigate.to(f'/modules/edit?id={module["id"]}')
+                            ui.button('Guardar ambientes', icon='save', on_click=guard(save_envs)).props('dense no-caps color=primary mt-1').mark('component-save-envs')
+
+                # -------------------------------------------------------- Operaciones: aviso de frontend + exploración/catálogo del lado backend
+                with ui.tab_panel(tab_ops):
+                    with ui.column().classes('w-full max-w-6xl mx-auto gap-4 items-center'):
+                        if is_frontend:
+                            with ui.card().classes('w-full bg-purple-50'):
                                 with ui.row().classes('items-center gap-2'):
-                                    ui.icon('check_circle' if result['ok'] else 'cancel', color='positive' if result['ok'] else 'negative')
-                                    ui.label(f'{e["name"]}: ' + ('arriba' if result['ok'] else 'no se pudo conectar')).classes('text-sm font-semibold')
-                                for step in result['steps']:
-                                    with ui.row().classes('items-center gap-2 pl-6'):
-                                        ui.icon('check' if step['ok'] else 'close', color='positive' if step['ok'] else 'negative', size='xs')
-                                        ui.label(f'{step["name"]} · {step["ms"]} ms').classes('w-32 text-xs')
-                                        ui.label(step['detail']).classes('text-xs text-gray-600')
+                                    ui.icon('info', color='purple')
+                                    ui.label('Este componente expone frontend: sus pruebas de UI son Casos UI (pasos de navegador); las vistas de abajo son solo catálogo, no se graban desde aquí.').classes('text-sm text-gray-700')
 
-                        row_boxes = []
+                                # Solo ambientes marcados frontend sirven vistas; un componente full-stack también puede tener
+                                # ambientes backend ligados, y probar una ruta de pantalla contra esos daría un resultado falso
+                                # (ver CHANGELOG): nunca tomar "el primer ambiente ligado" sin filtrar por tipo.
+                                frontend_envs = [e for e in envs if core.environment_flags(e)[1]]
 
-                        def make_verify_one(e, box):
-                            async def verify_one():
-                                result = await run.io_bound(core.check_connectivity, e['base_url'])
-                                render_conn_result(box, e, result)
-                            return verify_one
+                                views_box = ui.column().classes('w-full gap-2')
 
-                        for e in envs:
-                            with ui.column().classes('gap-0 w-full') as env_block:
-                                with ui.row().classes('items-center gap-2'):
-                                    ui.icon('check_circle', color='positive').classes('text-sm')
-                                    ui.label(f'«{e["name"]}» · {e["base_url"]}').classes('text-sm text-gray-700')
-                                    flags = core.environment_flags(e)
-                                    if flags != (True, True):
-                                        ui.badge(core.environment_kind_label(e), color='purple' if flags == (False, True) else 'blue-grey').props('outline')
-                                    ui.button('Abrir ambiente', icon='open_in_new', on_click=lambda _, eid=e['id']: ui.navigate.to(f'/environments/edit?id={eid}')) \
-                                        .props('flat dense size=sm no-caps')
-                                    verify_button = ui.button('Verificar', icon='wifi_tethering').props('flat dense size=sm no-caps')
-                                row_box = ui.column().classes('gap-0 pl-6')
-                            verify_button.on_click(guard(make_verify_one(e, row_box)))
-                            row_boxes.append(row_box)
-
-                        if len(envs) > 1:
-                            async def verify_all():
-                                results = await run.io_bound(lambda: [(e, core.check_connectivity(e['base_url'])) for e in envs])
-                                for box, (e, result) in zip(row_boxes, results):
-                                    render_conn_result(box, e, result)
-                            ui.button('Verificar conexión (todos)', icon='wifi_tethering', on_click=guard(verify_all)) \
-                                .props('outline dense no-caps mt-1').mark('component-verify-connection')
-                    elif base:
-                        ui.label(f'Servidor declarado: {base}').classes('text-sm text-gray-600')
-
-                        def make_env(m=module):
-                            new_env, created = core.ensure_environment_for_module(pid, m)
-                            core.link_component_environment(m['id'], new_env['id'])
-                            ui.notify(f'Ambiente «{new_env["name"]}» {"creado" if created else "ya existía"} con {new_env["base_url"]}', type='positive')
-                            ui.navigate.reload()
-                        ui.button('Crear ambiente con esta URL', icon='add', on_click=guard(make_env)).props('dense no-caps color=primary')
-                    else:
-                        ui.label('Aún no está ligado a ningún ambiente.').classes('text-sm text-gray-500')
-                        if module.get('servers') and any('{' in (server.get('url') or '') for server in module['servers']):
-                            ui.label('(el contrato declara variables de servidor sin resolver, p. ej. «{entorno}»)').classes('text-xs text-amber-700')
-
-                    ui.separator().classes('my-2')
-                    linked_ids = {e['id'] for e in envs}
-
-                    def _compatible(e):
-                        env_backend, env_frontend = core.environment_flags(e)
-                        return (is_backend and env_backend) or (is_frontend and env_frontend)
-                    all_envs_here = core.list_project_items('environments', pid)
-                    # "ligar" means "este desplegable vive aquí": un componente solo-backend ligado a un ambiente solo-frontend sería una
-                    # afirmación falsa (y "Verificar conexión" confirmaría "arriba" sobre una URL que no es la de este componente). Se ofrecen
-                    # los compatibles, más los ya ligados (para poder quitarlos aunque hayan dejado de coincidir); lo excluido se nombra abajo.
-                    candidates = [e for e in all_envs_here if e['id'] in linked_ids or _compatible(e)]
-                    excluded = [e for e in all_envs_here if e not in candidates]
-                    link_select = ui.select({e['id']: f'{e["name"]} ({core.environment_kind_label(e)})' for e in candidates}, value=[e['id'] for e in envs],
-                                             label='Ligar ambientes (dev, QA, prod…)', multiple=True, clearable=True) \
-                        .props('outlined dense use-chips').classes('w-full').mark('component-link-envs')
-                    if excluded:
-                        names = ', '.join(f'«{e["name"]}» ({core.environment_kind_label(e)})' for e in excluded)
-                        ui.label(f'No se muestra: {names} — este componente no expone lo que ese(os) ambiente(s) sirve(n). '
-                                 'Ajusta el tipo en Ambientes o en Identidad si de verdad debería ligarse.').classes('text-xs text-gray-500')
-
-                    def save_envs():
-                        core.set_component_environments(module['id'], link_select.value)
-                        ui.notify('Ambientes actualizados', type='positive')
-                        ui.navigate.to(f'/modules/edit?id={module["id"]}')
-                    ui.button('Guardar ambientes', icon='save', on_click=guard(save_envs)).props('dense no-caps color=primary mt-1').mark('component-save-envs')
-
-            # -------------------------------------------------------- Operaciones: aviso de frontend + exploración/catálogo del lado backend
-            with ui.tab_panel(tab_ops):
-                if is_frontend:
-                    with ui.card().classes('w-full bg-purple-50'):
-                        with ui.row().classes('items-center gap-2'):
-                            ui.icon('info', color='purple')
-                            ui.label('Este componente expone frontend: sus pruebas de UI son Casos UI (pasos de navegador); las vistas de abajo son solo catálogo, no se graban desde aquí.').classes('text-sm text-gray-700')
-
-                        # Solo ambientes marcados frontend sirven vistas; un componente full-stack también puede tener
-                        # ambientes backend ligados, y probar una ruta de pantalla contra esos daría un resultado falso
-                        # (ver CHANGELOG): nunca tomar "el primer ambiente ligado" sin filtrar por tipo.
-                        frontend_envs = [e for e in envs if core.environment_flags(e)[1]]
-
-                        views_box = ui.column().classes('w-full gap-2')
-
-                        def render_views():
-                            views = core.get('modules', module['id']).get('views') or []
-                            views_box.clear()
-                            with views_box:
-                                if not views:
-                                    return
-                                ui.label(f'Vistas ({len(views)})').classes('font-semibold mt-2')
-                                if not frontend_envs:
-                                    other = [e for e in envs if e not in frontend_envs]
-                                    msg = 'Liga un ambiente frontend (pestaña Ambientes) para poder verificar que cada ruta responda.' if not other else \
-                                        f'Los ambientes ligados ({", ".join(e["name"] for e in other)}) no están marcados como frontend; ajústalo en Ambientes o liga uno nuevo.'
-                                    ui.label(msg).classes('text-xs text-amber-700')
-                                    default_view_env = None
-                                    view_env_select = None
-                                elif len(frontend_envs) == 1:
-                                    default_view_env = frontend_envs[0]
-                                    view_env_select = None
-                                else:
-                                    view_env_select = ui.select({e['id']: e['name'] for e in frontend_envs}, value=frontend_envs[0]['id'],
-                                                                 label='Ambiente para verificar vistas').props('outlined dense').classes('w-64 mb-1')
-                                    default_view_env = frontend_envs[0]
-
-                                def current_view_env():
-                                    return core.get('environments', view_env_select.value) if view_env_select else default_view_env
-
-                                def view_target(v):
-                                    env = current_view_env()
-                                    return env['base_url'].rstrip('/') + '/' + v.get('path', '').lstrip('/') if env else None
-
-                                def make_verify_view(v, box):
-                                    async def verify_view():
-                                        target = view_target(v)
-                                        box.clear()
-                                        with box:
-                                            ui.spinner('dots', size='sm')
-                                        result = await run.io_bound(automation.check_view, target)
-                                        box.clear()
-                                        with box:
-                                            with ui.row().classes('items-center gap-2'):
-                                                ui.icon('check_circle' if result['ok'] else 'cancel', color='positive' if result['ok'] else 'negative').classes('text-sm')
-                                                ui.label(result['detail'] + f' — {target}').classes('text-xs')
-                                    return verify_view
-
-                                def make_copy_url(v):
-                                    def copy_url():
-                                        ui.clipboard.write(view_target(v))
-                                        ui.notify('URL copiada', type='positive')
-                                    return copy_url
-
-                                for i, v in enumerate(views):
-                                    with ui.column().classes('gap-0 w-full'):
-                                        with ui.row().classes('items-center gap-2 w-full'):
-                                            ui.icon('web', color='purple').classes('text-sm')
-                                            ui.label(v['name']).classes('text-sm font-medium')
-                                            if v.get('path'):
-                                                ui.label(v['path']).classes('font-mono text-xs text-gray-500 grow')
-                                            else:
-                                                ui.space()
-                                            if frontend_envs:
-                                                ui.button(icon='content_copy', on_click=make_copy_url(v)) \
-                                                    .props('flat dense round size=sm').tooltip('Copiar URL completa')
-                                                ui.button(icon='open_in_new', on_click=lambda _, vv=v: ui.navigate.to(view_target(vv), new_tab=True)) \
-                                                    .props('flat dense round size=sm').tooltip('Abrir en una pestaña nueva')
-                                                view_box = ui.column().classes('gap-0')
-                                                ui.button('Verificar', icon='wifi_tethering', on_click=guard(make_verify_view(v, view_box))) \
-                                                    .props('flat dense size=sm no-caps')
-                                            ui.button('Crear caso UI', icon='add', on_click=lambda _, n=v['name'], p=v.get('path', ''): ui.navigate.to(
-                                                f'/ui-cases?name={n}&url={p}')).props('flat dense size=sm no-caps')
-
-                                            def remove_view(idx=i):
-                                                core.remove_component_view(module['id'], idx)
-                                                ui.notify('Vista eliminada', type='positive')
-                                                render_views()
-                                            ui.button(icon='delete', on_click=remove_view).props('flat dense round size=sm color=negative')
-                                        if frontend_envs:
-                                            view_box.classes('pl-6')
-                        render_views()
-
-                        ui.separator().classes('my-2')
-                        with ui.row().classes('items-end gap-3 w-full'):
-                            view_name = ui.input('Nombre de la vista', placeholder='Login').props('outlined dense').classes('grow').mark('component-view-name')
-                            view_path = ui.input('Ruta (opcional)', placeholder='/login').props('outlined dense').classes('w-48').mark('component-view-path')
-
-                            def add_view():
-                                core.add_component_view(module['id'], view_name.value, view_path.value)
-                                view_name.value = ''
-                                view_path.value = ''
-                                ui.notify('Vista agregada', type='positive')
-                                render_views()
-                            ui.button('Agregar vista', icon='add', on_click=guard(add_view)).props('outline no-caps').mark('component-add-view')
-                        ui.label('Documenta pantallas que existen (login, listado, detalle…) aunque todavía no tengas el Caso UI grabado; '
-                                 'luego, «Crear caso UI» abre el grabador con la ruta ya puesta.').classes('text-xs text-gray-500')
-
-                        if frontend_envs:
-                            async def detect_views():
-                                target_env = frontend_envs[0]
-                                max_pages = 200 if detect_full.value else 15
-                                progress = []
-                                with ui.dialog().props('persistent') as scan_dialog, ui.card().classes('w-80'):
-                                    ui.label(f'Escaneando «{target_env["name"]}»…').classes('font-semibold')
-                                    bar = ui.linear_progress(value=0, show_value=False)
-                                    status = ui.label(f'0 de {max_pages} página(s)').classes('text-gray-600 text-sm')
-                                scan_dialog.open()
-
-                                def tick():
-                                    n = progress[-1] if progress else 0
-                                    status.set_text(f'{n} de {max_pages} página(s)')
-                                    bar.set_value(min(n / max_pages, 1))
-                                timer = ui.timer(0.3, tick)
-                                try:
-                                    result = await run.io_bound(automation.discover_views, target_env['base_url'], detect_path.value,
-                                                                  max_pages, 8000, progress.append)
-                                finally:
-                                    timer.cancel()
-                                    scan_dialog.close()
-
-                                if not result['ok']:
-                                    ui.notify(f'No se pudo escanear «{target_env["name"]}»: {result["detail"]}', type='negative', multi_line=True)
-                                    return
-                                existing = {(v.get('path') or '').rstrip('/') for v in (core.get('modules', module['id']).get('views') or [])}
-                                candidates = [v for v in result['views'] if v['path'].rstrip('/') not in existing]
-                                if not candidates:
-                                    ui.notify('No se encontraron vistas nuevas (o ya están todas catalogadas).', type='warning')
-                                    return
-                                with ui.dialog() as dialog, ui.card().classes('w-[32rem]'):
-                                    ui.label(f'{len(candidates)} vista(s) encontradas en «{target_env["name"]}»').classes('font-semibold')
-                                    ui.label('Siguió los enlaces del sitio ya renderizado; elige cuáles agregar al catálogo.').classes('text-xs text-gray-500')
-                                    checks = []
-                                    with ui.column().classes('w-full max-h-96 overflow-auto gap-1 mt-2'):
-                                        for c in candidates:
-                                            cb = ui.checkbox(f'{c["title"] or c["path"]} · {c["path"]}', value=True)
-                                            checks.append((cb, c))
-                                    with ui.row().classes('justify-end w-full gap-2 mt-2'):
-                                        ui.button('Cancelar', on_click=dialog.close).props('flat')
-
-                                        def confirm_add():
-                                            dialog.close()
-                                            added = sum(1 for cb, c in checks if cb.value and
-                                                        core.add_component_view(module['id'], c['title'] or c['path'], c['path']))
-                                            ui.notify(f'{added} vista(s) agregada(s)', type='positive')
-                                            render_views()
-                                        ui.button('Agregar seleccionadas', icon='add', on_click=guard(confirm_add)).props('color=primary')
-                                dialog.open()
-                            with ui.row().classes('items-end gap-3 w-full mt-2'):
-                                detect_path = ui.input('Ruta inicial (opcional)', placeholder='/admin').props('outlined dense').classes('w-48') \
-                                    .tooltip('Empieza el recorrido ahí en vez de la raíz del sitio — útil para acotarlo a una sección, p. ej. «/admin».')
-                                detect_full = ui.checkbox('Escaneo completo (sin límite de 15 páginas)')
-                                ui.button('Detectar vistas automáticamente', icon='travel_explore', on_click=guard(detect_views)) \
-                                    .props('outline no-caps').mark('component-detect-views')
-                            ui.label('Recorre el sitio desde el ambiente ligado siguiendo sus enlaces; no reemplaza una revisión manual, '
-                                     'pero ahorra tipearlas una por una. Un escaneo completo puede tardar según el tamaño del sitio.').classes('text-xs text-gray-500')
-
-                if not is_backend:
-                    pass
-                elif not operations:
-                    with ui.card().classes('w-full'):
-                        with ui.row().classes('items-center gap-2'):
-                            ui.icon('info', color='grey')
-                            ui.label('Este componente no tiene un catálogo de operaciones todavía: la exploración automática no aplica hasta que lo tenga.').classes('text-sm text-gray-600')
-                        ui.button('Crear un caso API a mano', icon='add', on_click=lambda: ui.navigate.to(f'/cases/edit?module={module["id"]}')).props('flat dense no-caps')
-
-                    _manual_operations_card(module, pid)
-
-                    with ui.card().classes('w-full'):
-                        with ui.row().classes('items-center gap-2'):
-                            ui.icon('cloud_download', color='primary')
-                            ui.label('Importar contrato').classes('font-semibold')
-                        ui.label('Opcional: si este componente tiene un contrato OpenAPI/Swagger publicado, impórtalo para habilitar el catálogo de operaciones '
-                                 'y la exploración automática. Nunca cambia el nombre ni la clasificación que ya definiste. Si el contrato declara etiquetas, '
-                                 'puedes elegir importar solo algunas en vez de todo el catálogo.').classes('text-xs text-gray-500')
-                        contract_url = ui.input('URL del contrato, de su página de Swagger UI o un enlace de GitHub').props('outlined dense').classes('w-full').mark('component-attach-url')
-                        ui.label('Acepta el enlace directo al .json/.yaml, la página de Swagger UI / Redoc (se busca el contrato enlazado) o un enlace github.com/…/blob/….').classes('text-xs text-gray-500')
-
-                        def finish_attach(updated):
-                            ui.notify(f'Contrato importado: {len(updated["operations"])} operaciones.{_env_note(pid, updated)}', type='positive', multi_line=True)
-                            ui.navigate.to(f'/modules/edit?id={module["id"]}')
-
-                        async def offer_tags_then_attach(raw, source_url, attach):
-                            tags_found = await run.io_bound(core.contract_tags, raw)
-                            if not tags_found:
-                                finish_attach(await run.io_bound(attach, None))
-                                return
-                            with ui.dialog() as dialog, ui.card():
-                                ui.label('¿Importar todo el contrato, o solo algunas etiquetas?').classes('font-semibold')
-                                ui.label('Deja vacío para importar todas las operaciones.').classes('text-xs text-gray-500')
-                                picked = ui.select(tags_found, label='Etiquetas a importar (opcional)', multiple=True, clearable=True) \
-                                    .props('outlined dense use-chips').classes('w-80').mark('component-attach-tags')
-                                with ui.row().classes('justify-end w-full gap-2'):
-                                    ui.button('Cancelar', on_click=dialog.close).props('flat')
-
-                                    async def confirm_attach():
-                                        dialog.close()
-                                        finish_attach(await run.io_bound(attach, list(picked.value or []) or None))
-                                    ui.button('Importar', icon='cloud_download', on_click=guard(confirm_attach)).props('color=primary').mark('component-attach-confirm')
-                            dialog.open()
-
-                        async def attach_from_url():
-                            fetched = await run.io_bound(core.fetch_openapi, contract_url.value)
-
-                            def do_attach(tags):
-                                return core.attach_contract(module['id'], fetched['raw'], source_url=fetched['source_url'], tags=tags)
-                            await offer_tags_then_attach(fetched['raw'], fetched['source_url'], do_attach)
-                        ui.button('Importar desde URL', icon='cloud_download', on_click=guard(attach_from_url)).props('color=primary').mark('component-attach-from-url')
-
-                        async def attach_upload(event):
-                            try:
-                                raw = (await read_upload(event)).decode('utf-8')
-
-                                def do_attach(tags):
-                                    return core.attach_contract(module['id'], raw, tags=tags)
-                                await offer_tags_then_attach(raw, None, do_attach)
-                            except Exception as exc:
-                                ui.notify(str(exc), type='negative', multi_line=True)
-                        ui.upload(label='O arrastra un archivo OpenAPI (.json/.yaml)', on_upload=attach_upload, auto_upload=True,
-                                  max_file_size=MAX_SPEC_BYTES).props('accept=.json,.yaml,.yml flat bordered').classes('w-full')
-                else:
-                    with ui.tabs().classes('w-full') as cat_tabs:
-                        tab_cat_auto = ui.tab('Automático')
-                        tab_cat_manual = ui.tab('Manual')
-                    with ui.tab_panels(cat_tabs, value=tab_cat_auto).classes('w-full'):
-                        with ui.tab_panel(tab_cat_auto):
-                            with ui.card().classes('w-full'):
-                                with ui.row().classes('items-center gap-2'):
-                                    ui.icon('travel_explore', color='primary')
-                                    ui.label('Exploración automática').classes('font-semibold')
-                                ui.label('Lee el contrato, identifica qué operaciones son seguras de probar (GET), consigue identificadores reales de otros '
-                                         'listados y arma las aserciones a partir de lo que el contrato declara. Solo lecturas: nada que escriba se ejecuta aquí, '
-                                         'y el resultado no se guarda hasta que lo confirmes.').classes('text-xs text-gray-500')
-                                all_envs_here = core.list_project_items('environments', pid)
-                                explore_envs = [e for e in all_envs_here if core.environment_flags(e)[0]]  # backend-capable only: exploring an OpenAPI contract needs an API, not a frontend dev server
-                                if not explore_envs:
-                                    msg = 'Registra un ambiente primero.' if not all_envs_here else \
-                                        'Ninguno de los ambientes del proyecto está marcado como backend; ajústalo en Ambientes.'
-                                    ui.label(msg).classes('text-xs text-amber-700')
-                                else:
-                                    explore_ids = {e['id'] for e in explore_envs}
-                                    preferred = core.component_environment(module)
-                                    default_env = preferred if preferred and preferred['id'] in explore_ids else explore_envs[0]
-                                    env_select = ui.select({e['id']: e['name'] for e in explore_envs}, value=default_env['id'], label='Ambiente').props('outlined dense').classes('w-64')
-                                    with ui.row().classes('items-end gap-2'):
-                                        header_name = ui.input('Cabecera (opcional)', value='Authorization').props('outlined dense').classes('w-48')
-                                        header_value = ui.input('Valor', placeholder='Bearer {{secret:NOMBRE}} o un valor literal').props('outlined dense').classes('grow')
-                                    ui.label('Si el servicio exige autenticación, pega aquí el token para esta exploración (nunca se guarda tal cual: usa '
-                                             '{{secret:NOMBRE}}). El ambiente también se usa si ya tiene su propia autenticación configurada.').classes('text-xs text-gray-500')
-                                    E = {'result': None}
-                                    result_box = ui.column().classes('w-full gap-2')
-
-                                    async def explore():
-                                        explore_env = core.get('environments', env_select.value)
-                                        header_key = (header_name.value or '').strip()
-                                        if header_key and not (header_value.value or '').strip():
-                                            ui.notify(f'Escribiste el nombre de la cabecera «{header_key}» pero el valor está vacío: no se enviará.', type='warning')
-                                        extra_headers = {header_key: header_value.value} if header_key and (header_value.value or '').strip() else {}
-                                        plan = await run.io_bound(explorer.discover, module, explore_env, extra_headers)
-                                        if not plan['ready']:
-                                            ui.notify('Nada que ejecutar: ' + (f'{len(plan["blocked"])} operación(es) sin datos para resolver sus parámetros.' if plan['blocked'] else
-                                                                                'el componente no tiene lecturas (GET) sin autenticación.'), type='warning')
+                                def render_views():
+                                    views = core.get('modules', module['id']).get('views') or []
+                                    views_box.clear()
+                                    with views_box:
+                                        if not views:
                                             return
-                                        token = automation.new_cancel_token()
-                                        progress = []
-                                        with ui.dialog().props('persistent') as dialog, ui.card().classes('w-96'):
-                                            ui.label(f'Explorando «{module["name"]}»').classes('text-lg font-semibold')
-                                            bar = ui.linear_progress(value=0, show_value=False)
-                                            status = ui.label(f'0 de {len(plan["ready"])} operación(es)').classes('text-gray-600 text-sm')
+                                        ui.label(f'Vistas ({len(views)})').classes('font-semibold mt-2')
+                                        if not frontend_envs:
+                                            other = [e for e in envs if e not in frontend_envs]
+                                            msg = 'Liga un ambiente frontend (pestaña Ambientes) para poder verificar que cada ruta responda.' if not other else \
+                                                f'Los ambientes ligados ({", ".join(e["name"] for e in other)}) no están marcados como frontend; ajústalo en Ambientes o liga uno nuevo.'
+                                            ui.label(msg).classes('text-xs text-amber-700')
+                                            default_view_env = None
+                                            view_env_select = None
+                                        elif len(frontend_envs) == 1:
+                                            default_view_env = frontend_envs[0]
+                                            view_env_select = None
+                                        else:
+                                            view_env_select = ui.select({e['id']: e['name'] for e in frontend_envs}, value=frontend_envs[0]['id'],
+                                                                         label='Ambiente para verificar vistas').props('outlined dense').classes('w-64 mb-1')
+                                            default_view_env = frontend_envs[0]
 
-                                            def cancel():
-                                                token.set()
-                                                status.set_text('Cancelando tras la petición en curso…')
-                                            ui.button('Cancelar', icon='stop', on_click=cancel).props('outline color=negative')
-                                        dialog.open()
+                                        def current_view_env():
+                                            return core.get('environments', view_env_select.value) if view_env_select else default_view_env
+
+                                        def view_target(v):
+                                            env = current_view_env()
+                                            return env['base_url'].rstrip('/') + '/' + v.get('path', '').lstrip('/') if env else None
+
+                                        def make_verify_view(v, box):
+                                            async def verify_view():
+                                                target = view_target(v)
+                                                box.clear()
+                                                with box:
+                                                    ui.spinner('dots', size='sm')
+                                                result = await run.io_bound(automation.check_view, target)
+                                                box.clear()
+                                                with box:
+                                                    with ui.row().classes('items-center gap-2'):
+                                                        ui.icon('check_circle' if result['ok'] else 'cancel', color='positive' if result['ok'] else 'negative').classes('text-sm')
+                                                        ui.label(result['detail'] + f' — {target}').classes('text-xs')
+                                            return verify_view
+
+                                        def make_copy_url(v):
+                                            def copy_url():
+                                                ui.clipboard.write(view_target(v))
+                                                ui.notify('URL copiada', type='positive')
+                                            return copy_url
+
+                                        for i, v in enumerate(views):
+                                            with ui.column().classes('gap-0 w-full'):
+                                                with ui.row().classes('items-center gap-2 w-full'):
+                                                    ui.icon('web', color='purple').classes('text-sm')
+                                                    ui.label(v['name']).classes('text-sm font-medium')
+                                                    if v.get('path'):
+                                                        ui.label(v['path']).classes('font-mono text-xs text-gray-500 grow')
+                                                    else:
+                                                        ui.space()
+                                                    if frontend_envs:
+                                                        ui.button(icon='content_copy', on_click=make_copy_url(v)) \
+                                                            .props('flat dense round size=sm').tooltip('Copiar URL completa')
+                                                        ui.button(icon='open_in_new', on_click=lambda _, vv=v: ui.navigate.to(view_target(vv), new_tab=True)) \
+                                                            .props('flat dense round size=sm').tooltip('Abrir en una pestaña nueva')
+                                                        view_box = ui.column().classes('gap-0')
+                                                        ui.button('Verificar', icon='wifi_tethering', on_click=guard(make_verify_view(v, view_box))) \
+                                                            .props('flat dense size=sm no-caps')
+                                                    ui.button('Crear caso UI', icon='add', on_click=lambda _, n=v['name'], p=v.get('path', ''): ui.navigate.to(
+                                                        f'/ui-cases?name={n}&url={p}')).props('flat dense size=sm no-caps')
+
+                                                    def remove_view(idx=i):
+                                                        core.remove_component_view(module['id'], idx)
+                                                        ui.notify('Vista eliminada', type='positive')
+                                                        render_views()
+                                                    ui.button(icon='delete', on_click=remove_view).props('flat dense round size=sm color=negative')
+                                                if frontend_envs:
+                                                    view_box.classes('pl-6')
+                                render_views()
+
+                                ui.separator().classes('my-2')
+                                with ui.row().classes('items-end gap-3 w-full'):
+                                    view_name = ui.input('Nombre de la vista', placeholder='Login').props('outlined dense').classes('grow').mark('component-view-name')
+                                    view_path = ui.input('Ruta (opcional)', placeholder='/login').props('outlined dense').classes('w-48').mark('component-view-path')
+
+                                    def add_view():
+                                        core.add_component_view(module['id'], view_name.value, view_path.value)
+                                        view_name.value = ''
+                                        view_path.value = ''
+                                        ui.notify('Vista agregada', type='positive')
+                                        render_views()
+                                    ui.button('Agregar vista', icon='add', on_click=guard(add_view)).props('outline no-caps').mark('component-add-view')
+                                ui.label('Documenta pantallas que existen (login, listado, detalle…) aunque todavía no tengas el Caso UI grabado; '
+                                         'luego, «Crear caso UI» abre el grabador con la ruta ya puesta.').classes('text-xs text-gray-500')
+
+                                if frontend_envs:
+                                    async def detect_views():
+                                        target_env = frontend_envs[0]
+                                        max_pages = 200 if detect_full.value else 15
+                                        progress = []
+                                        with ui.dialog().props('persistent') as scan_dialog, ui.card().classes('w-80'):
+                                            ui.label(f'Escaneando «{target_env["name"]}»…').classes('font-semibold')
+                                            bar = ui.linear_progress(value=0, show_value=False)
+                                            status = ui.label(f'0 de {max_pages} página(s)').classes('text-gray-600 text-sm')
+                                        scan_dialog.open()
 
                                         def tick():
-                                            status.set_text(f'{len(progress)} de {len(plan["ready"])} operación(es)')
-                                            bar.set_value(len(progress) / len(plan['ready']))
+                                            n = progress[-1] if progress else 0
+                                            status.set_text(f'{n} de {max_pages} página(s)')
+                                            bar.set_value(min(n / max_pages, 1))
                                         timer = ui.timer(0.3, tick)
                                         try:
-                                            E['result'] = await run.io_bound(explorer.run_plan, plan, module, pid, explore_env, extra_headers=extra_headers, on_progress=progress.append, cancel=token)
+                                            result = await run.io_bound(automation.discover_views, target_env['base_url'], detect_path.value,
+                                                                          max_pages, 8000, progress.append)
                                         finally:
                                             timer.cancel()
-                                            dialog.close()
-                                        result_box.clear()
-                                        with result_box:
-                                            ui.code(explorer.narrate(module, E['result'], core.get('projects', pid)['name']), language='markdown').classes('w-full').style('max-height:50vh;overflow:auto')
-                                            if E['result']['results']:
-                                                ui.button('Guardar como casos', icon='save', on_click=guard(save_results)).props('dense size=sm no-caps color=primary')
+                                            scan_dialog.close()
 
-                                    def save_results():
-                                        saved = explorer.save_generated_cases(E['result'], pid)
-                                        ui.notify(f'{len(saved)} caso(s) guardados/actualizados en «Casos API» (etiqueta «{explorer.GENERATED_TAG}»)', type='positive')
-                                        ui.navigate.reload()
-                                    ui.button('Explorar automáticamente', icon='travel_explore', on_click=guard(explore)).props('dense no-caps color=primary').mark('module-explore')
+                                        if not result['ok']:
+                                            ui.notify(f'No se pudo escanear «{target_env["name"]}»: {result["detail"]}', type='negative', multi_line=True)
+                                            return
+                                        existing = {(v.get('path') or '').rstrip('/') for v in (core.get('modules', module['id']).get('views') or [])}
+                                        candidates = [v for v in result['views'] if v['path'].rstrip('/') not in existing]
+                                        if not candidates:
+                                            ui.notify('No se encontraron vistas nuevas (o ya están todas catalogadas).', type='warning')
+                                            return
+                                        with ui.dialog() as dialog, ui.card().classes('w-[32rem]'):
+                                            ui.label(f'{len(candidates)} vista(s) encontradas en «{target_env["name"]}»').classes('font-semibold')
+                                            ui.label('Siguió los enlaces del sitio ya renderizado; elige cuáles agregar al catálogo.').classes('text-xs text-gray-500')
+                                            checks = []
+                                            with ui.column().classes('w-full max-h-96 overflow-auto gap-1 mt-2'):
+                                                for c in candidates:
+                                                    cb = ui.checkbox(f'{c["title"] or c["path"]} · {c["path"]}', value=True)
+                                                    checks.append((cb, c))
+                                            with ui.row().classes('justify-end w-full gap-2 mt-2'):
+                                                ui.button('Cancelar', on_click=dialog.close).props('flat')
 
-                            if operations:
-                                _operations_catalog_table(module, operations, marked=True)
+                                                def confirm_add():
+                                                    dialog.close()
+                                                    added = sum(1 for cb, c in checks if cb.value and
+                                                                core.add_component_view(module['id'], c['title'] or c['path'], c['path']))
+                                                    ui.notify(f'{added} vista(s) agregada(s)', type='positive')
+                                                    render_views()
+                                                ui.button('Agregar seleccionadas', icon='add', on_click=guard(confirm_add)).props('color=primary')
+                                        dialog.open()
+                                    with ui.row().classes('items-end gap-3 w-full mt-2'):
+                                        detect_path = ui.input('Ruta inicial (opcional)', placeholder='/admin').props('outlined dense').classes('w-48') \
+                                            .tooltip('Empieza el recorrido ahí en vez de la raíz del sitio — útil para acotarlo a una sección, p. ej. «/admin».')
+                                        detect_full = ui.checkbox('Escaneo completo (sin límite de 15 páginas)')
+                                        ui.button('Detectar vistas automáticamente', icon='travel_explore', on_click=guard(detect_views)) \
+                                            .props('outline no-caps').mark('component-detect-views')
+                                    ui.label('Recorre el sitio desde el ambiente ligado siguiendo sus enlaces; no reemplaza una revisión manual, '
+                                             'pero ahorra tipearlas una por una. Un escaneo completo puede tardar según el tamaño del sitio.').classes('text-xs text-gray-500')
 
-                        with ui.tab_panel(tab_cat_manual):
+                        if not is_backend:
+                            pass
+                        elif not operations:
+                            with ui.card().classes('w-full'):
+                                with ui.row().classes('items-center gap-2'):
+                                    ui.icon('info', color='grey')
+                                    ui.label('Este componente no tiene un catálogo de operaciones todavía: la exploración automática no aplica hasta que lo tenga.').classes('text-sm text-gray-600')
+                                ui.button('Crear un caso API a mano', icon='add', on_click=lambda: ui.navigate.to(f'/cases/edit?module={module["id"]}')).props('flat dense no-caps')
+
                             _manual_operations_card(module, pid)
-                            if operations:
-                                _operations_catalog_table(module, operations, marked=False)
 
-            # -------------------------------------------------------- Casos y funcionalidades
-            with ui.tab_panel(tab_trace):
-                with ui.card().classes('w-full'):
-                    with ui.row().classes('items-center gap-2'):
-                        ui.icon('http', color='primary')
-                        ui.label(f'Casos de este componente ({len(module_cases)})').classes('font-semibold')
-                    if not module_cases:
-                        ui.label('Ninguno todavía.').classes('text-sm text-gray-400')
-                    else:
-                        for c in module_cases[:8]:
-                            with ui.row().classes('items-center gap-2 w-full cursor-pointer hover:bg-gray-50').on('click', lambda _, cid=c['id']: ui.navigate.to(f'/cases/edit?id={cid}')):
-                                ui.badge(c.get('method', ''), color='primary').classes('w-16 justify-center')
-                                ui.label(c.get('path', '')).classes('font-mono text-sm')
-                                ui.label(c['name']).classes('text-sm text-gray-600 grow truncate')
-                        if len(module_cases) > 8:
-                            ui.label(f'y {len(module_cases) - 8} más… revísalos todos en Casos API.').classes('text-xs text-gray-400')
+                            with ui.card().classes('w-full'):
+                                with ui.row().classes('items-center gap-2'):
+                                    ui.icon('cloud_download', color='primary')
+                                    ui.label('Importar contrato').classes('font-semibold')
+                                ui.label('Opcional: si este componente tiene un contrato OpenAPI/Swagger publicado, impórtalo para habilitar el catálogo de operaciones '
+                                         'y la exploración automática. Nunca cambia el nombre ni la clasificación que ya definiste. Si el contrato declara etiquetas, '
+                                         'puedes elegir importar solo algunas en vez de todo el catálogo.').classes('text-xs text-gray-500')
+                                envs_for_attach = core.list_project_items('environments', pid)
+                                if envs_for_attach:
+                                    attach_env = ui.select({'': 'Ninguno (pegar la URL completa)', **{e['id']: e['name'] for e in envs_for_attach}},
+                                                            value='', label='Usar la URL base de un ambiente ya registrado (opcional)') \
+                                        .props('outlined dense options-dense').classes('w-full').mark('component-attach-env')
+                                else:
+                                    attach_env = None
+                                contract_url = ui.input('URL del contrato, de su página de Swagger UI o un enlace de GitHub').props('outlined dense').classes('w-full').mark('component-attach-url')
+                                ui.label('Acepta el enlace directo al .json/.yaml, la página de Swagger UI / Redoc (se busca el contrato enlazado) o un enlace github.com/…/blob/….').classes('text-xs text-gray-500')
 
-                with ui.card().classes('w-full'):
-                    with ui.row().classes('items-center gap-2'):
-                        ui.icon('flag', color='primary')
-                        ui.label(f'Funcionalidades que dependen de este componente ({len(dependent_features)})').classes('font-semibold')
-                    if not dependent_features:
-                        ui.label('Ninguna todavía: ninguna Suite con un caso de este componente está ligada a una Funcionalidad.').classes('text-sm text-gray-400')
-                    else:
-                        ui.label('Si este componente se cae, estas funcionalidades de negocio quedan afectadas.').classes('text-xs text-gray-500')
-                        for f in dependent_features:
-                            with ui.row().classes('items-center gap-2 w-full cursor-pointer hover:bg-gray-50').on('click', lambda _, fid=f['id']: ui.navigate.to(f'/features/edit?id={fid}')):
-                                ui.icon('chevron_right', color='pink')
-                                ui.label(f['name']).classes('text-sm text-gray-700 grow truncate')
+                                def attach_env_base():
+                                    if not attach_env or not attach_env.value:
+                                        return ''
+                                    env = core.get('environments', attach_env.value)
+                                    return (env['base_url'] or '').rstrip('/') if env else ''
+
+                                def update_contract_url_label(e=None):
+                                    base = attach_env_base()
+                                    if base:
+                                        contract_url.props(f'label="Resto de la ruta del contrato, a partir de «{base}»"')
+                                        contract_url.props('placeholder=/openapi.json')
+                                    else:
+                                        contract_url.props('label="URL del contrato, de su página de Swagger UI o un enlace de GitHub"')
+                                        contract_url.props('placeholder=')
+                                if attach_env:
+                                    attach_env.on_value_change(update_contract_url_label)
+
+                                def resolved_contract_url():
+                                    base = attach_env_base()
+                                    path = (contract_url.value or '').strip()
+                                    if not base:
+                                        return path
+                                    return base + ('/' + path.lstrip('/') if path else '')
+
+                                def finish_attach(updated):
+                                    ui.notify(f'Contrato importado: {len(updated["operations"])} operaciones.{_env_note(pid, updated)}', type='positive', multi_line=True)
+                                    ui.navigate.to(f'/modules/edit?id={module["id"]}')
+
+                                async def offer_tags_then_attach(raw, source_url, attach):
+                                    tags_found = await run.io_bound(core.contract_tags, raw)
+                                    if not tags_found:
+                                        finish_attach(await run.io_bound(attach, None))
+                                        return
+                                    with ui.dialog() as dialog, ui.card():
+                                        ui.label('¿Importar todo el contrato, o solo algunas etiquetas?').classes('font-semibold')
+                                        ui.label('Deja vacío para importar todas las operaciones.').classes('text-xs text-gray-500')
+                                        picked = ui.select(tags_found, label='Etiquetas a importar (opcional)', multiple=True, clearable=True) \
+                                            .props('outlined dense use-chips').classes('w-80').mark('component-attach-tags')
+                                        with ui.row().classes('justify-end w-full gap-2'):
+                                            ui.button('Cancelar', on_click=dialog.close).props('flat')
+
+                                            async def confirm_attach():
+                                                dialog.close()
+                                                finish_attach(await run.io_bound(attach, list(picked.value or []) or None))
+                                            ui.button('Importar', icon='cloud_download', on_click=guard(confirm_attach)).props('color=primary').mark('component-attach-confirm')
+                                    dialog.open()
+
+                                async def attach_from_url():
+                                    fetched = await run.io_bound(core.fetch_openapi, resolved_contract_url())
+
+                                    def do_attach(tags):
+                                        return core.attach_contract(module['id'], fetched['raw'], source_url=fetched['source_url'], tags=tags)
+                                    await offer_tags_then_attach(fetched['raw'], fetched['source_url'], do_attach)
+                                ui.button('Importar desde URL', icon='cloud_download', on_click=guard(attach_from_url)).props('color=primary').mark('component-attach-from-url')
+
+                                async def attach_upload(event):
+                                    try:
+                                        raw = (await read_upload(event)).decode('utf-8')
+
+                                        def do_attach(tags):
+                                            return core.attach_contract(module['id'], raw, tags=tags)
+                                        await offer_tags_then_attach(raw, None, do_attach)
+                                    except Exception as exc:
+                                        ui.notify(str(exc), type='negative', multi_line=True)
+                                ui.upload(label='O arrastra un archivo OpenAPI (.json/.yaml)', on_upload=attach_upload, auto_upload=True,
+                                          max_file_size=MAX_SPEC_BYTES).props('accept=.json,.yaml,.yml flat bordered').classes('w-full')
+                        else:
+                            with ui.tabs().classes('w-full') as cat_tabs:
+                                tab_cat_auto = ui.tab('Automático')
+                                tab_cat_manual = ui.tab('Manual')
+                            initial_cat_tab = {'manual': tab_cat_manual}.get(subtab, tab_cat_auto)
+                            with ui.tab_panels(cat_tabs, value=initial_cat_tab).classes('w-full'):
+                                with ui.tab_panel(tab_cat_auto):
+                                    with ui.card().classes('w-full'):
+                                        with ui.row().classes('items-center gap-2'):
+                                            ui.icon('travel_explore', color='primary')
+                                            ui.label('Exploración automática').classes('font-semibold')
+                                        ui.label('Lee el contrato, identifica qué operaciones son seguras de probar (GET), consigue identificadores reales de otros '
+                                                 'listados y arma las aserciones a partir de lo que el contrato declara. Solo lecturas: nada que escriba se ejecuta aquí, '
+                                                 'y el resultado no se guarda hasta que lo confirmes.').classes('text-xs text-gray-500')
+                                        all_envs_here = core.list_project_items('environments', pid)
+                                        explore_envs = [e for e in all_envs_here if core.environment_flags(e)[0]]  # backend-capable only: exploring an OpenAPI contract needs an API, not a frontend dev server
+                                        if not explore_envs:
+                                            msg = 'Registra un ambiente primero.' if not all_envs_here else \
+                                                'Ninguno de los ambientes del proyecto está marcado como backend; ajústalo en Ambientes.'
+                                            ui.label(msg).classes('text-xs text-amber-700')
+                                        else:
+                                            explore_ids = {e['id'] for e in explore_envs}
+                                            preferred = core.component_environment(module)
+                                            default_env = preferred if preferred and preferred['id'] in explore_ids else explore_envs[0]
+                                            env_select = ui.select({e['id']: e['name'] for e in explore_envs}, value=default_env['id'], label='Ambiente').props('outlined dense').classes('w-64')
+                                            with ui.row().classes('items-end gap-2'):
+                                                header_name = ui.input('Cabecera (opcional)', value='Authorization').props('outlined dense').classes('w-48')
+                                                header_value = ui.input('Valor', placeholder='Bearer {{secret:NOMBRE}} o un valor literal').props('outlined dense').classes('grow')
+                                            ui.label('Si el servicio exige autenticación, pega aquí el token para esta exploración (nunca se guarda tal cual: usa '
+                                                     '{{secret:NOMBRE}}). El ambiente también se usa si ya tiene su propia autenticación configurada.').classes('text-xs text-gray-500')
+                                            E = {'result': None}
+                                            result_box = ui.column().classes('w-full gap-2')
+
+                                            async def explore():
+                                                explore_env = core.get('environments', env_select.value)
+                                                header_key = (header_name.value or '').strip()
+                                                if header_key and not (header_value.value or '').strip():
+                                                    ui.notify(f'Escribiste el nombre de la cabecera «{header_key}» pero el valor está vacío: no se enviará.', type='warning')
+                                                extra_headers = {header_key: header_value.value} if header_key and (header_value.value or '').strip() else {}
+                                                plan = await run.io_bound(explorer.discover, module, explore_env, extra_headers)
+                                                if not plan['ready']:
+                                                    ui.notify('Nada que ejecutar: ' + (f'{len(plan["blocked"])} operación(es) sin datos para resolver sus parámetros.' if plan['blocked'] else
+                                                                                        'el componente no tiene lecturas (GET) sin autenticación.'), type='warning')
+                                                    return
+                                                token = automation.new_cancel_token()
+                                                progress = []
+                                                with ui.dialog().props('persistent') as dialog, ui.card().classes('w-96'):
+                                                    ui.label(f'Explorando «{module["name"]}»').classes('text-lg font-semibold')
+                                                    bar = ui.linear_progress(value=0, show_value=False)
+                                                    status = ui.label(f'0 de {len(plan["ready"])} operación(es)').classes('text-gray-600 text-sm')
+
+                                                    def cancel():
+                                                        token.set()
+                                                        status.set_text('Cancelando tras la petición en curso…')
+                                                    ui.button('Cancelar', icon='stop', on_click=cancel).props('outline color=negative')
+                                                dialog.open()
+
+                                                def tick():
+                                                    status.set_text(f'{len(progress)} de {len(plan["ready"])} operación(es)')
+                                                    bar.set_value(len(progress) / len(plan['ready']))
+                                                timer = ui.timer(0.3, tick)
+                                                try:
+                                                    E['result'] = await run.io_bound(explorer.run_plan, plan, module, pid, explore_env, extra_headers=extra_headers, on_progress=progress.append, cancel=token)
+                                                finally:
+                                                    timer.cancel()
+                                                    dialog.close()
+                                                result_box.clear()
+                                                with result_box:
+                                                    ui.code(explorer.narrate(module, E['result'], core.get('projects', pid)['name']), language='markdown').classes('w-full').style('max-height:50vh;overflow:auto')
+                                                    if E['result']['results']:
+                                                        ui.button('Guardar como casos', icon='save', on_click=guard(save_results)).props('dense size=sm no-caps color=primary')
+
+                                            def save_results():
+                                                saved = explorer.save_generated_cases(E['result'], pid)
+                                                ui.notify(f'{len(saved)} caso(s) guardados/actualizados en «Casos API» (etiqueta «{explorer.GENERATED_TAG}»)', type='positive')
+                                                ui.navigate.reload()
+                                            ui.button('Explorar automáticamente', icon='travel_explore', on_click=guard(explore)).props('dense no-caps color=primary').mark('module-explore')
+
+                                    if operations:
+                                        _operations_catalog_table(module, operations, marked=True,
+                                                                   refreshers=catalog_refreshers, subtab_key='automatico', count_label=op_count_label)
+
+                                with ui.tab_panel(tab_cat_manual):
+                                    _manual_operations_card(module, pid, operations=operations, refreshers=catalog_refreshers, count_label=op_count_label)
+                                    if operations:
+                                        _operations_catalog_table(module, operations, marked=False,
+                                                                   refreshers=catalog_refreshers, subtab_key='manual', count_label=op_count_label)
+
+                # -------------------------------------------------------- Casos y funcionalidades
+                with ui.tab_panel(tab_trace):
+                    with ui.column().classes('w-full max-w-6xl mx-auto gap-4'):
+                        with ui.card().classes('w-full'):
+                            with ui.row().classes('items-center gap-2'):
+                                ui.icon('http', color='primary')
+                                ui.label(f'Casos de este componente ({len(module_cases)})').classes('font-semibold')
+                            if not module_cases:
+                                ui.label('Ninguno todavía.').classes('text-sm text-gray-400')
+                            else:
+                                for c in module_cases[:8]:
+                                    with ui.row().classes('items-center gap-2 w-full cursor-pointer hover:bg-gray-50').on('click', lambda _, cid=c['id']: ui.navigate.to(f'/cases/edit?id={cid}')):
+                                        ui.badge(c.get('method', ''), color='primary').classes('w-16 justify-center')
+                                        ui.label(c.get('path', '')).classes('font-mono text-sm')
+                                        ui.label(c['name']).classes('text-sm text-gray-600 grow truncate')
+                                if len(module_cases) > 8:
+                                    ui.label(f'y {len(module_cases) - 8} más… revísalos todos en Casos API.').classes('text-xs text-gray-400')
+
+                        with ui.card().classes('w-full'):
+                            with ui.row().classes('items-center gap-2'):
+                                ui.icon('flag', color='primary')
+                                ui.label(f'Funcionalidades que dependen de este componente ({len(dependent_features)})').classes('font-semibold')
+                            if not dependent_features:
+                                ui.label('Ninguna todavía: ninguna Suite con un caso de este componente está ligada a una Funcionalidad.').classes('text-sm text-gray-400')
+                            else:
+                                ui.label('Si este componente se cae, estas funcionalidades de negocio quedan afectadas.').classes('text-xs text-gray-500')
+                                for f in dependent_features:
+                                    with ui.row().classes('items-center gap-2 w-full cursor-pointer hover:bg-gray-50').on('click', lambda _, fid=f['id']: ui.navigate.to(f'/features/edit?id={fid}')):
+                                        ui.icon('chevron_right', color='pink')
+                                        ui.label(f['name']).classes('text-sm text-gray-700 grow truncate')

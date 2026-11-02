@@ -215,22 +215,34 @@ def suite_edit(id: str = ''):
                 ui.label('Casos disponibles').classes('font-semibold')
                 ui.input('Filtrar').props('outlined dense clearable').classes('w-full').on_value_change(lambda e: available.refresh(e.value or ''))
 
-                @ui.refreshable
-                def available(text=''):
-                    shown = [c for c in cases.values() if text.lower() in c['name'].lower()]
-                    if not shown:
-                        ui.label('Sin coincidencias').classes('text-gray-500')
-                    for case in shown:
-                        with ui.row().classes('items-center w-full gap-2 no-wrap'):
-                            ui.badge('UI' if case.get('type') == 'ui' else case.get('method', 'API'), color='secondary' if case.get('type') == 'ui' else 'primary').classes('w-14 justify-center')
-                            ui.label(case['name']).classes('grow')
+                # Altura acotada con scroll propio: sin esto, un proyecto con cientos de casos (p. ej. uno
+                # explorado automáticamente desde un contrato grande) estira toda la página varios miles de
+                # píxeles y los botones Guardar quedan enterrados al final de la lista completa.
+                with ui.column().classes('w-full gap-1').style('max-height:60vh;overflow-y:auto'):
+                    @ui.refreshable
+                    def available(text=''):
+                        shown = [c for c in cases.values() if text.lower() in c['name'].lower()]
+                        if not shown:
+                            ui.label('Sin coincidencias').classes('text-gray-500')
+                        for case in shown:
+                            with ui.row().classes('items-center w-full gap-2 no-wrap'):
+                                ui.badge('UI' if case.get('type') == 'ui' else case.get('method', 'API'), color='secondary' if case.get('type') == 'ui' else 'primary').classes('w-14 justify-center shrink-0')
+                                # 'min-width:0' es necesario: sin él, un label dentro de una fila 'no-wrap' no se
+                                # achica más allá de su contenido y empuja al ícono/botón fuera del área visible
+                                # — invisible del todo una vez que el contenedor con scroll empieza a recortar
+                                # también el eje horizontal (efecto colateral de 'overflow-y:auto').
+                                ui.label(case['name']).classes('grow').style('min-width:0')
+                                if case['name'].startswith('[auto-explorado]'):
+                                    ui.icon('warning', color='amber', size='xs').classes('shrink-0') \
+                                        .tooltip('Guarda un ID real capturado al momento de explorar. Si ese dato se borra o cambia en el '
+                                                 'servicio, el caso empieza a fallar — no es un bug de la suite, es el caso el que quedó obsoleto.')
 
-                            def add(c=case):
-                                alias = core.slugify_alias(c['name'], [s['alias'] for s in steps])
-                                steps.append({'case_id': c['id'], 'alias': alias, 'environment_id': None, 'enrich': []})
-                                chosen.refresh()
-                            ui.button(icon='add', on_click=lambda _, f=add: f()).props('flat round dense color=primary').tooltip('Agregar al final')
-                available()
+                                def add(c=case):
+                                    alias = core.slugify_alias(c['name'], [s['alias'] for s in steps])
+                                    steps.append({'case_id': c['id'], 'alias': alias, 'environment_id': None, 'enrich': []})
+                                    chosen.refresh()
+                                ui.button(icon='add', on_click=lambda _, f=add: f()).props('flat round dense color=primary').classes('shrink-0').tooltip('Agregar al final')
+                    available()
             with ui.card().classes('w-2/3'):
                 ui.label('Orden de ejecución (cada paso puede apuntar a otro ambiente/componente)').classes('font-semibold')
 

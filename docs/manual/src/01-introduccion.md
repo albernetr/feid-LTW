@@ -212,6 +212,7 @@ Espacio de trabajo: historial propio de peticiones sueltas (no necesita proyecto
 | **Suites** | Suites y flujos entre componentes. |
 | **Observador** | Taps, catálogo de interfaces y cambios. |
 | **Programaciones** | Ejecuciones automáticas. |
+| **Modelos de IA** | Registra varios modelos de lenguaje (locales o en la nube) y elige cuál está activo, sin repetir URL ni clave cada vez. |
 | **Historial** | Resultados de ejecuciones y evidencias. |
 | **Importar / Exportar** | Paquetes ZIP y diagnóstico. |
 

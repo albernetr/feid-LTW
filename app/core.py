@@ -46,7 +46,7 @@ SECRET_SERVICE = 'local-test-workspace'
 SENSITIVE_HEADERS = ('authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization')
 SENSITIVE_NAME = re.compile(r'token|password|passwd|secret|key|authorization|cookie', re.I)
 TABLES = ('projects', 'module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules')
-ALL_TABLES = TABLES + ('settings', 'runs', 'taps', 'interfaces', 'lab_history')
+ALL_TABLES = TABLES + ('settings', 'runs', 'taps', 'interfaces', 'lab_history', 'llm_profiles')
 UUID_RE = re.compile(r'^[0-9a-fA-F-]{8,64}$')
 
 
@@ -1004,16 +1004,16 @@ def add_manual_operation(component_id, method, path, summary=''):
     return save('modules', component)
 
 
-def update_manual_operation(component_id, index, method, path, summary=''):
-    """Edita un endpoint agregado a mano (nunca uno del contrato: esos solo cambian reimportando)."""
+def update_operation(component_id, index, method, path, summary=''):
+    """Edita cualquier operación del catálogo, venga del contrato o agregada a mano. Si viene del contrato, el
+    cambio no persiste al reimportar: `attach_contract` reemplaza todo el catálogo por lo que el contrato diga
+    en ese momento, para que el catálogo siga reflejando fielmente al contrato."""
     component = get('modules', component_id)
     if component is None:
         raise ValueError('Componente inexistente')
     operations = list(component.get('operations') or [])
     if not (0 <= index < len(operations)):
         raise ValueError('Operación inexistente')
-    if not operations[index].get('manual'):
-        raise ValueError('Esta operación viene del contrato; solo se edita reimportando.')
     method = (method or '').strip().upper()
     if method not in HTTP_METHODS:
         raise ValueError('Método HTTP inválido')
@@ -1025,18 +1025,24 @@ def update_manual_operation(component_id, index, method, path, summary=''):
     return save('modules', component)
 
 
-def remove_manual_operation(component_id, index):
-    """Quita un endpoint agregado a mano (nunca uno que vino del contrato: esos solo cambian reimportando)."""
+def remove_operation(component_id, index):
+    """Quita cualquier operación del catálogo, venga del contrato o agregada a mano. Si viene del contrato,
+    reaparece al reimportarlo (ver `update_operation`): para excluirla de forma permanente, importa solo las
+    etiquetas que sí quieras."""
+    return remove_operations(component_id, [index])
+
+
+def remove_operations(component_id, indices):
+    """Igual que `remove_operation`, pero quita varias de una sola vez (p. ej. limpiar de golpe lo que dejó una
+    exploración o un contrato con ruido) — un único guardado en vez de uno por fila."""
     component = get('modules', component_id)
     if component is None:
         raise ValueError('Componente inexistente')
     operations = list(component.get('operations') or [])
-    if not (0 <= index < len(operations)):
+    wanted = set(indices)
+    if not wanted or any(not (0 <= i < len(operations)) for i in wanted):
         raise ValueError('Operación inexistente')
-    if not operations[index].get('manual'):
-        raise ValueError('Esta operación viene del contrato; solo se quita reimportando.')
-    operations.pop(index)
-    component['operations'] = operations
+    component['operations'] = [op for i, op in enumerate(operations) if i not in wanted]
     return save('modules', component)
 
 
@@ -1648,6 +1654,47 @@ def infer_schema(value):
             schema['items'] = infer_schema(value[0])
         return schema
     return {'type': 'object', 'required': sorted(value), 'properties': {k: infer_schema(v) for k, v in value.items()}}
+
+
+def sample_value_for_schema(schema):
+    """Un valor plausible para un fragmento de JSON Schema: prioriza 'example'/'default'/'enum' si el contrato
+    los declara, si no cae a un placeholder según el tipo. No adivina el significado de negocio — solo deja
+    la petición lista para completar en vez de vacía."""
+    if not isinstance(schema, dict):
+        return ''
+    if 'example' in schema:
+        return schema['example']
+    if 'default' in schema:
+        return schema['default']
+    if schema.get('enum'):
+        return schema['enum'][0]
+    kind = schema.get('type')
+    if kind in ('integer', 'number'):
+        return 0
+    if kind == 'boolean':
+        return False
+    if kind == 'array':
+        item = sample_value_for_schema(schema.get('items') or {})
+        return [item] if item not in ('', None) else []
+    if kind == 'object' or schema.get('properties'):
+        return {k: sample_value_for_schema(v) for k, v in (schema.get('properties') or {}).items()}
+    return ''
+
+
+def sample_request_for_operation(operation):
+    """Query params (con sus nombres, listos para completar) y un body de ejemplo armados desde lo que el
+    contrato OpenAPI declara para esta operación — para que «Probar» no abra una petición vacía que el propio
+    endpoint va a rechazar por faltarle lo mínimo que exige."""
+    query = {}
+    for param in operation.get('parameters') or []:
+        if param.get('in') == 'query':
+            query[param['name']] = sample_value_for_schema(param.get('schema') or {})
+    body = None
+    content = (operation.get('requestBody') or {}).get('content') or {}
+    json_schema = (content.get('application/json') or {}).get('schema')
+    if json_schema:
+        body = sample_value_for_schema(json_schema)
+    return {'query': query, 'body': body}
 
 
 def snapshot_assertions(status, body_text, mode='exact', ignore=()):

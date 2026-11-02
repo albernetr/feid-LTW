@@ -159,7 +159,7 @@ async def test_workspace_assistant_screen_off_then_configured_then_generates(use
     await user.open('/workspace')
     user.find('rail-Agente').click()
     await user.should_see('Asistente sin configurar')
-    await user.should_see('Conexión al modelo')
+    await user.should_see('Conexión directa (sin registrar)')
     # configure through the module (the form shares it) and re-open: the assistant is on and says it is local
     configure(fake)
     await user.open('/workspace')
@@ -171,3 +171,25 @@ async def test_workspace_assistant_screen_off_then_configured_then_generates(use
     await asyncio.sleep(1.5)  # the model call runs in a worker thread
     await user.should_see('Especificación válida')
     await user.should_see('Importar todo al proyecto')
+
+
+def test_registered_models_switch_without_mixing_keys(fake):
+    a = llm.save_profile({'name': 'A', 'preset': 'local', 'protocol': 'openai', 'base_url': fake.url + '/v1', 'model': 'modelo-a', 'auth': 'bearer'}, api_key='key-a')
+    b = llm.save_profile({'name': 'B', 'preset': 'local', 'protocol': 'openai', 'base_url': fake.url + '/v1', 'model': 'modelo-b', 'auth': 'none'})
+    assert {p['name'] for p in llm.list_profiles()} == {'A', 'B'}
+
+    llm.activate_profile(a['id'])
+    assert llm.active_profile_id() == a['id']
+    assert llm.get_config()['model'] == 'modelo-a'
+    assert core.secret_get(llm.KEY_SECRET) == 'key-a'
+
+    llm.activate_profile(b['id'])
+    assert llm.get_config()['model'] == 'modelo-b'
+    assert core.secret_get(llm.KEY_SECRET) is None, "switching to a key-less profile must not keep the previous profile's key"
+
+    with pytest.raises(ValueError):
+        llm.save_profile({'name': 'B', 'preset': 'local', 'protocol': 'openai', 'base_url': fake.url + '/v1', 'model': 'x', 'auth': 'none'})  # duplicate name
+
+    llm.delete_profile(a['id'])
+    assert a['id'] not in {p['id'] for p in llm.list_profiles()}
+    assert core.secret_get(llm.profile_secret_name(a['id'])) is None

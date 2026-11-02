@@ -48,9 +48,9 @@ def lab_redirect():
 
 
 @ui.page('/workspace')
-def workspace_page(case: str = '', method: str = '', path: str = '', environment: str = ''):
+def workspace_page(case: str = '', method: str = '', path: str = '', environment: str = '', module: str = ''):
     with frame('Espacio de trabajo', '/workspace', wide=True):
-        build(preset_case_id=case, prefill=(method, path, environment) if not case and method else None)
+        build(preset_case_id=case, prefill=(method, path, environment, module) if not case and method else None)
 
 
 def build(preset_case_id=None, prefill=None):
@@ -355,6 +355,8 @@ def build(preset_case_id=None, prefill=None):
             W['chips_view'] = chips_view
             chips_view()
             ui.separator().classes('mt-1')
+            with ui.row().classes('w-full items-center px-3 pt-2'):
+                ui.label('RESPUESTA').classes('text-xs font-semibold text-gray-400 tracking-wide')
 
             with ui.column().classes('w-full grow no-wrap gap-0').style('min-height:0;overflow:auto'):
                 @ui.refreshable
@@ -640,9 +642,13 @@ def build(preset_case_id=None, prefill=None):
                 with ui.tab_panel('Agente').classes('p-3 gap-2'):
                     agent_tab()
             with ui.tabs().props('vertical dense no-caps').classes('shrink-0').style('width:56px;border-left:1px solid #e5e7eb') as rail:
+                # Params..Lote editan la petición; Guardar/Agente son acciones aparte (persistir, herramientas de
+                # IA/protocolo) — un borde los separa visualmente sin tocar el cableado rail↔panels existente.
                 for name, icon in (('Params', 'tune'), ('Headers', 'list_alt'), ('Body', 'data_object'), ('Pruebas', 'rule'), ('Variables', 'data_array'),
                                    ('Lote', 'table_rows'), ('Guardar', 'save'), ('Agente', 'smart_toy')):
-                    ui.tab(name, label='', icon=icon).tooltip(name).mark(f'rail-{name}')
+                    tab = ui.tab(name, label='', icon=icon).tooltip(name).mark(f'rail-{name}')
+                    if name == 'Guardar':
+                        tab.style('border-top:1px solid #e5e7eb')
             panels.bind_value_from(rail, 'value')
             rail.set_value('Body')
 
@@ -719,6 +725,25 @@ def build(preset_case_id=None, prefill=None):
             else:
                 ui.label('Local: los datos no salen de esta máquina.' if state['local'] else 'Nube: lo que envíes sale de esta máquina. Revisa la vista previa antes.').classes('text-xs text-gray-500')
 
+            profiles = llm.list_profiles()
+            if profiles:
+                with ui.row().classes('items-center gap-2 w-full'):
+                    picker = ui.select({p['id']: p['name'] for p in profiles}, value=llm.active_profile_id(), label='Modelo activo', clearable=False) \
+                        .props('outlined dense').classes('grow')
+
+                    def pick(event):
+                        try:
+                            llm.activate_profile(event.value)
+                            ui.notify(f'Modelo activo: {llm.get_profile(event.value)["name"]}', type='positive')
+                        except (llm.LLMError, ValueError) as exc:
+                            ui.notify(str(exc), type='negative', multi_line=True)
+                        llm_view.refresh()
+                    picker.on_value_change(pick)
+                    ui.button(icon='settings', on_click=lambda: ui.navigate.to('/models', new_tab=True)).props('flat round dense').tooltip('Administrar modelos registrados')
+            else:
+                ui.label('Aún no registraste ningún modelo en «Modelos de IA»: hazlo ahí para poder elegirlo desde aquí sin repetir URL ni clave.').classes('text-xs text-gray-500')
+                ui.button('Ir a Modelos de IA', icon='smart_toy', on_click=lambda: ui.navigate.to('/models', new_tab=True)).props('outline dense size=sm no-caps')
+
             with ui.expansion('Explicar el último fallo', icon='bug_report', value=bool(failing and state['ready'])).classes('w-full border rounded'):
                 if not failing:
                     ui.label('Cuando una petición con pruebas falle, aquí podrás pedirle una explicación al modelo.').classes('text-xs text-gray-500')
@@ -755,7 +780,8 @@ def build(preset_case_id=None, prefill=None):
                         ui.label('El modelo no logró una especificación válida; esto es lo que devolvió:').classes('text-xs text-gray-500')
                         ui.code(result['raw'][:3000], language='json').classes('w-full').style('max-height:200px;overflow:auto')
 
-            with ui.expansion('Conexión al modelo', icon='settings_ethernet', value=not state['ready']).classes('w-full border rounded'):
+            with ui.expansion('Conexión directa (sin registrar)', icon='settings_ethernet', value=not state['ready'] and not profiles).classes('w-full border rounded'):
+                ui.label('Para un modelo de uso puntual que no quieres guardar en «Modelos de IA». Ojo: esto reemplaza el modelo activo de arriba.').classes('text-xs text-gray-500')
                 connection_form()
         W['llm_view'] = llm_view
         llm_view()
@@ -845,19 +871,40 @@ def build(preset_case_id=None, prefill=None):
 
     left_w = float(layout.get('ws_left', 19)) if isinstance(layout, dict) or hasattr(layout, 'get') else 19
     right_w = float(layout.get('ws_right', 62)) if isinstance(layout, dict) or hasattr(layout, 'get') else 62
-    with ui.element('div').classes('w-full').style('height: calc(100vh - 50px)'):
+
+    def toggle_panel():
+        S['panel_hidden'] = not S.get('panel_hidden', False)
+        if isinstance(layout, dict) or hasattr(layout, 'get'):
+            layout['ws_panel_hidden'] = S['panel_hidden']
+        workspace_split.refresh()
+    S['panel_hidden'] = bool(layout.get('ws_panel_hidden', False)) if isinstance(layout, dict) or hasattr(layout, 'get') else False
+
+    @ui.refreshable
+    def workspace_split():
         with ui.splitter(value=left_w, limits=(12, 35), on_change=lambda e: layout.__setitem__('ws_left', e.value)).classes('w-full').style('height:100%') as outer:
             with outer.before:
                 with ui.element('div').classes('ltw-pane'):
                     left()
             with outer.after:
-                with ui.splitter(value=right_w, limits=(35, 85), on_change=lambda e: layout.__setitem__('ws_right', e.value)).classes('w-full').style('height:100%') as inner:
-                    with inner.before:
-                        with ui.element('div').classes('ltw-pane').style('display:flex;flex-direction:column'):
-                            center()
-                    with inner.after:
-                        with ui.element('div').classes('ltw-pane').style('overflow:hidden'):
-                            right()
+                if S['panel_hidden']:
+                    # Sin panel de detalle (Params/Headers/Body/Pruebas/Variables/Lote/Guardar/Agente): la
+                    # petición y la respuesta ocupan todo el ancho — útil cuando solo queres leer la respuesta.
+                    with ui.element('div').classes('ltw-pane relative').style('display:flex;flex-direction:column'):
+                        center()
+                        ui.button(icon='chevron_left', on_click=toggle_panel).props('round dense flat color=primary') \
+                            .classes('absolute top-2 right-2 z-10 bg-white shadow-2').tooltip('Mostrar el panel de detalle (Params, Body, Pruebas, Agente…)')
+                else:
+                    with ui.splitter(value=right_w, limits=(35, 85), on_change=lambda e: layout.__setitem__('ws_right', e.value)).classes('w-full').style('height:100%') as inner:
+                        with inner.before:
+                            with ui.element('div').classes('ltw-pane').style('display:flex;flex-direction:column'):
+                                center()
+                        with inner.after:
+                            with ui.element('div').classes('ltw-pane relative').style('overflow:hidden'):
+                                ui.button(icon='chevron_right', on_click=toggle_panel).props('round dense flat color=primary') \
+                                    .classes('absolute top-2 left-2 z-10 bg-white shadow-2').tooltip('Ocultar este panel')
+                                right()
+    with ui.element('div').classes('w-full').style('height: calc(100vh - 50px)'):
+        workspace_split()
     if preset_case_id:
         preset_case = core.get('cases', preset_case_id)
         if preset_case and preset_case.get('type') != 'ui':
@@ -865,7 +912,18 @@ def build(preset_case_id=None, prefill=None):
         elif preset_case is None:
             ui.notify('El caso que intentas abrir ya no existe.', type='warning')
     elif prefill:
-        method_in, path_in, env_id = prefill
+        method_in, path_in, env_id, module_id = prefill
         if env_id and core.get('environments', env_id) is None:
             env_id = ''
-        load_draft({**ws.new_draft(), 'method': (method_in or 'GET').upper(), 'url': path_in or '', 'env_id': env_id})
+        new = {**ws.new_draft(), 'method': (method_in or 'GET').upper(), 'url': path_in or '', 'env_id': env_id}
+        # Completa query/body con lo que el propio contrato OpenAPI declara para esta operación — sin esto,
+        # «Probar» abre una petición vacía que el endpoint rechaza de entrada si exige parámetros u campos.
+        operation = next((op for op in (core.get('modules', module_id) or {}).get('operations', [])
+                           if op['method'] == new['method'] and op['path'] == path_in), None) if module_id else None
+        if operation:
+            sample = core.sample_request_for_operation(operation)
+            if sample['query']:
+                new['query'] = ws.dict_to_rows(sample['query'])
+            if sample['body'] is not None:
+                new['body'] = json.dumps(sample['body'], indent=2, ensure_ascii=False)
+        load_draft(new)

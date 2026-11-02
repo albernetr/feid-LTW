@@ -71,6 +71,77 @@ def clear_config():
     core.delete('settings', SETTING)
 
 
+# --------------------------------------------------------------------------- registered models (several, switch on demand)
+# Each profile is its own saved connection with its own key. "Activating" one copies it into the single live connection
+# above (and its key, never leaving two keys live for the same slot) so every existing call (ask/status/explain_failure/
+# generate_spec) keeps working unchanged, from anywhere in the app that already uses llm.ask()/llm.status().
+
+ACTIVE_PROFILE_SETTING = 'llm_active_profile'
+PROFILE_FIELDS = ('preset', 'protocol', 'base_url', 'model', 'auth', 'allow_cloud', 'timeout')
+
+
+def profile_secret_name(profile_id):
+    return f'LTW_LLM_PROFILE_{profile_id}'
+
+
+def list_profiles():
+    return sorted(core.list_items('llm_profiles'), key=lambda p: (p.get('name') or '').lower())
+
+
+def get_profile(profile_id):
+    return core.get('llm_profiles', profile_id) if profile_id else None
+
+
+def active_profile_id():
+    return core.get_setting(ACTIVE_PROFILE_SETTING)
+
+
+def save_profile(profile, api_key=None):
+    """Registers or updates a named model so it can be picked later without retyping URL/key. api_key: str replaces
+    it, falsy leaves the profile's own stored key untouched."""
+    profile_id = profile.get('id') or core.uid()
+    clean = {'id': profile_id, 'name': (profile.get('name') or '').strip(), 'preset': profile.get('preset', 'custom'),
+             'protocol': profile.get('protocol', 'openai'), 'base_url': (profile.get('base_url') or '').strip(),
+             'model': (profile.get('model') or '').strip(), 'auth': profile.get('auth', 'none'),
+             'allow_cloud': bool(profile.get('allow_cloud', False)), 'timeout': float(profile.get('timeout') or 120)}
+    if not clean['name']:
+        raise ValueError('Indica un nombre para identificar este modelo (p. ej. «Foundry — GPT-6-Astra»)')
+    if clean['protocol'] not in PROTOCOLS or clean['auth'] not in AUTH_STYLES:
+        raise ValueError('Protocolo o tipo de autenticación no reconocido')
+    if not re.match(r'^https?://[^\s/]+', clean['base_url']):
+        raise ValueError('La URL debe empezar por http:// o https://')
+    if not clean['model']:
+        raise ValueError('Indica el modelo (o el nombre del despliegue)')
+    if not 5 <= clean['timeout'] <= 600:
+        raise ValueError('El tiempo de espera debe estar entre 5 y 600 segundos')
+    if any(p['name'].strip().lower() == clean['name'].lower() for p in list_profiles() if p['id'] != profile_id):
+        raise ValueError(f'Ya hay un modelo registrado llamado «{clean["name"]}»')
+    core.save('llm_profiles', clean)
+    if api_key:
+        core.secret_set(profile_secret_name(profile_id), api_key)
+    return clean
+
+
+def delete_profile(profile_id):
+    core.secret_delete(profile_secret_name(profile_id))
+    core.delete('llm_profiles', profile_id)
+    if active_profile_id() == profile_id:
+        core.delete('settings', ACTIVE_PROFILE_SETTING)
+
+
+def activate_profile(profile_id):
+    """Makes a registered model the one ask()/status() actually use, copying its key into the single live slot
+    so switching never mixes one model's credentials with another's."""
+    profile = get_profile(profile_id)
+    if not profile:
+        raise ValueError('Ese modelo ya no existe; actualiza la lista.')
+    key = core.secret_get(profile_secret_name(profile_id))
+    if not key:
+        core.secret_delete(KEY_SECRET)
+    save_config({field: profile[field] for field in PROFILE_FIELDS}, api_key=key or None)
+    core.set_setting(ACTIVE_PROFILE_SETTING, profile_id)
+
+
 def status(config=None):
     """{'ready': bool, 'local': bool|None, 'problem': str|None, 'summary': str} - the single place that decides whether the assistant may be used."""
     config = config or get_config()
@@ -146,17 +217,46 @@ def _explain_http_error(response, config):
     return f'El servicio respondió HTTP {code}. {detail}'
 
 
-def ask(system, user, config=None, max_tokens=MAX_OUTPUT_TOKENS, check=True):
-    """One round trip to the configured model. check=False skips the cloud gate (only for the harmless connection test)."""
+def ask(system, user, config=None, max_tokens=MAX_OUTPUT_TOKENS, check=True, key_override=None):
+    """One round trip to the configured model. check=False skips the cloud gate (only for the harmless connection test).
+    key_override: use this key instead of the one stored for the active connection — for testing a registered model's
+    own key before (or without) activating it."""
     config = config or get_config()
     state = status(config)
     if check and not state['ready']:
         raise LLMError(state['problem'])
-    if not check and state['problem'] and 'clave' in state['problem']:
+    if not check and state['problem'] and 'clave' in state['problem'] and key_override is None:
         raise LLMError(state['problem'])
-    key = core.secret_get(KEY_SECRET) if config['auth'] != 'none' else None
+    key = key_override if key_override is not None else (core.secret_get(KEY_SECRET) if config['auth'] != 'none' else None)
+    headers = _headers(config, key)
+    payload = _payload(config, system, user, max_tokens)
     try:
-        response = httpx.post(_endpoint(config), headers=_headers(config, key), json=_payload(config, system, user, max_tokens), timeout=config['timeout'])
+        response = httpx.post(_endpoint(config), headers=headers, json=payload, timeout=config['timeout'])
+        for _ in range(3):  # newer OpenAI-family (reasoning) models reject params older ones accept, and can spend the
+            if config['protocol'] != 'openai':                                        # whole token budget "thinking" invisibly, leaving no visible text
+                break
+            if response.status_code == 400:
+                text = response.text
+                if 'max_tokens' in payload and 'max_completion_tokens' in text:
+                    payload['max_completion_tokens'] = payload.pop('max_tokens')
+                elif 'temperature' in payload and "'temperature'" in text:
+                    payload.pop('temperature')
+                else:
+                    break
+            elif response.status_code < 400:
+                try:
+                    choices = (response.json() or {}).get('choices') or []
+                except ValueError:
+                    break
+                cut_off_while_reasoning = choices and choices[0].get('finish_reason') == 'length' and not (choices[0].get('message') or {}).get('content')
+                token_field = 'max_completion_tokens' if 'max_completion_tokens' in payload else 'max_tokens'
+                if cut_off_while_reasoning and payload.get(token_field, 0) < MAX_OUTPUT_TOKENS:
+                    payload[token_field] = MAX_OUTPUT_TOKENS
+                else:
+                    break
+            else:
+                break
+            response = httpx.post(_endpoint(config), headers=headers, json=payload, timeout=config['timeout'])
     except httpx.TimeoutException:
         raise LLMError(f'El modelo no respondió en {int(config["timeout"])} s. Los modelos locales grandes pueden tardar: sube el tiempo de espera.')
     except httpx.TransportError as exc:
@@ -169,10 +269,10 @@ def ask(system, user, config=None, max_tokens=MAX_OUTPUT_TOKENS, check=True):
         raise LLMError('La respuesta del servicio no es JSON: ¿la URL apunta al endpoint correcto (termina en /v1)?')
 
 
-def test_connection(config=None):
+def test_connection(config=None, key_override=None):
     """Sends a one-word prompt; carries no workspace data, so it is allowed even when cloud use is not."""
     config = config or get_config()
-    text = ask('Responde únicamente con la palabra OK.', 'ping', config, max_tokens=16, check=False)
+    text = ask('Responde únicamente con la palabra OK.', 'ping', config, max_tokens=16, check=False, key_override=key_override)
     return {'ok': True, 'reply': text[:80], 'summary': status(config)['summary']}
 
 

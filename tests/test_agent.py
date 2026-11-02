@@ -141,6 +141,37 @@ def test_diagnosis_covers_common_causes(sample_app, second_app):
     assert categories == {'sin servicio': 'network', 'no existe': 'not_found', 'variable': 'test_setup', 'forma': 'contract_mismatch'}
 
 
+def test_corrected_request_example_fills_only_what_the_contract_requires_and_was_missing(sample_app):
+    """A validation (422) failure whose operation is a known contract: the brief proposes a corrected query/body
+    using what the contract declares, keeping whatever was actually sent and filling only what's missing — never
+    invented business values, and never offered for a failure that isn't about a rejected request."""
+    project = core.save('projects', {'name': 'p', 'description': '', 'version': 1})
+    core.save('modules', {'name': 'Items API', 'project_id': project['id'], 'is_backend': True, 'is_frontend': False, 'operations': [
+        {'method': 'POST', 'path': '/api/items', 'summary': 'Crea un item',
+         'parameters': [], 'requestBody': {'content': {'application/json': {'schema': {
+             'type': 'object', 'required': ['name'], 'properties': {'name': {'type': 'string'}}}}}},
+         'responses': {'201': {}, '422': {}}}]})
+    env = core.save('environments', {'name': 'e', 'project_id': project['id'], 'base_url': sample_app.url, 'variables': {},
+                                      'auth': {'type': 'bearer', 'secret': '', 'env_var': 'TOK', 'header': 'Authorization'}})
+    import os
+    os.environ['TOK'] = 'tok-abc123'
+    try:
+        case = {'name': 'crear item', 'method': 'POST', 'path': '/api/items', 'headers': {}, 'query': {}, 'body': {},
+                'variables': {}, 'timeout': 10, 'assertions': [{'type': 'status', 'expected': 201}]}
+        run = core.execute_api(case, env)
+    finally:
+        del os.environ['TOK']
+    failure = agent.failure_from_run(run)
+    assert failure['diagnosis']['category'] == 'validation'
+    assert failure['corrected_request_example'] == {'query': {}, 'body': {'name': ''}}
+    assert '## Ejemplo de petición corregida' in failure['brief_markdown'] and '"name": ""' in failure['brief_markdown']
+
+    # a passing run (or one that already sends everything the contract asks for) has nothing to add
+    case['body'] = {'name': 'Acme 2'}
+    ok_run = core.execute_api(case, {**env, 'auth': {'type': 'bearer', 'secret': '', 'env_var': '', 'header': 'Authorization'}})
+    assert agent.failure_from_run(ok_run)['corrected_request_example'] is None  # 401, not a validation failure
+
+
 def test_cli_exit_codes_files_and_rerun_of_failures(sample_app, second_app, tmp_path, capsys):
     spec_path = tmp_path / 'spec.json'
     spec_path.write_text(json.dumps(make_spec(sample_app, second_app)), encoding='utf-8')

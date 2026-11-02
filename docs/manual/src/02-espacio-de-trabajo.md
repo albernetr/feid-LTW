@@ -213,6 +213,7 @@ Reúne todo lo relacionado con agentes (se explica en el [capítulo 17](#cap-17)
 - **Esta petición como especificación**: exporta lo que estás editando como `ltw.spec/1`.
 - **Importar una especificación**: pega un `ltw.spec/1`; se valida (errores y avisos con su ruta) y puedes **cargar el primer caso en el editor** o **importar todo al proyecto** elegido en **Guardar**.
 - **API local y línea de comandos**: el **token** (copiar, mostrar, regenerar) y ejemplos de uso.
+- **Asistente con modelo de lenguaje**: explica el último fallo o genera casos con un modelo. El selector **Modelo activo** elige, sin volver a pegar URL ni clave, entre los modelos registrados en **Modelos de IA** (menú lateral); «Conexión directa (sin registrar)» sigue disponible para un modelo puntual que no amerita registrarse.
 
 ![Una prueba que falla: se ve en rojo qué esperaba y qué obtuvo](img/25-pruebas-fallan.png)
 

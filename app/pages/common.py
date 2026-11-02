@@ -10,6 +10,7 @@ NAV = [
     ('Módulos', '/module-groups', 'account_tree'), ('Componentes', '/modules', 'widgets'), ('Ambientes', '/environments', 'dns'),
     ('Casos API', '/cases', 'http'), ('Casos UI', '/ui-cases', 'web'), ('Funcionalidades', '/features', 'flag'),
     ('Suites', '/suites', 'playlist_play'), ('Observador', '/observer', 'visibility'), ('Programaciones', '/schedules', 'schedule'),
+    ('Modelos de IA', '/models', 'smart_toy'),
     ('Historial', '/runs', 'history'), ('Importar / Exportar', '/portable', 'swap_vert'),
 ]
 STATUS_COLOR = {'passed': 'positive', 'failed': 'negative', 'error': 'warning', 'cancelled': 'grey', 'skipped': 'grey'}
