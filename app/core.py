@@ -16,10 +16,16 @@ import zipfile
 from pathlib import Path
 from urllib.parse import urlparse, urljoin
 import httpx
+import truststore
 import yaml
 
 VERSION = '1.0.0'
 LEGACY_ROOT = Path.home() / '.local_test_workspace'
+
+
+def _httpx_client(**kwargs):
+    kwargs.setdefault('verify', truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT))
+    return httpx.Client(**kwargs)
 
 
 def app_dir():
@@ -882,7 +888,7 @@ def fetch_openapi(url, client=None):
     if parsed.scheme not in ('http', 'https') or not parsed.hostname:
         raise ValueError('URL inválida: debe empezar por http:// o https://')
     own = client is None
-    client = client or httpx.Client(timeout=20, follow_redirects=True, trust_env=False, headers={'User-Agent': 'local-test-workspace', 'Accept': 'application/json, application/yaml, text/html;q=0.8, */*;q=0.5'})
+    client = client or _httpx_client(timeout=20, follow_redirects=True, trust_env=False, headers={'User-Agent': 'local-test-workspace', 'Accept': 'application/json, application/yaml, text/html;q=0.8, */*;q=0.5'})
     tried = []
 
     def get(target):
@@ -1134,7 +1140,7 @@ def refresh_token(environment, variables=None):
             raise ValueError('Variables sin resolver en la actualización de token: ' + ', '.join(missing))
         validate_base_url(url)
         try:
-            with httpx.Client(timeout=cfg.get('timeout', 20), trust_env=False) as client:
+            with _httpx_client(timeout=cfg.get('timeout', 20), trust_env=False) as client:
                 response = client.request(cfg.get('method', 'POST'), url, headers=headers, json=body if body is not None else None)
         except httpx.HTTPError as exc:
             raise ValueError(f'No se pudo contactar el endpoint de actualización de token: {exc}')
@@ -1251,6 +1257,24 @@ def secret_delete(name):
 # --------------------------------------------------------------------------- variables
 
 VAR_RE = re.compile(r'\{\{\s*([\w.:-]+)\s*\}\}')
+SEQ_SETTING = 'variable_sequence'
+
+
+def next_sequence():
+    """Consecutivo global, persistido entre ejecuciones: cada envío lo avanza en uno (se use o no {{seq}} en ese
+    caso puntual) — igual de simple que {{uuid}}, y de sobra para distinguir peticiones de prueba entre sí."""
+    value = int(get_setting(SEQ_SETTING, 0)) + 1
+    set_setting(SEQ_SETTING, value)
+    return value
+
+
+def dynamic_variables():
+    """Valores integrados que no tiene sentido escribir a mano ni dejar fijos en un caso: fecha/hora actuales,
+    un identificador único y un consecutivo. Se resuelven de nuevo en cada envío y tienen la prioridad más baja:
+    una variable del ambiente, del caso o pasada por la suite con el mismo nombre la pisa sin aviso."""
+    stamp = dt.datetime.now(dt.timezone.utc)
+    return {'now_date': stamp.strftime('%Y-%m-%d'), 'now_time': stamp.strftime('%H:%M:%S'), 'now_iso': stamp.isoformat(),
+            'now_epoch': str(int(stamp.timestamp())), 'uuid': uid(), 'seq': str(next_sequence())}
 
 
 def substitute(value, variables, secrets_used=None):
@@ -1858,7 +1882,7 @@ def check_connectivity(url, timeout=5.0):
         sock.close()
     started = time.perf_counter()
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+        with _httpx_client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
             response = client.get(origin + path)
         step('HTTP', True, (time.perf_counter() - started) * 1000,
              f'{response.status_code} {response.reason_phrase} · {len(response.content)} bytes' + (f' · {response.headers["server"]}' if 'server' in response.headers else ''))
@@ -2184,7 +2208,7 @@ def execute_api(case, environment, variables=None, persist=True, context=None, e
     context/enrich: responses of earlier steps of a flow and the rules that add or modify fields of THIS request
     (applied after variable substitution; a failing rule aborts before anything is sent).
     """
-    variables = {**environment.get('variables', {}), **(case.get('variables') or {}), **(variables or {})}
+    variables = {**dynamic_variables(), **environment.get('variables', {}), **(case.get('variables') or {}), **(variables or {})}
     secrets_used = set()
     run = {'id': uid(), 'case_id': case.get('id'), 'case_name': case.get('name', ''), 'type': 'api', 'started_at': now(),
            'environment_id': environment['id'], 'project_id': case.get('project_id'), 'case_snapshot': case, **(meta or {})}
@@ -2226,7 +2250,7 @@ def execute_api(case, environment, variables=None, persist=True, context=None, e
                 headers[auth.get('header', 'X-API-Key')] = token
         elif kind != 'none':
             raise ValueError('Autenticación no soportada en esta versión.')
-        with httpx.Client(timeout=case.get('timeout', 20), follow_redirects=False, trust_env=False) as client:
+        with _httpx_client(timeout=case.get('timeout', 20), follow_redirects=False, trust_env=False) as client:
             response = client.request(case['method'], url, headers=headers, json=body if body is not None else None, params=query)
             if response.status_code == 401 and kind in ('bearer', 'api_key') and auto_refresh:
                 try:

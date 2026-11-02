@@ -33,6 +33,22 @@ def test_api_positive_and_negative(world):
     assert core.execute_api(ok, dead)['status'] == 'error'
 
 
+def test_dynamic_variables_are_resolved_fresh_and_yield_to_user_ones(world):
+    """{{now_date}}/{{now_time}}/{{uuid}}/{{seq}} need no setup, resolve on every send, and a case/environment
+    variable of the same name still wins (dynamic ones are the lowest-priority layer)."""
+    case = world['api_case']('crear con dinamicas', 'POST', '/api/items', [{'type': 'status', 'expected': 201}],
+                             headers={'Authorization': 'Bearer tok-abc123'}, body={'name': 'item-{{seq}}', 'nota': '{{now_date}} {{now_time}} {{uuid}}'})
+    env = {**world['env'], 'variables': {}}
+    first = core.execute_api(case, env)
+    second = core.execute_api(case, env)
+    assert first['status'] == 'passed' and second['status'] == 'passed'
+    assert first['request']['body']['name'] != second['request']['body']['name']   # {{seq}} advanced
+    assert dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%d') in first['request']['body']['nota']
+    assert len(first['request']['body']['nota'].split()[-1]) == 36                 # a uuid4, freshly generated
+    overridden = core.execute_api({**case, 'variables': {'seq': 'fijo'}}, env)
+    assert overridden['request']['body']['name'] == 'item-fijo'                    # a same-named variable wins
+
+
 def test_chained_suite_shares_variables_between_cases(world):
     login = world['api_case']('login', 'POST', '/api/login',
                               [{'type': 'status', 'expected': 200}], body={'user': 'qa', 'password': 'qa-pass'},

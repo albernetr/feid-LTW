@@ -49,3 +49,11 @@ def second_app():
     from sample_app.server import SampleApp
     with SampleApp() as app:
         yield app
+
+
+@pytest.fixture
+def chat_app():
+    """A fictitious multi-turn WhatsApp-style bot, for the Workspace Chat tab."""
+    from sample_app.chat_server import ChatApp
+    with ChatApp() as app:
+        yield app

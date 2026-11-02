@@ -400,3 +400,18 @@ Notas:
      2. Asignar **Body** `$.name` ← **Respuesta del paso** `login`, ruta `$.user.name`.
      3. Asignar **Body** `$.origen` ← **Valor fijo** `web`.
 3. **Vista previa** para confirmar, **Guardar y ejecutar**.
+
+## 10.5 Chat (conversar en vivo con un chatbot o API conversacional)
+
+Pantalla propia en el menú (**Chat**), separada del Espacio de trabajo: pensada para un chatbot, un agente de IA o cualquier servicio de mensajería (WhatsApp), donde armar los turnos de antemano como una suite no sirve para **explorar** — acá escribís un mensaje a la vez y ves la respuesta como burbuja, como en un chat real.
+
+![Chat: URL arriba, parámetros colapsables, conversación al centro, barra de escribir siempre visible abajo](img/23-chat.png)
+
+- **Arriba**: ambiente, método y URL (igual que el Espacio de trabajo), más un selector para **abrir un caso guardado** y empezar desde ahí.
+- **Parámetros** (panel colapsable): headers de la petición, y el **mapeo del chat** — cuatro rutas JSON según el contrato del bot: dónde va el **mensaje saliente**, dónde va el **id de hilo en la petición**, dónde viene el **id de hilo en la respuesta**, y dónde viene la **respuesta del bot**. Se completa una sola vez por caso; **Guardar configuración** la deja lista y colapsa el panel.
+- **Conversación** (área central): cada mensaje se arma con lo que escribiste más el id de hilo actual, se envía, y la respuesta se extrae y aparece como burbuja del bot (con el código HTTP). El id de hilo (mostrado arriba, junto a **Reiniciar conversación**) se actualiza solo para el siguiente turno.
+- **Petición / Respuesta (último turno)** (panel colapsable): el JSON exacto enviado y recibido en el último mensaje, para depurar sin salir de la conversación.
+- **Guardar este intercambio como caso** (debajo de cada respuesta del bot): convierte ESE turno puntual en un caso y lo agrega como paso a la suite de la conversación en el momento, sin esperar a terminar de conversar ni guardar turnos que no sirvieron. Un turno ya guardado muestra «✓ Guardado como «Turno N»» en su lugar.
+- **Guardar todo lo pendiente**: hace lo mismo de una sola vez con todos los turnos que aún no se guardaron — un caso por mensaje, encadenados con el mismo mecanismo de enriquecimiento que cualquier otra suite (el id de hilo del turno anterior se inyecta en el siguiente, ver [10.3](#s-10-3)).
+- **La conversación se puede retomar**: después de cada turno se guarda en el caso (mensajes, id de hilo y qué se guardó ya como caso); cerrar la pantalla y volver a abrir el mismo caso restaura todo tal como quedó, listo para seguir escribiendo — no hace falta terminar de una sola vez.
+- **Reiniciar conversación** borra los mensajes y el hilo (también lo que estaba guardado para retomar) sin tocar la configuración del mapeo. **Nuevo chat** (icono junto al nombre) empieza de cero en otro caso; abrir uno que ya tiene el mapeo guardado va directo a la conversación, sin repetir las cuatro rutas.

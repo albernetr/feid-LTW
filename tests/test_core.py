@@ -27,6 +27,22 @@ def workspace(tmp_path,monkeypatch):
     monkeypatch.setattr(core,'ARTIFACTS',tmp_path/'evidence')
     core.initialize()
 
+def test_httpx_client_defaults_to_the_os_trust_store_but_lets_callers_override_verify():
+    """Corporate networks terminate TLS with their own root CA, which certifi's bundled list doesn't know about —
+    every outbound request goes through this helper so it checks against the OS trust store (which does) instead,
+    without taking away a caller's ability to pass its own `verify` (e.g. disabling it for a known-bad cert)."""
+    import ssl
+    import truststore
+    client = core._httpx_client(timeout=5)
+    try:
+        assert isinstance(client._transport._pool._ssl_context, truststore.SSLContext)
+    finally:
+        client.close()
+    sentinel = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    with core._httpx_client(timeout=5, verify=sentinel) as client:
+        assert client._transport._pool._ssl_context is sentinel
+
+
 def test_openapi():
     m=core.import_openapi(SPEC)
     assert m['operations'][0]['path']=='/hello'

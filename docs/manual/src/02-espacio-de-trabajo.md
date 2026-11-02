@@ -154,7 +154,19 @@ Define lo que debe cumplir la respuesta.
 
 - **Variables de esta petición**: pares nombre/valor disponibles como `{{nombre}}` en la URL, headers, query y body. Se guardan con el caso.
 - **Extraer de la respuesta** (para encadenar en una suite): **Guardar como** + **Ruta** (por ejemplo `$.token`). Cuando el caso se ejecute dentro de una suite, el valor queda disponible como `{{nombre}}` en los casos siguientes.
-- Orden de prioridad de las variables (de menor a mayor): **ambiente → caso → suite/valores extraídos**.
+- Orden de prioridad de las variables (de menor a mayor): **integradas → ambiente → caso → suite/valores extraídos**.
+- **Variables integradas**: `{{now_date}}`, `{{now_time}}`, `{{now_iso}}`, `{{now_epoch}}`, `{{uuid}}` y `{{seq}}` (consecutivo global, avanza en cada envío) no requieren configurarlas en ningún lado — se calculan solas en el momento de enviar. Útiles para fechas/horas de proceso, identificadores de correlación o nombres que no pueden repetirse entre ejecuciones. Si defines una variable con el mismo nombre en el ambiente, el caso o la suite, esa gana.
+
+### Chat (conversar en vivo)
+
+Pensada para un chatbot, una API conversacional o cualquier servicio de mensajería (WhatsApp, un agente de IA): a diferencia de una suite, acá **no armas los turnos de antemano** — escribís un mensaje, ves la respuesta como burbuja, y seguís la conversación como en un chat real.
+
+1. La primera vez, indica cuatro rutas JSON (según el contrato del bot): dónde va el **mensaje saliente**, dónde va el **id de hilo en la petición**, dónde viene el **id de hilo en la respuesta**, y dónde viene la **respuesta del bot**. El resto de la petición (método, URL, headers, autenticación) es el que ya armaste en las otras pestañas.
+2. **Activar chat**: a partir de ahí, escribe y pulsa Enter (o el botón de enviar). Cada mensaje se arma solo con lo que escribiste más el id de hilo actual, se envía, y la respuesta se extrae y aparece como burbuja del bot (con el código HTTP). El id de hilo se actualiza solo para el siguiente turno.
+3. **Guardar como suite**: convierte la conversación real en una suite de regresión — un caso por mensaje que escribiste, encadenados con el mismo mecanismo de enriquecimiento que cualquier otra suite (el id de hilo del turno anterior se inyecta en el siguiente). Se guarda en el proyecto elegido en la pestaña **Guardar**.
+4. **Reiniciar** borra los mensajes y el id de hilo sin tocar la configuración; **Configurar de nuevo** vuelve al formulario de las cuatro rutas (por ejemplo, para apuntar a otro endpoint).
+
+La configuración del chat se guarda con el caso: si vuelves a abrir un caso ya configurado, el chat está listo para escribir sin repetir las rutas.
 
 ### Lote (misma petición, varias entradas)
 

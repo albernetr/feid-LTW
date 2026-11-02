@@ -26,7 +26,7 @@ def row(key='', value='', on=True):
 
 def new_draft():
     return {'name': '', 'method': 'GET', 'scheme': 'https', 'env_id': '', 'url': '', 'body': '', 'timeout': 20,
-            'headers': [], 'query': [], 'variables': [], 'assertions': [], 'extract': [], 'source': None}
+            'headers': [], 'query': [], 'variables': [], 'assertions': [], 'extract': [], 'source': None, 'chat': None}
 
 
 def rows_to_dict(rows):
@@ -95,7 +95,7 @@ def build_case(draft, name=None, assertions=None):
     case = {'name': name or draft.get('name') or f'{draft["method"]} {path}', 'type': 'api', 'method': draft['method'], 'path': path, 'query': query,
             'body': body, 'headers': rows_to_dict(draft['headers']), 'variables': rows_to_dict(draft['variables']),
             'assertions': copy.deepcopy(draft['assertions'] if assertions is None else assertions), 'extract': copy.deepcopy(draft['extract']),
-            'timeout': draft.get('timeout') or 20}
+            'timeout': draft.get('timeout') or 20, 'chat': copy.deepcopy(draft.get('chat'))}
     return case, env
 
 
@@ -117,7 +117,7 @@ def draft_from_case(case, env_id=''):
               'body': json.dumps(case['body'], indent=2, ensure_ascii=False) if case.get('body') is not None else '',
               'headers': dict_to_rows(case.get('headers')), 'query': dict_to_rows(case.get('query')), 'variables': dict_to_rows(case.get('variables')),
               'assertions': copy.deepcopy(case.get('assertions') or []), 'extract': copy.deepcopy(case.get('extract') or []),
-              'source': {'type': 'case', 'id': case['id'], 'updated_at': case.get('updated_at')}})
+              'chat': copy.deepcopy(case.get('chat')), 'source': {'type': 'case', 'id': case['id'], 'updated_at': case.get('updated_at')}})
     return d
 
 
