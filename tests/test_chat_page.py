@@ -39,6 +39,28 @@ async def test_chat_page_converses_live_and_saves_the_transcript_as_a_suite(user
     assert result['status'] == 'passed', result
 
 
+async def test_first_turn_keeps_a_preset_thread_id_instead_of_blanking_it(user, chat_app):
+    """The first turn of a new conversation has no thread id yet (S['thread_id'] is empty) — but the Body base
+    template might already put something useful at that same path (e.g. {{seq}}, for an id the caller assigns
+    instead of letting the bot invent one). That shouldn't be wiped to '' just because it's turn one; only a path
+    with nothing there at all falls back to empty."""
+    project = core.create_project('Preset id')
+    env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                               'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                               'body': {'message': '', 'conversation_id': 'PRESET-{{seq}}', 'attributes': {'consent': True}},
+                               'assertions': [{'type': 'status', 'expected': 200}],
+                               'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                        'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+    core.set_active_project(project['id'])
+    await user.open(f'/chat?case={case["id"]}')
+    await user.should_see('Hilo:')
+    user.find(marker='chat-input').type('Hola')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¡Gracias por aceptar!', retries=30)
+    assert core.get('cases', case['id'])['chat_session']['thread_id'].startswith('PRESET-')   # not blanked, and not a bot-made uuid either
+
+
 async def test_chat_page_resumes_a_conversation_from_the_same_case(user, chat_app):
     """Closing the tab (or just reloading) doesn't lose the conversation: the transcript and thread id are saved on
     the case after every turn, and reopening it restores the chat exactly where it was left — not just the mapping,

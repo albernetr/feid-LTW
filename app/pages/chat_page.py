@@ -281,7 +281,16 @@ def build(preset_case_id=None):
         body = case['body'] if isinstance(case['body'], dict) else {}
         try:
             core.set_path(body, chat['message_path'], text)
-            core.set_path(body, chat['thread_request_path'], S['thread_id'] or '')
+            if S['thread_id']:
+                core.set_path(body, chat['thread_request_path'], S['thread_id'])
+            else:
+                # Primer turno de una conversación nueva: si el Body base ya trae algo en esa ruta (p. ej.
+                # {{seq:conversacion}} para que el propio chatbot reciba un id armado por nosotros), lo dejamos tal
+                # cual en vez de pisarlo con '' — solo se fuerza a vacío cuando esa ruta no existía en el body.
+                try:
+                    core.extract_path(body, chat['thread_request_path'])
+                except core.PathError:
+                    core.set_path(body, chat['thread_request_path'], '')
         except ValueError as exc:
             S['messages'] += [{'who': 'user', 'text': text}, {'who': 'error', 'text': f'No se pudo armar la petición: {exc}'}]
             chat_view.refresh()

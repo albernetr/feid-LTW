@@ -210,10 +210,28 @@ def suite_edit(id: str = ''):
                 retries = ui.number('Reintentos por caso', value=(current or {}).get('retries', 0), min=0, max=5, precision=0).props('outlined dense').classes('w-44')
                 delay = ui.number('Espera entre reintentos (s)', value=(current or {}).get('retry_delay_s', 0), min=0, max=300).props('outlined dense').classes('w-56')
 
+        all_tags = sorted({t for c in cases.values() for t in c.get('tags', [])})
+        selected_tag = {'value': None}
+
+        def filtered_cases(text):
+            text = (text or '').lower()
+            return [c for c in cases.values() if text in c['name'].lower() and (not selected_tag['value'] or selected_tag['value'] in c.get('tags', []))]
+
         with ui.row().classes('w-full gap-4 items-start no-wrap'):
             with ui.card().classes('w-1/3'):
                 ui.label('Casos disponibles').classes('font-semibold')
-                filter_input = ui.input('Filtrar').props('outlined dense clearable').classes('w-full').on_value_change(lambda e: available.refresh(e.value or ''))
+                filter_input = ui.input('Filtrar por nombre').props('outlined dense clearable').classes('w-full').on_value_change(lambda e: available.refresh(e.value or ''))
+                if all_tags:
+                    # Con cientos de casos (p. ej. un proyecto explorado automáticamente desde un contrato grande),
+                    # agregarlos uno por uno buscando por nombre es poco práctico — filtrar por etiqueta acota la
+                    # lista a un grupo manejable, y «Agregar los N visibles» los suma todos de una vez.
+                    with ui.row().classes('items-center gap-1 flex-wrap'):
+                        ui.label('Etiquetas:').classes('text-xs text-gray-500')
+                        for tag in all_tags:
+                            def pick_tag(_, t=tag):
+                                selected_tag['value'] = None if selected_tag['value'] == t else t
+                                available.refresh(filter_input.value or '')
+                            ui.chip(tag, selectable=True, on_click=pick_tag).props('dense size=sm outline color=primary')
 
                 # Altura acotada con scroll propio: sin esto, un proyecto con cientos de casos (p. ej. uno
                 # explorado automáticamente desde un contrato grande) estira toda la página varios miles de
@@ -221,9 +239,20 @@ def suite_edit(id: str = ''):
                 with ui.column().classes('w-full gap-1').style('max-height:60vh;overflow-y:auto'):
                     @ui.refreshable
                     def available(text=''):
-                        shown = [c for c in cases.values() if text.lower() in c['name'].lower()]
+                        shown = filtered_cases(text)
                         if not shown:
                             ui.label('Sin coincidencias').classes('text-gray-500')
+
+                        def add_all():
+                            for c in shown:
+                                alias = core.slugify_alias(c['name'], [s['alias'] for s in steps])
+                                steps.append({'case_id': c['id'], 'alias': alias, 'environment_id': None, 'enrich': []})
+                            chosen.refresh()
+                            available.refresh(filter_input.value or '')
+                            ui.notify(f'{len(shown)} caso(s) agregados', type='positive')
+                        if len(shown) > 1:
+                            ui.button(f'Agregar los {len(shown)} visibles', icon='playlist_add', on_click=guard(add_all)) \
+                                .props('outline dense size=sm color=primary no-caps').classes('mb-1')
                         for case in shown:
                             added = sum(1 for s in steps if s['case_id'] == case['id'])
                             with ui.row().classes('items-center w-full gap-2 no-wrap'):
