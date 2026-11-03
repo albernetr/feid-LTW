@@ -334,6 +334,7 @@ def execute_suite(suite, cancel=None, on_progress=None):
     retries = int(suite.get('retries', 0))
     delay = float(suite.get('retry_delay_s', 0))
     shared = dict(suite.get('variables') or {})
+    seq = suite.get('seq_start')   # own {{seq}} for this run, shadowing the app-wide one (None: use the global counter)
     summary = {'id': core.uid(), 'type': 'suite', 'suite_id': suite['id'], 'suite_name': suite.get('name', ''),
                'project_id': suite.get('project_id'), 'started_at': core.now(), 'case_runs': [],
                'policy': {'on_failure': on_failure, 'retries': retries}}
@@ -354,6 +355,9 @@ def execute_suite(suite, cancel=None, on_progress=None):
             if on_failure == 'stop':
                 halt = 'stopped'
             continue
+        if seq is not None:
+            shared['seq'] = str(seq)   # same value for every retry of this step; the next step gets seq + 1
+            seq += 1
         attempts = 0
         while True:
             attempts += 1

@@ -278,10 +278,15 @@ def suite_edit(id: str = ''):
         with ui.expansion('Variables compartidas iniciales', icon='data_object').classes('w-full border rounded'):
             ui.label('Disponibles como {{nombre}} en todos los casos. Los valores extraídos por un caso se suman para los siguientes.').classes('text-gray-500 text-sm')
             kv_editor(variables, 'Variable', 'Valor')
+            ui.separator().classes('my-1')
+            seq_start = ui.number('Consecutivo propio de esta suite (opcional)', value=(current or {}).get('seq_start'), precision=0) \
+                .props('outlined dense clearable').classes('w-72')
+            ui.label('Si lo completás, {{seq}} arranca en ese número y sube de a uno por paso en cada corrida de esta suite — '
+                      'en vez del consecutivo global de toda la app, que nunca se reinicia.').classes('text-xs text-gray-500')
 
         def save():
             options = dict(id=(current or {}).get('id'), on_failure=on_failure.value, retries=int(retries.value or 0), retry_delay_s=float(delay.value or 0),
-                           variables={k: v for k, v in variables.items() if k.strip()}, steps=steps, feature_id=feature.value)
+                           variables={k: v for k, v in variables.items() if k.strip()}, seq_start=seq_start.value, steps=steps, feature_id=feature.value)
             if current:
                 options['expected_updated_at'] = current.get('updated_at')       # refuse to overwrite someone else's changes
             saved = core.save_suite(name.value or '', env.value, [], pid, **options)

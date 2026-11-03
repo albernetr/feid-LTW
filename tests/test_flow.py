@@ -45,6 +45,22 @@ def test_output_of_one_module_enriches_the_request_to_another(modules):
     assert sent['enriched'][0].startswith('Asignar header Authorization')
 
 
+def test_suite_can_have_its_own_seq_separate_from_the_global_one(sample_app):
+    """A suite's `seq_start` shadows the app-wide {{seq}} for its own run: starts at that number and advances by
+    one per step, so two different flows (or two runs of the same one) don't fight over the same shared counter —
+    the global {{seq}} used everywhere else is left untouched."""
+    project = core.create_project('Consecutivo')
+    env = core.save('environments', {'name': 'env', 'project_id': project['id'], 'base_url': sample_app.url, 'auth': {'type': 'none'}, 'variables': {}})
+    case = core.save('cases', {'name': 'Crear', 'type': 'api', 'project_id': project['id'], 'method': 'POST', 'path': '/api/items',
+                               'headers': {'Authorization': 'Bearer tok-abc123'}, 'body': {'name': '{{seq}}'},
+                               'assertions': [{'type': 'status', 'expected': 201}]})
+    suite = core.save_suite('Con consecutivo propio', env['id'], [], project['id'], seq_start=10,
+                            steps=[{'case_id': case['id'], 'alias': 'uno', 'enrich': []}, {'case_id': case['id'], 'alias': 'dos', 'enrich': []}])
+    result = automation.execute_suite(suite)
+    assert result['status'] == 'passed', result
+    assert [item['name'] for item in sample_app.server.items[1:]] == ['10', '11']
+
+
 def test_a_failing_reference_stops_before_sending_anything(modules):
     broken = [{'action': 'set', 'target': 'body', 'path': '$.name', 'source': {'type': 'step', 'step': 'login', 'path': '$.no_existe'}}]
     result = automation.execute_suite(make_suite(modules, broken))

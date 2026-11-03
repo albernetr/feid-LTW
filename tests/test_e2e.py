@@ -49,6 +49,25 @@ def test_dynamic_variables_are_resolved_fresh_and_yield_to_user_ones(world):
     assert overridden['request']['body']['name'] == 'item-fijo'                    # a same-named variable wins
 
 
+def test_named_sequence_keeps_going_across_standalone_cases_and_a_suite(world):
+    """{{seq:nombre}} is its own counter, independent from the plain {{seq}} and from a suite's own `seq_start` —
+    persisted by name, so a case run on its own (outside any suite) and the same case run later as a suite step
+    share and advance the very same counter, picking up exactly where the other left off."""
+    case = world['api_case']('crear con consecutivo propio', 'POST', '/api/items', [{'type': 'status', 'expected': 201}],
+                             headers={'Authorization': 'Bearer tok-abc123'}, body={'name': 'conv-{{seq:conversacion}}'})
+    standalone = core.execute_api(case, world['env'])
+    assert standalone['request']['body']['name'] == 'conv-1'                       # first use anywhere: starts at 1
+    suite = core.save_suite('Retoma el consecutivo', world['env']['id'], [case['id']], world['pid'])
+    result = automation.execute_suite(suite)
+    assert result['status'] == 'passed', result
+    run = core.get('runs', result['case_runs'][0]['run_id'])
+    assert run['request']['body']['name'] == 'conv-2'                              # continues from the standalone run, not from 1
+    other = world['api_case']('otro consecutivo', 'POST', '/api/items', [{'type': 'status', 'expected': 201}],
+                              headers={'Authorization': 'Bearer tok-abc123'}, body={'name': 'ticket-{{seq:ticket}}'})
+    unrelated = core.execute_api(other, world['env'])
+    assert unrelated['request']['body']['name'] == 'ticket-1'                      # a different name starts its own count at 1
+
+
 def test_chained_suite_shares_variables_between_cases(world):
     login = world['api_case']('login', 'POST', '/api/login',
                               [{'type': 'status', 'expected': 200}], body={'user': 'qa', 'password': 'qa-pass'},

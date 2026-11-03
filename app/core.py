@@ -52,7 +52,7 @@ SECRET_SERVICE = 'local-test-workspace'
 SENSITIVE_HEADERS = ('authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization')
 SENSITIVE_NAME = re.compile(r'token|password|passwd|secret|key|authorization|cookie', re.I)
 TABLES = ('projects', 'module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules')
-ALL_TABLES = TABLES + ('settings', 'runs', 'taps', 'interfaces', 'lab_history', 'llm_profiles')
+ALL_TABLES = TABLES + ('settings', 'runs', 'taps', 'interfaces', 'lab_history', 'llm_profiles', 'sequences')
 UUID_RE = re.compile(r'^[0-9a-fA-F-]{8,64}$')
 
 
@@ -526,6 +526,14 @@ def save_suite(name, environment_id, case_ids, project_id=None, **options):
     variables = options.get('variables') or {}
     if not isinstance(variables, dict):
         raise ValueError('Las variables de suite deben ser un objeto')
+    seq_start = options.get('seq_start')
+    if seq_start not in (None, ''):
+        try:
+            seq_start = int(seq_start)
+        except (TypeError, ValueError):
+            raise ValueError('El consecutivo inicial debe ser un número entero')
+    else:
+        seq_start = None
     feature_id = options.get('feature_id') or None
     if feature_id:
         feature = get('features', feature_id)
@@ -534,7 +542,8 @@ def save_suite(name, environment_id, case_ids, project_id=None, **options):
         if project_id is not None and feature.get('project_id') != project_id:
             raise ValueError('La funcionalidad no pertenece al proyecto activo')
     item = {'name': name.strip(), 'environment_id': environment_id, 'case_ids': list(case_ids),
-            'on_failure': on_failure, 'retries': retries, 'retry_delay_s': delay, 'variables': variables, 'feature_id': feature_id}
+            'on_failure': on_failure, 'retries': retries, 'retry_delay_s': delay, 'variables': variables,
+            'seq_start': seq_start, 'feature_id': feature_id}
     if steps is not None:
         item['steps'] = _validated_steps(steps, environment, project_id)
     if options.get('id'):
@@ -1266,6 +1275,33 @@ def next_sequence():
     value = int(get_setting(SEQ_SETTING, 0)) + 1
     set_setting(SEQ_SETTING, value)
     return value
+
+
+def next_named_sequence(name):
+    """Un consecutivo propio, identificado por nombre ({{seq:nombre}}) y persistido en su propia fila (tabla
+    `sequences`) — a diferencia de {{seq}} (uno solo, compartido por toda la app) o el de una suite (se reinicia
+    en cada corrida), este sigue exactamente donde quedó la última vez que se usó ESE nombre, sea en un caso
+    suelto, en una suite, o en cualquier combinación de los dos."""
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('El consecutivo con nombre necesita un nombre: {{seq:nombre}}')
+    current = get('sequences', name)
+    value = (current['value'] if current else 0) + 1
+    save('sequences', {'id': name, 'value': value})
+    return value
+
+
+def peek_named_sequence(name):
+    """El valor actual de un consecutivo con nombre, sin avanzarlo — para mostrarlo en pantalla."""
+    current = get('sequences', (name or '').strip())
+    return current['value'] if current else 0
+
+
+def reset_named_sequence(name, value=0):
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('Falta el nombre del consecutivo')
+    save('sequences', {'id': name, 'value': int(value)})
 
 
 def dynamic_variables():
@@ -2273,6 +2309,11 @@ def execute_api(case, environment, variables=None, persist=True, context=None, e
     run = {'id': uid(), 'case_id': case.get('id'), 'case_name': case.get('name', ''), 'type': 'api', 'started_at': now(),
            'environment_id': environment['id'], 'project_id': case.get('project_id'), 'case_snapshot': case, **(meta or {})}
     try:
+        seq_sources = [environment.get('base_url', ''), case.get('path', ''), case.get('headers', {}), case.get('body'), case.get('query', {})]
+        seq_sources += [op.get('source', {}).get('value') for op in (enrich or []) if op.get('source', {}).get('type') in ('literal', 'template')]
+        for name in find_unresolved(*seq_sources):
+            if name.startswith('seq:'):
+                variables.setdefault(name, str(next_named_sequence(name[4:].strip())))   # resolved once per request, like {{seq}}
         base = substitute(environment.get('base_url', ''), variables, secrets_used).rstrip('/')
         path = substitute(case.get('path', ''), variables, secrets_used)
         headers = substitute(case.get('headers', {}), variables, secrets_used)
