@@ -103,6 +103,39 @@ async def test_chat_page_saves_one_turn_at_a_time(user, chat_app):
     assert result['status'] == 'passed', result
 
 
+async def test_chat_page_saves_a_reusable_template_for_new_conversations(user, chat_app):
+    """«Guardar configuración» turns the current endpoint setup (URL/headers/body/mapeo) into a named template.
+    Picking it later from «Plantilla» loads that same setup but always starts a blank conversation — so starting a
+    new conversation against a bot you already configured doesn't mean retyping everything again."""
+    project = core.create_project('Templates')
+    env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    case = core.save('cases', {'name': 'Bot de seguros', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                               'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                               'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}},
+                               'assertions': [{'type': 'status', 'expected': 200}],
+                               'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                        'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+    core.set_active_project(project['id'])
+    await user.open(f'/chat?case={case["id"]}')
+    await user.should_see('Hilo:')
+    user.find(marker='chat-input').type('Hola')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¡Gracias por aceptar!', retries=30)
+    user.find(marker='chat-activate').click()
+    await user.should_see('la vas a encontrar en «Plantilla»')
+    assert core.get('cases', case['id'])['chat_template'] is True
+
+    await user.open('/chat')                                              # a brand new session: nothing pre-loaded
+    await user.should_see('Completa el mapeo en')
+    user.find(marker='chat-template-picker').click()
+    user.find(target='Bot de seguros', marker='chat-template-picker').click()
+    await user.should_see('Escribe el primer mensaje abajo.')              # config loaded, conversation starts blank
+    user.find(marker='chat-input').type('Hola de nuevo')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¡Gracias por aceptar!', retries=30)             # same endpoint config works right away
+    assert core.get('cases', case['id'])['chat_session']['messages'][0]['text'] == 'Hola de nuevo'
+
+
 async def test_chat_page_without_a_case_asks_for_the_mapping_first(user, chat_app):
     """A fresh chat (no saved case) needs the four paths confirmed before it will send anything — typing and
     pressing Enter beforehand is a no-op, not a request against an unconfigured mapping."""

@@ -55,8 +55,24 @@ def kv_rows(get_rows, key_label='Nombre', value_label='Valor', on_change=None, s
     return view
 
 
-def assertion_rows(get_rules, get_results=lambda: [], on_change=None):
-    """Visual editor of assertions; shows pass/fail of the last response next to each rule."""
+def json_box(value, on_set):
+    """Editable JSON with the same fold/unfold affordances as a JSON formatter, instead of one giant textarea
+    that only ever grows taller. on_set(value) runs with the parsed value whenever it changes validly."""
+    def changed(e):
+        content = e.content or {}
+        if 'json' in content:
+            on_set(content['json'])
+            return
+        try:
+            on_set(json.loads(content.get('text') or 'null'))
+        except ValueError:
+            pass   # mid-edit invalid text (e.g. a trailing comma): keep the last valid value, don't discard it
+    return ui.json_editor({'content': {'json': value}}, on_change=changed).classes('w-full').style('height:280px')
+
+
+def assertion_rows(get_rules, get_results=lambda: [], on_change=None, get_paths=lambda: []):
+    """Visual editor of assertions; shows pass/fail of the last response next to each rule.
+    get_paths: () -> [(path, preview), ...] from the last response, so a JSONPath can be picked instead of typed."""
     @ui.refreshable
     def view():
         rules = get_rules()
@@ -78,8 +94,14 @@ def assertion_rows(get_rules, get_results=lambda: [], on_change=None):
                 fields = core.ASSERTION_TYPES.get(rule['type'], {}).get('fields', [])
                 with ui.row().classes('w-full gap-1 no-wrap'):
                     if 'path' in fields:
-                        ui.input('JSONPath', value=rule.get('path', ''), placeholder='$.data.id').props('outlined dense').classes('grow') \
-                            .on_value_change(lambda e, r=rule: r.__setitem__('path', e.value))
+                        path_options = {path: f'{path}   ·   {preview}' for path, preview in get_paths()}
+                        current = rule.get('path', '')
+                        if current and current not in path_options:
+                            path_options = {current: current, **path_options}
+                        ui.select(path_options, value=current or None, label='JSONPath', with_input=True, new_value_mode='add-unique') \
+                            .props('outlined dense options-dense fill-input hide-selected input-debounce=0').classes('grow') \
+                            .on_value_change(lambda e, r=rule: r.__setitem__('path', e.value or '')) \
+                            .tooltip('Elegí un campo de la última respuesta o escribí la ruta vos mismo')
                     if 'name' in fields:
                         ui.input('Header', value=rule.get('name', '')).props('outlined dense').classes('grow').on_value_change(lambda e, r=rule: r.__setitem__('name', e.value))
                     if 'expected' in fields and rule['type'] == 'json_type':
@@ -90,21 +112,16 @@ def assertion_rows(get_rules, get_results=lambda: [], on_change=None):
                             r['expected'] = e.value if r['type'] in STRING_ONLY else parse_value(e.value)
                         ui.input('Esperado', value=show_value(rule['expected']) if 'expected' in rule else '').props('outlined dense').classes('w-32').on_value_change(set_expected)
                 if rule['type'] == 'json_matches':
-                    def set_matches(e, r=rule):
-                        try:
-                            r['expected'] = json.loads(e.value)
-                        except ValueError:
-                            r['expected'] = None
-                    ui.textarea('JSON esperado', value=json.dumps(rule.get('expected', {}), indent=2, ensure_ascii=False), on_change=set_matches).props('outlined dense autogrow input-class=font-mono').classes('w-full')
+                    ui.label('JSON esperado').classes('text-xs text-gray-500')
+                    json_box(rule.get('expected', {}), lambda v, r=rule: r.__setitem__('expected', v))
                     ui.input('Ignorar (JSONPath, coma)', value=', '.join(rule.get('ignore', []))).props('outlined dense').classes('w-full') \
                         .on_value_change(lambda e, r=rule: r.__setitem__('ignore', [p.strip() for p in (e.value or '').split(',') if p.strip()]))
                 if 'schema' in fields:
-                    def set_schema(e, r=rule):
-                        try:
-                            r['schema'] = json.loads(e.value)
-                        except ValueError:
-                            r['schema'] = None
-                    ui.textarea('JSON Schema', value=json.dumps(rule.get('schema', {}), indent=2), on_change=set_schema).props('outlined dense autogrow input-class=font-mono').classes('w-full')
+                    ui.label('JSON Schema').classes('text-xs text-gray-500')
+                    json_box(rule.get('schema', {}), lambda v, r=rule: r.__setitem__('schema', v))
+                    ui.input('Ignorar (JSONPath, coma)', value=', '.join(rule.get('ignore', []))).props('outlined dense').classes('w-full') \
+                        .on_value_change(lambda e, r=rule: r.__setitem__('ignore', [p.strip() for p in (e.value or '').split(',') if p.strip()])) \
+                        .tooltip('Lo deja fuera del schema (ni requerido ni validado) — útil para campos volátiles como fechas')
                 if index < len(results) and not results[index]['passed']:
                     ui.label('→ obtenido: ' + show_value(results[index]['actual'])[:200]).classes('text-xs text-red-700 whitespace-pre-wrap')
         ui.button('Agregar prueba', icon='add', on_click=lambda: (rules.append({'type': 'status', 'expected': 200}), view.refresh(), on_change and on_change())).props('flat dense color=primary size=sm')

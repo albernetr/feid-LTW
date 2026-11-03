@@ -141,6 +141,15 @@ def build(preset_case_id=None, prefill=None):
         ui.clipboard.write(agent.curl_command(case['method'], env['base_url'].rstrip('/') + case['path'], case['headers'], case['body'], case['query']))
         ui.notify('Comando curl copiado', type='positive')
 
+    def response_paths():
+        result = S.get('result')
+        if not result or result.get('status') == 'error':
+            return []
+        try:
+            return core.json_paths(json.loads(result['body']))
+        except (KeyError, TypeError, ValueError):
+            return []
+
     def autogenerate(mode, ignore_text):
         result = S['result']
         if not result or result.get('status') == 'error':
@@ -512,7 +521,7 @@ def build(preset_case_id=None, prefill=None):
                 with ui.tab_panel('Pruebas').classes('p-3 gap-2'):
                     ui.label('Pruebas (aserciones)').classes('font-medium')
                     ui.label('El resultado de la última respuesta aparece junto a cada regla.').classes('text-xs text-gray-500')
-                    W['tests_view'] = assertion_rows(lambda: d['assertions'], results_list)
+                    W['tests_view'] = assertion_rows(lambda: d['assertions'], results_list, get_paths=response_paths)
                     ui.separator()
                     ui.label('Generar desde la respuesta actual').classes('font-medium text-sm')
                     gen_mode = ui.select({'exact': MODES['exact'], 'structure': MODES['structure'], 'status': MODES['status']}, value='exact').props('outlined dense options-dense').classes('w-full')

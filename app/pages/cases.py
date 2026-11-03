@@ -1,10 +1,9 @@
 import json
 from nicegui import ui, run
 from .. import core
-from .common import (frame, guard, confirm, empty_state, require_project, kv_editor, parse_value, show_value,
-                     show_run, status_badge)
+from .common import frame, guard, confirm, empty_state, require_project, kv_editor, show_run, status_badge
+from .widgets import assertion_rows
 
-STRING_ONLY = ('contains', 'not_contains', 'regex', 'json_regex', 'header_equals', 'header_contains', 'body_equals')
 HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 
 
@@ -115,6 +114,24 @@ def case_edit(id: str = '', module: str = '', op: int = -1):
         extracts = [dict(r) for r in base.get('extract', [])]
         headers = {k: str(v) for k, v in (base.get('headers') or {}).items()}
         query = {k: str(v) for k, v in (base.get('query') or {}).items()}
+        last_response = {'body': None}   # lo que devolvió la última ejecución de este caso en esta sesión
+
+        def response_paths():
+            """(ruta, vista previa) para el picker de JSONPath: de la última ejecución si ya corriste el caso,
+            si no de un ejemplo armado con el contrato OpenAPI de la operación elegida (si hay uno)."""
+            if last_response['body'] is not None:
+                try:
+                    return core.json_paths(json.loads(last_response['body']))
+                except (TypeError, ValueError):
+                    pass
+            selected = core.get('modules', module_select.value) if module_select.value else None
+            if selected and operation_select.value not in (None, ''):
+                operation = selected['operations'][int(operation_select.value)]
+                codes = [c for c in operation.get('responses', {}) if str(c).startswith('2')]
+                schema = core.operation_response_schema(operation, codes[0]) if codes else None
+                if schema:
+                    return core.json_paths(core.sample_value_for_schema(schema))
+            return []
 
         with ui.card().classes('w-full'):
             name = ui.input('Nombre del caso', value=base['name']).props('outlined dense').classes('w-full')
@@ -156,51 +173,8 @@ def case_edit(id: str = '', module: str = '', op: int = -1):
                                    value=json.dumps(base['body'], indent=2, ensure_ascii=False) if base.get('body') is not None else '').props('outlined autogrow').classes('w-full font-mono')
             with ui.tab_panel(tab_assert):
                 ui.label('Cada aserción se evalúa contra la respuesta. El caso pasa si todas pasan.').classes('text-gray-500 text-sm')
-
-                @ui.refreshable
-                def assertion_rows():
-                    for rule in rules:
-                        with ui.row().classes('w-full items-start gap-2 no-wrap'):
-                            def change_type(event, r=rule):
-                                r.clear(); r['type'] = event.value
-                                assertion_rows.refresh()
-                            ui.select({k: v['label'] for k, v in core.ASSERTION_TYPES.items()}, value=rule['type'], on_change=change_type).props('outlined dense options-dense').classes('w-72')
-                            fields = core.ASSERTION_TYPES.get(rule['type'], {}).get('fields', [])
-                            if 'path' in fields:
-                                ui.input('JSONPath', value=rule.get('path', ''), placeholder='$.data.id').props('outlined dense').classes('w-56') \
-                                    .on_value_change(lambda e, r=rule: r.__setitem__('path', e.value))
-                            if 'name' in fields:
-                                ui.input('Header', value=rule.get('name', '')).props('outlined dense').classes('w-48') \
-                                    .on_value_change(lambda e, r=rule: r.__setitem__('name', e.value))
-                            if 'expected' in fields and rule['type'] == 'json_type':
-                                ui.select(list(core.JSON_TYPES), value=rule.get('expected'), label='Tipo').props('outlined dense').classes('w-40') \
-                                    .on_value_change(lambda e, r=rule: r.__setitem__('expected', e.value))
-                            elif rule['type'] == 'json_matches':
-                                def set_matches(e, r=rule):
-                                    try:
-                                        r['expected'] = json.loads(e.value)
-                                    except ValueError:
-                                        r['expected'] = None
-                                ui.textarea('JSON esperado', value=json.dumps(rule.get('expected', {}), indent=2, ensure_ascii=False), on_change=set_matches)                                     .props('outlined dense autogrow').classes('grow font-mono')
-                                ui.input('Ignorar (JSONPath, coma)', value=', '.join(rule.get('ignore', [])), placeholder='$.requested_at')                                     .props('outlined dense').classes('w-64')                                     .on_value_change(lambda e, r=rule: r.__setitem__('ignore', [p.strip() for p in (e.value or '').split(',') if p.strip()]))
-                            elif 'expected' in fields:
-                                def set_expected(e, r=rule):
-                                    r['expected'] = e.value if r['type'] in STRING_ONLY else parse_value(e.value)
-                                ui.input('Valor esperado', value=show_value(rule['expected']) if 'expected' in rule else '').props('outlined dense').classes('w-56') \
-                                    .on_value_change(set_expected)
-                            if 'schema' in fields:
-                                def set_schema(e, r=rule):
-                                    try:
-                                        r['schema'] = json.loads(e.value)
-                                    except ValueError:
-                                        r['schema'] = None
-                                ui.textarea('JSON Schema', value=json.dumps(rule.get('schema', {}), indent=2), on_change=set_schema).props('outlined dense autogrow').classes('grow font-mono')
-                            ui.space()
-                            ui.button(icon='delete', on_click=lambda _, r=rule: (rules.remove(r), assertion_rows.refresh())).props('flat round dense color=negative').tooltip('Quitar aserción')
-                assertion_rows()
+                tests_view = assertion_rows(lambda: rules, get_paths=response_paths)
                 with ui.row().classes('gap-2'):
-                    ui.button('Agregar aserción', icon='add', on_click=lambda: (rules.append({'type': 'status', 'expected': 200}), assertion_rows.refresh())).props('outline color=primary')
-
                     def add_contract():
                         selected = core.get('modules', module_select.value) if module_select.value else None
                         if not selected or operation_select.value in (None, ''):
@@ -211,7 +185,7 @@ def case_edit(id: str = '', module: str = '', op: int = -1):
                         if not schema:
                             raise ValueError('El contrato no declara un schema de respuesta 2xx para esta operación')
                         rules.append({'type': 'json_schema', 'schema': schema})
-                        assertion_rows.refresh()
+                        tests_view.refresh()
                         ui.notify('Aserción de contrato agregada', type='positive')
                     ui.button('Agregar validación del contrato', icon='verified', on_click=guard(add_contract)).props('outline').tooltip('Valida la respuesta contra el JSON Schema del OpenAPI')
             with ui.tab_panel(tab_chain):
@@ -271,7 +245,9 @@ def case_edit(id: str = '', module: str = '', op: int = -1):
 
             async def save_and_run():
                 saved = save()
-                await run_case(saved, env_select.value)
+                result = await run_case(saved, env_select.value)
+                last_response['body'] = (result.get('response') or {}).get('body')
+                tests_view.refresh()
                 if not current:
                     ui.navigate.to(f'/cases/edit?id={saved["id"]}')
             ui.button('Guardar', icon='save', on_click=guard(lambda: (save(), ui.navigate.to('/cases')))).props('color=primary')

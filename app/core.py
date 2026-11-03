@@ -1433,7 +1433,7 @@ def validate_assertion_rule(rule):
         return 'json_schema requiere un schema (objeto)'
     if kind == 'json_type' and rule.get('expected') not in JSON_TYPES:
         return 'Tipo JSON inválido'
-    if kind == 'json_matches' and (not isinstance(rule.get('ignore', []), list) or not all(isinstance(x, str) for x in rule.get('ignore', []))):
+    if kind in ('json_matches', 'json_schema') and (not isinstance(rule.get('ignore', []), list) or not all(isinstance(x, str) for x in rule.get('ignore', []))):
         return '«ignore» debe ser una lista de rutas JSONPath'
     if kind in ('regex', 'json_regex'):
         try:
@@ -1527,8 +1527,12 @@ def _evaluate(response, rule, kind, duration_ms):
         schema = rule.get('schema')
         if not isinstance(schema, dict):
             raise TypeError('schema debe ser un objeto')
+        schema, body = copy.deepcopy(schema), response.json()
+        for path in rule.get('ignore', []):
+            remove_path(body, path)
+            _prune_schema_path(schema, _tokens(path))
         jsonschema.Draft202012Validator.check_schema(schema)
-        errors = sorted(jsonschema.Draft202012Validator(schema).iter_errors(response.json()), key=lambda e: list(map(str, e.path)))
+        errors = sorted(jsonschema.Draft202012Validator(schema).iter_errors(body), key=lambda e: list(map(str, e.path)))
         if errors:
             return [f'{"/".join(map(str, e.path)) or "(raíz)"}: {e.message}' for e in errors[:5]], False
         return 'válido', True
@@ -1568,6 +1572,27 @@ def _tokens(path):
         else:
             tokens.append(('k', single if single is not None else double if double is not None else name))
     return tokens
+
+
+def _prune_schema_path(schema, tokens):
+    """Descends a JSON Schema through `properties`/`items` following a JSONPath's tokens, and drops the leaf
+    property from both `properties` and `required` — the schema counterpart of removing that same path from the
+    response body, so an ignored field is optional and unchecked instead of having to be absent."""
+    if not tokens or not isinstance(schema, dict):
+        return
+    kind, value = tokens[0]
+    if kind in ('i', '*'):
+        _prune_schema_path(schema.get('items') or {}, tokens[1:])
+        return
+    props = schema.get('properties')
+    if not isinstance(props, dict) or value not in props:
+        return
+    if len(tokens) == 1:
+        props.pop(value, None)
+        if isinstance(schema.get('required'), list):
+            schema['required'] = [r for r in schema['required'] if r != value]
+    else:
+        _prune_schema_path(props[value], tokens[1:])
 
 
 def remove_path(data, path):
@@ -1632,19 +1657,21 @@ def json_diff(expected, actual, path='$', limit=10):
 
 _VOLATILE_KEY = re.compile(r'created|updated|modified|timestamp|expires|date|time|nonce|trace|request_?id|session|token|uuid|etag', re.I)
 _VOLATILE_VALUE = re.compile(r'^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
+MAX_SUGGESTED_PATHS = 500
+
+
+def _path_segment(key):
+    return f'.{key}' if re.fullmatch(r'[A-Za-z_][\w-]*', key) else f"['{key}']"
 
 
 def suggest_volatile_paths(data):
     """Paths whose values usually change between calls (dates, uuids, tokens, epoch times): candidates to ignore."""
     found = set()
 
-    def segment(key):
-        return f'.{key}' if re.fullmatch(r'[A-Za-z_][\w-]*', key) else f"['{key}']"
-
     def walk(node, path):
         if isinstance(node, dict):
             for key, value in node.items():
-                walk(value, path + segment(str(key)))
+                walk(value, path + _path_segment(str(key)))
         elif isinstance(node, list):
             if node:
                 walk(node[0], path + '[*]')
@@ -1658,6 +1685,39 @@ def suggest_volatile_paths(data):
                 found.add(path)
     walk(data, '$')
     return sorted(found)
+
+
+def json_paths(data, limit=MAX_SUGGESTED_PATHS):
+    """Every JSONPath reachable in a sample value, with a short preview of what's there — so a path can be picked
+    from what a response (or request) actually contains instead of typed from memory. Document order; `$` itself
+    is left out since assertions always target something inside it."""
+    found = []
+
+    def preview(value):
+        if isinstance(value, str):
+            text = json.dumps(value, ensure_ascii=False)
+            return text if len(text) <= 60 else text[:57] + '…"'
+        if isinstance(value, bool) or value is None:
+            return json.dumps(value)
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, list):
+            return f'[{len(value)} elemento{"s" if len(value) != 1 else ""}]'
+        return f'{{{len(value)} campo{"s" if len(value) != 1 else ""}}}'
+
+    def walk(node, path):
+        if len(found) >= limit:
+            return
+        if path != '$':
+            found.append((path, preview(node)))
+        if isinstance(node, dict):
+            for key, value in node.items():
+                walk(value, path + _path_segment(str(key)))
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f'{path}[{index}]')
+    walk(data, '$')
+    return found
 
 
 def infer_schema(value):

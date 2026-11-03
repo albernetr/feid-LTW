@@ -59,6 +59,17 @@ def test_json_schema_assertion():
     assert any('id' in line for line in bad['actual'])
 
 
+def test_json_schema_assertion_ignores_listed_fields():
+    """A required-but-volatile field (e.g. a timestamp) shouldn't force every run to redo the schema — `ignore`
+    drops it from both the schema's `required`/`properties` and the response before validating, the same way
+    json_matches already ignores fields for an exact-match comparison."""
+    schema = {'type': 'object', 'required': ['id', 'requested_at'], 'properties': {'id': {'type': 'integer'}, 'requested_at': {'type': 'string'}}}
+    rule = {'type': 'json_schema', 'schema': schema, 'ignore': ['$.requested_at']}
+    assert core.check_assertions(response({'id': 1}), [rule])[0]['passed']               # missing entirely: fine, it's ignored
+    assert core.check_assertions(response({'id': 1, 'requested_at': 123}), [rule])[0]['passed']   # wrong type: also fine, unchecked
+    assert schema['required'] == ['id', 'requested_at']                                  # the rule's own schema is untouched
+
+
 def test_invalid_json_body_fails_assertion_instead_of_crashing():
     resp = httpx.Response(200, text='not json')
     assert run(resp, {'type': 'json_equals', 'path': '$.a', 'expected': 1}, {'type': 'json_schema', 'schema': {}}) == [False, False]
