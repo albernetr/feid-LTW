@@ -2,6 +2,8 @@ import json
 from nicegui import ui, run
 from .. import core, automation
 from .common import frame, guard, confirm, empty_state, require_project, kv_editor, show_run, status_badge, parse_value, show_value
+from .widgets import assertion_rows, json_box
+from .cases import HTTP_METHODS
 
 
 async def run_suite(suite):
@@ -70,6 +72,13 @@ def suites_list():
                                  + (f' · {enriched} paso(s) enriquecido(s)' if enriched else '')).classes('text-sm text-gray-500')
                     ui.button(icon='play_arrow', on_click=guard(lambda s=suite: run_suite(s))).props('flat round color=positive').tooltip('Ejecutar')
                     ui.button(icon='edit', on_click=lambda _, i=suite['id']: ui.navigate.to(f'/suites/edit?id={i}')).props('flat round').tooltip('Editar')
+
+                    def duplicate(s=suite):
+                        copy_item = {k: v for k, v in s.items() if k not in ('id', 'updated_at')}
+                        copy_item['name'] = s['name'] + ' (copia)'
+                        core.save('suites', copy_item)
+                        ui.navigate.reload()
+                    ui.button(icon='content_copy', on_click=guard(duplicate)).props('flat round').tooltip('Duplicar')
 
                     def remove(s=suite):
                         used = [x for x in core.list_items('schedules') if x.get('suite_id') == s['id']]
@@ -195,6 +204,15 @@ def suite_edit(id: str = ''):
         steps = [dict(s, enrich=[dict(op, source=dict(op.get('source') or {})) for op in s.get('enrich') or []]) for s in core.suite_steps(current)] if current else []
         steps = [s for s in steps if s['case_id'] in cases]
         variables = dict((current or {}).get('variables', {}))
+        view = {'mode': 'suite', 'case_id': None}   # 'suite' | 'case' — qué se muestra debajo de la tarjeta de datos de la suite
+
+        def edit_case(cid):
+            view.update(mode='case', case_id=cid)
+            content.refresh()
+
+        def back_to_suite():
+            view.update(mode='suite', case_id=None)
+            content.refresh()
 
         features = core.list_project_items('features', pid)
         with ui.card().classes('w-full'):
@@ -217,124 +235,189 @@ def suite_edit(id: str = ''):
             text = (text or '').lower()
             return [c for c in cases.values() if text in c['name'].lower() and (not selected_tag['value'] or selected_tag['value'] in c.get('tags', []))]
 
-        with ui.row().classes('w-full gap-4 items-start no-wrap'):
-            with ui.card().classes('w-1/3'):
-                ui.label('Casos disponibles').classes('font-semibold')
-                filter_input = ui.input('Filtrar por nombre').props('outlined dense clearable').classes('w-full').on_value_change(lambda e: available.refresh(e.value or ''))
-                if all_tags:
-                    # Con cientos de casos (p. ej. un proyecto explorado automáticamente desde un contrato grande),
-                    # agregarlos uno por uno buscando por nombre es poco práctico — filtrar por etiqueta acota la
-                    # lista a un grupo manejable, y «Agregar los N visibles» los suma todos de una vez.
-                    with ui.row().classes('items-center gap-1 flex-wrap'):
-                        ui.label('Etiquetas:').classes('text-xs text-gray-500')
-                        for tag in all_tags:
-                            def pick_tag(_, t=tag):
-                                selected_tag['value'] = None if selected_tag['value'] == t else t
-                                available.refresh(filter_input.value or '')
-                            ui.chip(tag, selectable=True, on_click=pick_tag).props('dense size=sm outline color=primary')
+        def case_detail(case_id):
+            """Edición rápida de un caso (headers, query, body, aserciones) en la misma área de trabajo, con un
+            botón para volver a la suite — en vez de una modal, o de navegar a Casos API y perder el borrador de
+            la suite en curso. No toca el componente/contrato ni el encadenamiento (extracción) del caso; para
+            eso sigue estando el editor completo."""
+            case = core.get('cases', case_id)
+            ui.button('← Volver a la suite', on_click=back_to_suite).props('flat dense no-caps').classes('mb-1')
+            if case is None:
+                ui.label('El caso ya no existe.').classes('text-amber-700')
+                return
+            with ui.card().classes('w-full gap-2'):
+                ui.label(f'Editando «{case["name"]}»').classes('text-lg font-semibold')
+                ui.label('Cambios rápidos, sin salir de la suite. El componente/contrato y el encadenamiento del caso se editan en Casos API.').classes('text-xs text-gray-500')
+                headers = {k: str(v) for k, v in (case.get('headers') or {}).items()}
+                query = {k: str(v) for k, v in (case.get('query') or {}).items()}
+                rules = [dict(r) for r in case.get('assertions', [])]
+                body_state = {'value': case.get('body')}
+                cname = ui.input('Nombre', value=case['name']).props('outlined dense').classes('w-full')
+                with ui.row().classes('w-full gap-3'):
+                    method = ui.select(HTTP_METHODS, value=case.get('method', 'GET'), label='Método').props('outlined dense').classes('w-32')
+                    path = ui.input('Ruta', value=case.get('path', '/')).props('outlined dense').classes('grow')
+                with ui.tabs().classes('w-full') as tabs:
+                    tab_req = ui.tab('Petición')
+                    tab_assert = ui.tab('Aserciones')
+                with ui.tab_panels(tabs, value=tab_req).classes('w-full'):
+                    with ui.tab_panel(tab_req):
+                        ui.label('Headers').classes('font-medium text-sm')
+                        kv_editor(headers, 'Header', 'Valor')
+                        ui.label('Query params').classes('font-medium text-sm')
+                        kv_editor(query, 'Parámetro', 'Valor')
+                        ui.label('Body (JSON)').classes('font-medium text-sm')
+                        json_box(body_state['value'], lambda v: body_state.__setitem__('value', v))
+                    with ui.tab_panel(tab_assert):
+                        assertion_rows(lambda: rules)
+                with ui.row().classes('gap-3'):
+                    def save_case():
+                        if not (cname.value or '').strip():
+                            raise ValueError('El nombre es obligatorio')
+                        for index, rule in enumerate(rules, 1):
+                            problem = core.validate_assertion_rule(rule)
+                            if problem:
+                                raise ValueError(f'Aserción {index}: {problem}')
+                        updated = core.save('cases', {**case, 'name': cname.value.strip(), 'method': method.value, 'path': (path.value or '/').strip(),
+                                            'headers': {k: v for k, v in headers.items() if k.strip()}, 'query': {k: v for k, v in query.items() if k.strip()},
+                                            'body': body_state['value'], 'assertions': rules})
+                        cases[case_id] = updated   # para que la suite lo muestre actualizado al volver, sin recargar la página
+                        ui.notify('Caso actualizado', type='positive')
+                    ui.button('Guardar', icon='save', on_click=guard(save_case)).props('color=primary')
+                    ui.button('Volver a la suite', icon='arrow_back', on_click=back_to_suite).props('flat')
 
-                # Altura acotada con scroll propio: sin esto, un proyecto con cientos de casos (p. ej. uno
-                # explorado automáticamente desde un contrato grande) estira toda la página varios miles de
-                # píxeles y los botones Guardar quedan enterrados al final de la lista completa.
-                with ui.column().classes('w-full gap-1').style('max-height:60vh;overflow-y:auto'):
-                    @ui.refreshable
-                    def available(text=''):
-                        shown = filtered_cases(text)
-                        if not shown:
-                            ui.label('Sin coincidencias').classes('text-gray-500')
+        def suite_body():
+            with ui.row().classes('w-full gap-4 items-start no-wrap'):
+                with ui.card().classes('w-1/3'):
+                    ui.label('Casos disponibles').classes('font-semibold')
+                    filter_input = ui.input('Filtrar por nombre').props('outlined dense clearable').classes('w-full').on_value_change(lambda e: available.refresh(e.value or ''))
+                    if all_tags:
+                        # Con cientos de casos (p. ej. un proyecto explorado automáticamente desde un contrato grande),
+                        # agregarlos uno por uno buscando por nombre es poco práctico — filtrar por etiqueta acota la
+                        # lista a un grupo manejable, y «Agregar los N visibles» los suma todos de una vez.
+                        with ui.row().classes('items-center gap-1 flex-wrap'):
+                            ui.label('Etiquetas:').classes('text-xs text-gray-500')
+                            for tag in all_tags:
+                                def pick_tag(_, t=tag):
+                                    selected_tag['value'] = None if selected_tag['value'] == t else t
+                                    available.refresh(filter_input.value or '')
+                                ui.chip(tag, selectable=True, on_click=pick_tag).props('dense size=sm outline color=primary')
 
-                        def add_all():
-                            for c in shown:
-                                alias = core.slugify_alias(c['name'], [s['alias'] for s in steps])
-                                steps.append({'case_id': c['id'], 'alias': alias, 'environment_id': None, 'enrich': []})
-                            chosen.refresh()
-                            available.refresh(filter_input.value or '')
-                            ui.notify(f'{len(shown)} caso(s) agregados', type='positive')
-                        if len(shown) > 1:
-                            ui.button(f'Agregar los {len(shown)} visibles', icon='playlist_add', on_click=guard(add_all)) \
-                                .props('outline dense size=sm color=primary no-caps').classes('mb-1')
-                        for case in shown:
-                            added = sum(1 for s in steps if s['case_id'] == case['id'])
-                            with ui.row().classes('items-center w-full gap-2 no-wrap'):
-                                ui.badge('UI' if case.get('type') == 'ui' else case.get('method', 'API'), color='secondary' if case.get('type') == 'ui' else 'primary').classes('w-14 justify-center shrink-0')
-                                # 'min-width:0' es necesario: sin él, un label dentro de una fila 'no-wrap' no se
-                                # achica más allá de su contenido y empuja al ícono/botón fuera del área visible
-                                # — invisible del todo una vez que el contenedor con scroll empieza a recortar
-                                # también el eje horizontal (efecto colateral de 'overflow-y:auto').
-                                ui.label(case['name']).classes('grow').style('min-width:0')
-                                if added:
-                                    # Sigue en la lista (no desaparece): un flujo puede necesitar el mismo caso más de una
-                                    # vez (p. ej. el mismo endpoint llamado dos veces con un consecutivo propio de la
-                                    # suite) — solo se marca cuántas veces ya está agregado, para no perder el rastro.
-                                    ui.badge(f'Agregado ×{added}' if added > 1 else 'Agregado', color='positive').classes('shrink-0 text-xs')
-                                if case['name'].startswith('[auto-explorado]'):
-                                    ui.icon('warning', color='amber', size='xs').classes('shrink-0') \
-                                        .tooltip('Guarda un ID real capturado al momento de explorar. Si ese dato se borra o cambia en el '
-                                                 'servicio, el caso empieza a fallar — no es un bug de la suite, es el caso el que quedó obsoleto.')
+                    # Altura acotada con scroll propio: sin esto, un proyecto con cientos de casos (p. ej. uno
+                    # explorado automáticamente desde un contrato grande) estira toda la página varios miles de
+                    # píxeles y los botones Guardar quedan enterrados al final de la lista completa.
+                    with ui.column().classes('w-full gap-1').style('max-height:60vh;overflow-y:auto'):
+                        @ui.refreshable
+                        def available(text=''):
+                            shown = filtered_cases(text)
+                            if not shown:
+                                ui.label('Sin coincidencias').classes('text-gray-500')
 
-                                def add(c=case):
+                            def add_all():
+                                for c in shown:
                                     alias = core.slugify_alias(c['name'], [s['alias'] for s in steps])
                                     steps.append({'case_id': c['id'], 'alias': alias, 'environment_id': None, 'enrich': []})
-                                    chosen.refresh()
-                                    available.refresh(filter_input.value or '')
-                                ui.button(icon='add', on_click=lambda _, f=add: f()).props('flat round dense color=primary').classes('shrink-0') \
-                                    .tooltip('Agregar otra vez' if added else 'Agregar al final')
-                    available()
-            with ui.card().classes('w-2/3'):
-                ui.label('Orden de ejecución (cada paso puede apuntar a otro ambiente/componente)').classes('font-semibold')
+                                chosen.refresh()
+                                available.refresh(filter_input.value or '')
+                                ui.notify(f'{len(shown)} caso(s) agregados', type='positive')
+                            if len(shown) > 1:
+                                ui.button(f'Agregar los {len(shown)} visibles', icon='playlist_add', on_click=guard(add_all)) \
+                                    .props('outline dense size=sm color=primary no-caps').classes('mb-1')
+                            for case in shown:
+                                added = sum(1 for s in steps if s['case_id'] == case['id'])
+                                with ui.row().classes('items-center w-full gap-2 no-wrap'):
+                                    ui.badge('UI' if case.get('type') == 'ui' else case.get('method', 'API'), color='secondary' if case.get('type') == 'ui' else 'primary').classes('w-14 justify-center shrink-0')
+                                    # 'min-width:0' es necesario: sin él, un label dentro de una fila 'no-wrap' no se
+                                    # achica más allá de su contenido y empuja al ícono/botón fuera del área visible
+                                    # — invisible del todo una vez que el contenedor con scroll empieza a recortar
+                                    # también el eje horizontal (efecto colateral de 'overflow-y:auto').
+                                    ui.label(case['name']).classes('grow').style('min-width:0')
+                                    if added:
+                                        # Sigue en la lista (no desaparece): un flujo puede necesitar el mismo caso más de una
+                                        # vez (p. ej. el mismo endpoint llamado dos veces con un consecutivo propio de la
+                                        # suite) — solo se marca cuántas veces ya está agregado, para no perder el rastro.
+                                        ui.badge(f'Agregado ×{added}' if added > 1 else 'Agregado', color='positive').classes('shrink-0 text-xs')
+                                    if case['name'].startswith('[auto-explorado]'):
+                                        ui.icon('warning', color='amber', size='xs').classes('shrink-0') \
+                                            .tooltip('Guarda un ID real capturado al momento de explorar. Si ese dato se borra o cambia en el '
+                                                     'servicio, el caso empieza a fallar — no es un bug de la suite, es el caso el que quedó obsoleto.')
 
-                @ui.refreshable
-                def chosen():
-                    if not steps:
-                        ui.label('Agrega casos desde la izquierda.').classes('text-gray-500')
-                    for index, step in enumerate(steps):
-                        with ui.row().classes('items-center w-full gap-2 no-wrap'):
-                            ui.label(f'{index + 1}.').classes('w-6 text-gray-500')
-                            with ui.column().classes('gap-0 grow'):
-                                ui.label(cases[step['case_id']]['name']).classes('font-medium')
-                                ui.input('Nombre del paso', value=step['alias']).props('outlined dense').classes('w-44') \
-                                    .on_value_change(lambda e, s=step: s.__setitem__('alias', (e.value or '').strip()))
-                            ui.select({'': 'Ambiente por defecto', **{e['id']: e['name'] for e in envs}}, value=step.get('environment_id') or '', label='Ambiente') \
-                                .props('outlined dense').classes('w-52').on_value_change(lambda e, s=step: s.__setitem__('environment_id', e.value or None))
-                            count = len(step.get('enrich') or [])
-                            if cases[step['case_id']].get('type') != 'ui':
-                                ui.button(f'Enriquecer ({count})' if count else 'Enriquecer', icon='auto_fix_high',
-                                          on_click=lambda _, i=index: enrichment_dialog(steps, i, chosen.refresh)).props('outline dense' + (' color=primary' if count else ''))
+                                    if case.get('type') != 'ui':
+                                        ui.button(icon='edit', on_click=lambda _, cid=case['id']: edit_case(cid)) \
+                                            .props('flat round dense').classes('shrink-0').tooltip('Editar caso')
 
-                            def move(delta, i=index):
-                                j = i + delta
-                                if 0 <= j < len(steps):
-                                    steps[i], steps[j] = steps[j], steps[i]
-                                    chosen.refresh()
-                            ui.button(icon='arrow_upward', on_click=lambda _, m=move: m(-1)).props('flat round dense')
-                            ui.button(icon='arrow_downward', on_click=lambda _, m=move: m(1)).props('flat round dense')
-                            ui.button(icon='close', on_click=lambda _, i=index: (steps.pop(i), chosen.refresh(), available.refresh(filter_input.value or ''))).props('flat round dense color=negative')
-                chosen()
-                ui.label('Un paso solo puede usar respuestas de pasos que estén ANTES que él; si reordenas, se vuelve a validar al guardar.').classes('text-xs text-gray-500')
+                                    def add(c=case):
+                                        alias = core.slugify_alias(c['name'], [s['alias'] for s in steps])
+                                        steps.append({'case_id': c['id'], 'alias': alias, 'environment_id': None, 'enrich': []})
+                                        chosen.refresh()
+                                        available.refresh(filter_input.value or '')
+                                    ui.button(icon='add', on_click=lambda _, f=add: f()).props('flat round dense color=primary').classes('shrink-0') \
+                                        .tooltip('Agregar otra vez' if added else 'Agregar al final')
+                        available()
+                with ui.card().classes('w-2/3'):
+                    ui.label('Orden de ejecución (cada paso puede apuntar a otro ambiente/componente)').classes('font-semibold')
 
-        with ui.expansion('Variables compartidas iniciales', icon='data_object').classes('w-full border rounded'):
-            ui.label('Disponibles como {{nombre}} en todos los casos. Los valores extraídos por un caso se suman para los siguientes.').classes('text-gray-500 text-sm')
-            kv_editor(variables, 'Variable', 'Valor')
-            ui.separator().classes('my-1')
-            seq_start = ui.number('Consecutivo propio de esta suite (opcional)', value=(current or {}).get('seq_start'), precision=0) \
-                .props('outlined dense clearable').classes('w-72')
-            ui.label('Si lo completás, {{seq}} arranca en ese número y sube de a uno por paso en cada corrida de esta suite — '
-                      'en vez del consecutivo global de toda la app, que nunca se reinicia.').classes('text-xs text-gray-500')
+                    @ui.refreshable
+                    def chosen():
+                        if not steps:
+                            ui.label('Agrega casos desde la izquierda.').classes('text-gray-500')
+                        for index, step in enumerate(steps):
+                            with ui.row().classes('items-center w-full gap-2 no-wrap'):
+                                ui.label(f'{index + 1}.').classes('w-6 text-gray-500')
+                                with ui.column().classes('gap-0 grow'):
+                                    ui.label(cases[step['case_id']]['name']).classes('font-medium')
+                                    ui.input('Nombre del paso', value=step['alias']).props('outlined dense').classes('w-44') \
+                                        .on_value_change(lambda e, s=step: s.__setitem__('alias', (e.value or '').strip()))
+                                ui.select({'': 'Ambiente por defecto', **{e['id']: e['name'] for e in envs}}, value=step.get('environment_id') or '', label='Ambiente') \
+                                    .props('outlined dense').classes('w-52').on_value_change(lambda e, s=step: s.__setitem__('environment_id', e.value or None))
+                                count = len(step.get('enrich') or [])
+                                if cases[step['case_id']].get('type') != 'ui':
+                                    ui.button(f'Enriquecer ({count})' if count else 'Enriquecer', icon='auto_fix_high',
+                                              on_click=lambda _, i=index: enrichment_dialog(steps, i, chosen.refresh)).props('outline dense' + (' color=primary' if count else ''))
+                                    ui.button(icon='edit', on_click=lambda _, cid=step['case_id']: edit_case(cid)) \
+                                        .props('flat round dense').tooltip('Editar caso')
 
-        def save():
-            options = dict(id=(current or {}).get('id'), on_failure=on_failure.value, retries=int(retries.value or 0), retry_delay_s=float(delay.value or 0),
-                           variables={k: v for k, v in variables.items() if k.strip()}, seq_start=seq_start.value, steps=steps, feature_id=feature.value)
-            if current:
-                options['expected_updated_at'] = current.get('updated_at')       # refuse to overwrite someone else's changes
-            saved = core.save_suite(name.value or '', env.value, [], pid, **options)
-            if current:
-                current['updated_at'] = saved['updated_at']
-            ui.notify('Suite guardada', type='positive')
-            return saved
-        with ui.row().classes('gap-3'):
-            ui.button('Guardar', icon='save', on_click=guard(lambda: (save(), ui.navigate.to('/suites')))).props('color=primary')
+                                def move(delta, i=index):
+                                    j = i + delta
+                                    if 0 <= j < len(steps):
+                                        steps[i], steps[j] = steps[j], steps[i]
+                                        chosen.refresh()
+                                ui.button(icon='arrow_upward', on_click=lambda _, m=move: m(-1)).props('flat round dense')
+                                ui.button(icon='arrow_downward', on_click=lambda _, m=move: m(1)).props('flat round dense')
+                                ui.button(icon='close', on_click=lambda _, i=index: (steps.pop(i), chosen.refresh(), available.refresh(filter_input.value or ''))).props('flat round dense color=negative')
+                    chosen()
+                    ui.label('Un paso solo puede usar respuestas de pasos que estén ANTES que él; si reordenas, se vuelve a validar al guardar.').classes('text-xs text-gray-500')
 
-            async def save_and_run():
-                await run_suite(save())
-            ui.button('Guardar y ejecutar', icon='play_arrow', on_click=guard(save_and_run)).props('outline color=positive')
-            ui.button('Volver', on_click=lambda: ui.navigate.to('/suites')).props('flat')
+            with ui.expansion('Variables compartidas iniciales', icon='data_object').classes('w-full border rounded'):
+                ui.label('Disponibles como {{nombre}} en todos los casos. Los valores extraídos por un caso se suman para los siguientes.').classes('text-gray-500 text-sm')
+                kv_editor(variables, 'Variable', 'Valor')
+                ui.separator().classes('my-1')
+                seq_start = ui.number('Consecutivo propio de esta suite (opcional)', value=(current or {}).get('seq_start'), precision=0) \
+                    .props('outlined dense clearable').classes('w-72')
+                ui.label('Si lo completás, {{seq}} arranca en ese número y sube de a uno por paso en cada corrida de esta suite — '
+                          'en vez del consecutivo global de toda la app, que nunca se reinicia.').classes('text-xs text-gray-500')
+
+            def save():
+                options = dict(id=(current or {}).get('id'), on_failure=on_failure.value, retries=int(retries.value or 0), retry_delay_s=float(delay.value or 0),
+                               variables={k: v for k, v in variables.items() if k.strip()}, seq_start=seq_start.value, steps=steps, feature_id=feature.value)
+                if current:
+                    options['expected_updated_at'] = current.get('updated_at')       # refuse to overwrite someone else's changes
+                saved = core.save_suite(name.value or '', env.value, [], pid, **options)
+                if current:
+                    current['updated_at'] = saved['updated_at']
+                ui.notify('Suite guardada', type='positive')
+                return saved
+            with ui.row().classes('gap-3'):
+                ui.button('Guardar', icon='save', on_click=guard(lambda: (save(), ui.navigate.to('/suites')))).props('color=primary')
+
+                async def save_and_run():
+                    await run_suite(save())
+                ui.button('Guardar y ejecutar', icon='play_arrow', on_click=guard(save_and_run)).props('outline color=positive')
+                ui.button('Volver', on_click=lambda: ui.navigate.to('/suites')).props('flat')
+
+        @ui.refreshable
+        def content():
+            if view['mode'] == 'case':
+                case_detail(view['case_id'])
+            else:
+                suite_body()
+        content()
