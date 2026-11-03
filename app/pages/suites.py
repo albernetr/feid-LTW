@@ -213,7 +213,7 @@ def suite_edit(id: str = ''):
         with ui.row().classes('w-full gap-4 items-start no-wrap'):
             with ui.card().classes('w-1/3'):
                 ui.label('Casos disponibles').classes('font-semibold')
-                ui.input('Filtrar').props('outlined dense clearable').classes('w-full').on_value_change(lambda e: available.refresh(e.value or ''))
+                filter_input = ui.input('Filtrar').props('outlined dense clearable').classes('w-full').on_value_change(lambda e: available.refresh(e.value or ''))
 
                 # Altura acotada con scroll propio: sin esto, un proyecto con cientos de casos (p. ej. uno
                 # explorado automáticamente desde un contrato grande) estira toda la página varios miles de
@@ -225,6 +225,7 @@ def suite_edit(id: str = ''):
                         if not shown:
                             ui.label('Sin coincidencias').classes('text-gray-500')
                         for case in shown:
+                            added = sum(1 for s in steps if s['case_id'] == case['id'])
                             with ui.row().classes('items-center w-full gap-2 no-wrap'):
                                 ui.badge('UI' if case.get('type') == 'ui' else case.get('method', 'API'), color='secondary' if case.get('type') == 'ui' else 'primary').classes('w-14 justify-center shrink-0')
                                 # 'min-width:0' es necesario: sin él, un label dentro de una fila 'no-wrap' no se
@@ -232,6 +233,11 @@ def suite_edit(id: str = ''):
                                 # — invisible del todo una vez que el contenedor con scroll empieza a recortar
                                 # también el eje horizontal (efecto colateral de 'overflow-y:auto').
                                 ui.label(case['name']).classes('grow').style('min-width:0')
+                                if added:
+                                    # Sigue en la lista (no desaparece): un flujo puede necesitar el mismo caso más de una
+                                    # vez (p. ej. el mismo endpoint llamado dos veces con un consecutivo propio de la
+                                    # suite) — solo se marca cuántas veces ya está agregado, para no perder el rastro.
+                                    ui.badge(f'Agregado ×{added}' if added > 1 else 'Agregado', color='positive').classes('shrink-0 text-xs')
                                 if case['name'].startswith('[auto-explorado]'):
                                     ui.icon('warning', color='amber', size='xs').classes('shrink-0') \
                                         .tooltip('Guarda un ID real capturado al momento de explorar. Si ese dato se borra o cambia en el '
@@ -241,7 +247,9 @@ def suite_edit(id: str = ''):
                                     alias = core.slugify_alias(c['name'], [s['alias'] for s in steps])
                                     steps.append({'case_id': c['id'], 'alias': alias, 'environment_id': None, 'enrich': []})
                                     chosen.refresh()
-                                ui.button(icon='add', on_click=lambda _, f=add: f()).props('flat round dense color=primary').classes('shrink-0').tooltip('Agregar al final')
+                                    available.refresh(filter_input.value or '')
+                                ui.button(icon='add', on_click=lambda _, f=add: f()).props('flat round dense color=primary').classes('shrink-0') \
+                                    .tooltip('Agregar otra vez' if added else 'Agregar al final')
                     available()
             with ui.card().classes('w-2/3'):
                 ui.label('Orden de ejecución (cada paso puede apuntar a otro ambiente/componente)').classes('font-semibold')
@@ -271,7 +279,7 @@ def suite_edit(id: str = ''):
                                     chosen.refresh()
                             ui.button(icon='arrow_upward', on_click=lambda _, m=move: m(-1)).props('flat round dense')
                             ui.button(icon='arrow_downward', on_click=lambda _, m=move: m(1)).props('flat round dense')
-                            ui.button(icon='close', on_click=lambda _, i=index: (steps.pop(i), chosen.refresh())).props('flat round dense color=negative')
+                            ui.button(icon='close', on_click=lambda _, i=index: (steps.pop(i), chosen.refresh(), available.refresh(filter_input.value or ''))).props('flat round dense color=negative')
                 chosen()
                 ui.label('Un paso solo puede usar respuestas de pasos que estén ANTES que él; si reordenas, se vuelve a validar al guardar.').classes('text-xs text-gray-500')
 

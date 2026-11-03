@@ -214,6 +214,8 @@ def build(preset_case_id=None):
                     ui.chat_message(turn['text'], sent=True, name='Vos')
                 elif turn['who'] == 'bot':
                     ui.chat_message(turn['text'], sent=False, name='Bot', stamp=(f'HTTP {turn["status"]}' if turn.get('status') else None))
+                    if turn.get('thread_warning'):
+                        ui.label(f'⚠ {turn["thread_warning"]}').classes('text-xs text-amber-700 pl-1')
                     prev = S['messages'][index - 1] if index > 0 else None
                     if prev and prev['who'] == 'user':
                         with ui.row().classes('items-center gap-1 pl-1 -mt-1'):
@@ -315,12 +317,15 @@ def build(preset_case_id=None):
             reply = core.extract_path(parsed, chat['reply_path'])
         except core.PathError:
             reply = f'(no se encontró «{chat["reply_path"]}» en la respuesta; HTTP {status})'
+        thread_warning = None
         try:
             S['thread_id'] = str(core.extract_path(parsed, chat['thread_response_path']))
             W['thread_label'].refresh()
         except core.PathError:
-            pass
-        S['messages'].append({'who': 'bot', 'text': reply if isinstance(reply, str) else json.dumps(reply, ensure_ascii=False), 'status': status})
+            # Antes se ignoraba en silencio: el hilo se quedaba vacío turno tras turno sin ninguna pista de por qué
+            # (el resto del body sale bien porque no depende de esto). Ahora queda marcado junto al turno.
+            thread_warning = f'No se encontró «{chat["thread_response_path"]}» en la respuesta: el hilo no avanzó, va a salir vacío en el próximo mensaje.'
+        S['messages'].append({'who': 'bot', 'text': reply if isinstance(reply, str) else json.dumps(reply, ensure_ascii=False), 'status': status, 'thread_warning': thread_warning})
         chat_view.refresh()
         debug_view.refresh()
         persist_session()
