@@ -23,6 +23,13 @@ TABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 # otra pestaña carga una página) dejan el socket en un estado inconsistente que se cuelga para siempre, y como
 # casi toda página pasa por current_user() -> Azure SQL, un solo socket colgado congela la aplicación entera.
 _lock = threading.RLock()
+# core.list_items/get/save/delete llaman a core.initialize() en CADA operación (barato en SQLite: un CREATE
+# TABLE IF NOT EXISTS local). Para Azure SQL, sin esto, cada una de esas llamadas repetía un «¿existe esta
+# tabla?» por red para las ~17 tablas de ALL_TABLES — crear una sola cuenta (que hace dos operaciones) llegó a
+# sumar ~35 idas y vueltas al servidor, encontrado probando en vivo: parecía un cuelgue pero solo eran muchos
+# redondeos innecesarios. Una vez confirmado que las tablas existen para la conexión cacheada actual, no hace
+# falta volver a preguntar — se reinicia solo si la conexión se cae y se vuelve a crear (close()/_connect()).
+_initialized = False
 _connection = None
 
 
@@ -71,7 +78,7 @@ def _connect(config=None):
 def _live_connection():
     """One cached connection, reused across calls (evita renegociar TLS en cada operación); se reabre sola si
     se cayó. No pensado para alta concurrencia — igual que SQLite, para «pocas personas simultáneas»."""
-    global _connection
+    global _connection, _initialized
     import pytds
     with _lock:
         if _connection is not None:
@@ -85,13 +92,15 @@ def _live_connection():
                     pass
                 _connection = None
         _connection = _connect()
+        _initialized = False   # conexión nueva: todavía no se confirmó que las tablas existan en ESTA sesión
         return _connection
 
 
 def close():
     """Cierra la conexión en caché, si hay una abierta (para pruebas, o para forzar una reconexión limpia)."""
-    global _connection
+    global _connection, _initialized
     with _lock:
+        _initialized = False
         if _connection is not None:
             try:
                 _connection.close()
@@ -133,7 +142,13 @@ def _check_table(table):
 
 
 def initialize(all_tables):
+    """core.initialize() llama a esto en CADA list_items/get/save/delete (barato en SQLite: un CREATE TABLE IF
+    NOT EXISTS local). Acá cada tabla es un redondeo de red aparte, así que una vez confirmadas todas para la
+    conexión cacheada actual, no se repite — ver _initialized."""
+    global _initialized
     with _lock:
+        if _initialized:
+            return
         con = _live_connection()
         cur = con.cursor()
         for table in all_tables:
@@ -141,6 +156,7 @@ def initialize(all_tables):
             cur.execute(f"IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = '{table}') "
                         f"CREATE TABLE {table} (id NVARCHAR(400) NOT NULL PRIMARY KEY, payload NVARCHAR(MAX) NOT NULL, "
                         f"seq INT IDENTITY(1,1) NOT NULL)")
+        _initialized = True
 
 
 def list_items(table):

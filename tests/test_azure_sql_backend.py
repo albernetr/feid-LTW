@@ -83,6 +83,30 @@ def test_initialize_creates_every_table_without_raising(store):
     backend.initialize(('projects', 'cases', 'suites'))   # no debe lanzar (CREATE TABLE IF NOT EXISTS vía sys.tables)
 
 
+def test_initialize_only_checks_the_tables_once_per_connection(store, monkeypatch):
+    """core.save/get/list_items/delete llaman a core.initialize() en CADA operación — para Azure SQL cada tabla
+    es un redondeo de red aparte, así que repetirlo en cada llamada (encontrado probando en vivo: ~35 idas y
+    vueltas de red solo para crear una cuenta, que parecía un cuelgue) no puede pasar. Una vez confirmadas las
+    tablas para la conexión actual, llamadas posteriores no deben volver a ejecutar el chequeo — ni al llamar a
+    initialize() de nuevo, ni al hacer una operación normal (que lo llama por dentro)."""
+    from conftest import FakeAzureCursor
+    original_execute = FakeAzureCursor.execute
+    ddl_calls = []
+
+    def counting_execute(self, sql, params=()):
+        if 'sys.tables' in sql:
+            ddl_calls.append(sql)
+        return original_execute(self, sql, params)
+    monkeypatch.setattr(FakeAzureCursor, 'execute', counting_execute)
+
+    tables = ('projects', 'cases', 'suites')
+    backend.initialize(tables)
+    assert len(ddl_calls) == 3   # una consulta de sys.tables por tabla, la primera vez
+    backend.initialize(tables)   # segunda vez: ya confirmado, no debe repetir nada
+    backend.save('cases', 'c1', '{}')   # una operación normal (llama a initialize() por dentro) tampoco
+    assert len(ddl_calls) == 3   # sigue en 3: nada se repitió
+
+
 def test_connection_is_cached_and_reused_across_calls(store, monkeypatch):
     connects = []
     real_connect = backend._connect
