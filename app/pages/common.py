@@ -1,9 +1,11 @@
 """Shared layout and widgets for every page."""
 import datetime as dt
 import json
+import tempfile
 from contextlib import contextmanager
-from nicegui import ui
-from .. import core, automation
+from pathlib import Path
+from nicegui import ui, run
+from .. import core, automation, evidence_report
 
 NAV = [
     ('Inicio', '/', 'home'), ('Resumen', '/resumen', 'monitor_heart'), ('Espacio de trabajo', '/workspace', 'space_dashboard'), ('Proyectos', '/projects', 'folder_open'),
@@ -206,6 +208,23 @@ def agent_brief(run_id):
     dialog.open()
 
 
+async def _download_evidence(run_doc, kind):
+    """Evidencia paso a paso de una corrida, en el formato pedido — mismo contenido en los tres."""
+    data = evidence_report.build_report_data(run_doc)
+    stem = (run_doc.get('case_name') or run_doc.get('suite_name') or run_doc.get('group_name') or run_doc.get('id') or 'evidencia').replace(' ', '_')
+    if kind == 'pdf':
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / 'r.pdf'
+            await run.io_bound(evidence_report.render_evidence_pdf, evidence_report.render_evidence_html(data), target)
+            ui.download(target.read_bytes(), f'{stem}.pdf')
+    elif kind == 'docx':
+        content = await run.io_bound(evidence_report.render_evidence_docx, data)
+        ui.download(content, f'{stem}.docx')
+    else:
+        ui.download(evidence_report.render_evidence_html(data).encode('utf-8'), f'{stem}.html')
+    ui.notify('Evidencia generada', type='positive')
+
+
 def show_run(run):
     """Dialog with the full detail of a run (api / ui / suite)."""
     with ui.dialog() as dialog, ui.card().classes('w-[820px] max-w-full'):
@@ -277,6 +296,12 @@ def show_run(run):
             if run.get('response'):
                 with ui.expansion('Respuesta').classes('w-full'):
                     ui.code(run['response'].get('body', '')[:5000], language='json').classes('w-full')
+        if run.get('id') and core.get('runs', run['id']):
+            with ui.row().classes('items-center gap-2'):
+                ui.label('Descargar evidencia:').classes('text-sm text-gray-600')
+                ui.button('HTML', icon='download', on_click=guard(lambda: _download_evidence(run, 'html'))).props('flat dense no-caps')
+                ui.button('PDF', icon='picture_as_pdf', on_click=guard(lambda: _download_evidence(run, 'pdf'))).props('flat dense no-caps')
+                ui.button('Word', icon='description', on_click=guard(lambda: _download_evidence(run, 'docx'))).props('flat dense no-caps')
         with ui.row().classes('justify-end w-full'):
             ui.button('Cerrar', on_click=dialog.close).props('flat')
     dialog.open()
