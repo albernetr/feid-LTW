@@ -2,7 +2,7 @@
 en loopback, en la máquina de quien la usa — sin pedir contraseña de Windows, sin pywin32/AD). Standalone: sin
 frame() (menú lateral, selector de proyecto) porque nadie inició sesión todavía."""
 import getpass
-from nicegui import ui
+from nicegui import run, ui
 from .. import core
 from .common import guard, login, current_user
 
@@ -33,12 +33,15 @@ def _bootstrap():
             password = ui.input('Contraseña', password=True, password_toggle_button=True).props('outlined dense').classes('w-full').mark('login-boot-password')
             confirm = ui.input('Confirmar contraseña', password=True, password_toggle_button=True).props('outlined dense').classes('w-full').mark('login-boot-confirm')
 
-        def create():
+        async def create():
+            # El hash de contraseña (PBKDF2) y el guardado bloquean el hilo del event loop mientras duran — sin
+            # io_bound, con Azure SQL activo (una vuelta de red, no un archivo local) esto podía mostrarse como
+            # un «Connection lost» pasajero en el navegador (encontrado probando en vivo).
             if method.value == 'password' and password.value != confirm.value:
                 raise ValueError('Las contraseñas no coinciden')
-            user = core.create_user(first.value, last.value, email.value, method.value,
-                                    password=password.value if method.value == 'password' else None,
-                                    windows_username=win_user if method.value == 'windows' else None)
+            user = await run.io_bound(core.create_user, first.value, last.value, email.value, method.value,
+                                      password=password.value if method.value == 'password' else None,
+                                      windows_username=win_user if method.value == 'windows' else None)
             _after_login(user)
         ui.button('Crear cuenta y entrar', icon='person_add', on_click=guard(create)).props('color=primary').mark('login-boot-submit')
 
@@ -54,8 +57,8 @@ def _login_form():
                 email = ui.input('Correo').props('outlined dense').classes('w-full').mark('login-email')
                 password = ui.input('Contraseña', password=True, password_toggle_button=True).props('outlined dense').classes('w-full').mark('login-password')
 
-                def do_login():
-                    user = core.authenticate_password(email.value, password.value)
+                async def do_login():
+                    user = await run.io_bound(core.authenticate_password, email.value, password.value)
                     if not user:
                         raise ValueError('Correo o contraseña incorrectos')
                     _after_login(user)
@@ -73,8 +76,8 @@ def _login_form():
                     last = ui.input('Apellidos').props('outlined dense').classes('w-full').mark('login-windows-last')
                     win_email = ui.input('Correo').props('outlined dense').classes('w-full').mark('login-windows-email')
 
-                    def create_and_login():
-                        user = core.create_user(first.value, last.value, win_email.value, 'windows', windows_username=win_user)
+                    async def create_and_login():
+                        user = await run.io_bound(core.create_user, first.value, last.value, win_email.value, 'windows', windows_username=win_user)
                         _after_login(user)
                     ui.button('Crear cuenta y entrar', icon='person_add', on_click=guard(create_and_login)).props('color=primary').mark('login-windows-submit')
         with ui.expansion('Crear cuenta nueva', icon='person_add').classes('w-full').mark('login-register-expansion'):
@@ -84,10 +87,10 @@ def _login_form():
             reg_password = ui.input('Contraseña', password=True, password_toggle_button=True).props('outlined dense').classes('w-full').mark('login-register-password')
             reg_confirm = ui.input('Confirmar contraseña', password=True, password_toggle_button=True).props('outlined dense').classes('w-full').mark('login-register-confirm')
 
-            def register():
+            async def register():
                 if reg_password.value != reg_confirm.value:
                     raise ValueError('Las contraseñas no coinciden')
-                user = core.create_user(reg_first.value, reg_last.value, reg_email.value, 'password', password=reg_password.value)
+                user = await run.io_bound(core.create_user, reg_first.value, reg_last.value, reg_email.value, 'password', password=reg_password.value)
                 _after_login(user)
             ui.button('Crear cuenta', icon='person_add', on_click=guard(register)).props('outline').mark('login-register-submit')
 

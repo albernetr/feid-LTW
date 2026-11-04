@@ -48,7 +48,7 @@ async def test_password_login_happy_and_sad_path(user: User):
     user.find(marker='login-email').type('ana@acme.com')
     user.find(marker='login-password').type('mal')
     user.find(marker='login-submit').click()
-    await user.should_see('Correo o contraseña incorrectos')
+    await user.should_see('Correo o contraseña incorrectos', retries=10)   # do_login() ahora corre en un hilo (run.io_bound)
     user.find(marker='login-password').clear().type('algomuylargo')
     user.find(marker='login-submit').click()
     await eventually(lambda: user.client.page.path == '/')
