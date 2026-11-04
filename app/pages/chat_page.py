@@ -5,8 +5,8 @@ la conversación: URL arriba, parámetros en un panel, petición/respuesta cruda
 import copy
 import json
 from nicegui import ui, run
-from .. import core, workspace as ws
-from .common import frame, guard, protected_page, show_run
+from .. import core, workspace as ws, evidence_report
+from .common import frame, guard, protected_page, show_run, render_evidence, STATUS_LABEL
 from .widgets import kv_rows, dynamic_variable_chips
 
 HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
@@ -213,6 +213,23 @@ def build(preset_case_id=None):
                 ui.label('Completa el mapeo en «Parámetros» y guardalo para empezar a conversar.' if not d.get('chat')
                           else 'Escribe el primer mensaje abajo.').classes('text-sm text-gray-500')
             return
+        def turn_request_response(index):
+            """Mismo panel colapsable que «Petición / Respuesta (último turno)» de más abajo, pero para ESTE turno
+            puntual — para no tener que abrir «Ver detalle y evidencia» solo para mirar el JSON enviado/recibido."""
+            run_doc = S['runs'][index]
+            with ui.expansion('Petición / Respuesta', icon='code').classes('w-full pl-1').mark(f'chat-reqres-{index}'):
+                sent = (run_doc.get('request') or {}).get('body')
+                if sent is not None:
+                    ui.label('Enviado').classes('text-xs font-semibold text-gray-500')
+                    body_text = sent if isinstance(sent, str) else json.dumps(sent, indent=2, ensure_ascii=False)
+                    ui.code(body_text, language='json').classes('w-full').style('max-height:160px;overflow:auto')
+                resp_body = (run_doc.get('response') or {}).get('body')
+                if resp_body:
+                    ui.label('Recibido').classes('text-xs font-semibold text-gray-500')
+                    ui.code(resp_body, language='json').classes('w-full').style('max-height:160px;overflow:auto')
+                if not sent and not resp_body:
+                    ui.label(run_doc.get('error') or 'Sin datos de petición/respuesta para este turno.').classes('text-xs text-gray-500')
+
         with ui.column().classes('w-full gap-1 px-3'):
             for index, turn in enumerate(S['messages']):
                 if turn['who'] == 'user':
@@ -241,11 +258,14 @@ def build(preset_case_id=None):
                         if index in S['runs']:
                             ui.button('Ver detalle y evidencia', icon='fact_check', on_click=lambda _, r=S['runs'][index]: show_run(r)) \
                                 .props('flat dense size=sm no-caps color=grey-8').mark(f'chat-evidence-{index}')
+                    if index in S['runs']:
+                        turn_request_response(index)
                 else:
                     ui.label(turn['text']).classes('text-xs text-red-700')
                     if index in S['runs']:
                         ui.button('Ver detalle y evidencia', icon='fact_check', on_click=lambda _, r=S['runs'][index]: show_run(r)) \
                             .props('flat dense size=sm no-caps color=grey-8').classes('pl-1').mark(f'chat-evidence-{index}')
+                        turn_request_response(index)
     W['chat_view'] = chat_view
     chat_view()
 
@@ -268,6 +288,8 @@ def build(preset_case_id=None):
         suite_name = ui.input('Nombre del flujo', value='Conversación de prueba').props('outlined dense').classes('grow')
         ui.button('Guardar todo lo pendiente', icon='playlist_add_check', on_click=guard(lambda: save_all_pending(suite_name.value))) \
             .props('outline dense no-caps').mark('chat-save-suite')
+        ui.button('Evidencia de la conversación', icon='fact_check', on_click=guard(lambda: conversation_evidence_dialog())) \
+            .props('outline dense no-caps').mark('chat-evidence-all').tooltip('Descarga un solo reporte con los turnos que elijas (petición/respuesta de cada uno)')
         ui.label('O guardá cada intercambio por separado con el botón que aparece debajo de cada respuesta.').classes('text-xs text-gray-500')
 
     # ------------------------------------------------------------ write & send bar — sticky, always reachable regardless of
@@ -312,6 +334,12 @@ def build(preset_case_id=None):
         debug_view.refresh()
         run_doc = await run.io_bound(core.execute_api, {**case, 'body': body}, env, None, False)
         run_doc['case_name'] = f'Chat: {text[:60]}'   # para que el título de la evidencia diga algo, no quede vacío
+        if run_doc.get('status') == 'failed' and not run_doc.get('assertions'):
+            # core.execute_api marca «failed» cuando el caso no tiene aserciones (sin ellas, nada quedó confirmado —
+            # ver app/core.py y tests/test_lab.py). Acá no aplica: un turno de chat en vivo nunca define aserciones
+            # por turno (solo las gana al guardarse como caso con «Guardar este intercambio como caso»), así que una
+            # respuesta HTTP sin error es un turno exitoso, no un fallo.
+            run_doc['status'] = 'passed'
         if run_doc['status'] == 'error':
             S['messages'].append({'who': 'error', 'text': run_doc.get('error') or 'Error de conexión'})
             S['runs'][len(S['messages']) - 1] = run_doc
@@ -400,3 +428,44 @@ def build(preset_case_id=None):
             raise ValueError('No hay intercambios nuevos por guardar')
         for index in pending:
             save_turn_as_case(index)
+
+    def conversation_evidence_dialog():
+        """Un solo lugar para la evidencia de TODA la conversación (no turno a turno): elegís qué turnos entran
+        —todos, por defecto— y descargás un único HTML/PDF/Word/Markdown con la petición/respuesta de cada uno,
+        igual que ya muestra «Ver detalle y evidencia» por turno. Los run_doc salen de S['runs'] (en memoria, nunca
+        persistidos — igual que la evidencia de un solo turno)."""
+        indices = sorted(S['runs'].keys())
+        if not indices:
+            ui.notify('Todavía no hay ningún turno con petición/respuesta para incluir', type='info')
+            return
+        checked = {i: True for i in indices}
+        with ui.dialog() as dialog, ui.card().classes('w-[640px] max-w-full'):
+            ui.label('Evidencia de la conversación').classes('text-lg font-semibold')
+            ui.label('Elegí qué turnos incluir en el reporte (todos, por defecto).').classes('text-sm text-gray-600')
+            with ui.column().classes('w-full gap-0').style('max-height:50vh;overflow:auto'):
+                for index in indices:
+                    turn_run = S['runs'][index]
+                    status_word = STATUS_LABEL.get(turn_run.get('status'), turn_run.get('status'))
+                    label = f'{turn_run.get("case_name") or f"Turno {index}"} · {status_word}'
+                    cb = ui.checkbox(label, value=True).mark(f'chat-evidence-all-cb-{index}')
+                    cb.on_value_change(lambda e, i=index: checked.__setitem__(i, e.value))
+            async def download(kind):
+                chosen = [S['runs'][i] for i in indices if checked[i]]
+                if not chosen:
+                    ui.notify('Elegí al menos un turno', type='warning')
+                    return
+                title = (suite_name.value or d.get('name') or 'Conversación').strip()
+                data = evidence_report.build_multi_report_data(title, chosen)
+                content, _ = await render_evidence(data, kind)
+                ui.download(content, f'{title.replace(" ", "_")}.{kind}')
+                ui.notify('Evidencia generada', type='positive')
+                dialog.close()
+            with ui.row().classes('items-center gap-2 pt-2'):
+                ui.label('Descargar:').classes('text-sm text-gray-600')
+                ui.button('HTML', icon='download', on_click=guard(lambda: download('html'))).props('flat dense no-caps').mark('chat-evidence-all-html')
+                ui.button('PDF', icon='picture_as_pdf', on_click=guard(lambda: download('pdf'))).props('flat dense no-caps')
+                ui.button('Word', icon='description', on_click=guard(lambda: download('docx'))).props('flat dense no-caps')
+                ui.button('Markdown', icon='code', on_click=guard(lambda: download('md'))).props('flat dense no-caps')
+            with ui.row().classes('justify-end w-full pt-1'):
+                ui.button('Cerrar', on_click=dialog.close).props('flat')
+        dialog.open()

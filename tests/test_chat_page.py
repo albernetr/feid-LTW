@@ -185,6 +185,92 @@ async def test_chat_turn_offers_detail_and_evidence_without_persisting_the_run_d
     assert 'run' not in stored and 'request' not in stored and 'response' not in stored   # no se infla lo persistido
 
 
+async def test_every_turn_shows_its_own_request_response_panel_inline(user, chat_app):
+    """«Petición / Respuesta» debajo de cada turno, no solo del último (como ya hacía el panel de más abajo) ni
+    solo detrás de «Ver detalle y evidencia» (que exige abrir un diálogo). Se arma con el mismo run_doc en
+    memoria (S['runs']) que ya usa la evidencia por turno."""
+    project = core.create_project('Peticion por turno')
+    env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                               'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                               'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}},
+                               'assertions': [],
+                               'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                        'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+    core.set_active_project(project['id'])
+    await user.open(f'/chat?case={case["id"]}')
+    user.find(marker='chat-input').type('Hola')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¡Gracias por aceptar!', retries=30)
+    user.find(marker='chat-input').type('Quiero un seguro de vida')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¿Cuál es el nombre completo', retries=30)
+
+    await user.should_see(marker='chat-reqres-1')   # turno 0: usuario, turno 1: respuesta del bot
+    await user.should_see(marker='chat-reqres-3')   # turno 2: usuario, turno 3: respuesta del bot
+    user.find(marker='chat-reqres-1').click()
+    await user.should_see('Enviado')
+    await user.should_see('"message": "Hola"')
+    await user.should_see('Recibido')
+    await user.should_see('¡Gracias por aceptar!')
+    user.find(marker='chat-reqres-3').click()
+    await user.should_see('"message": "Quiero un seguro de vida"')
+
+
+async def test_chat_turn_shows_as_passed_when_the_endpoint_has_no_assertions_configured(user, chat_app):
+    """La pantalla de Chat no tiene editor de aserciones (solo headers/body/mapeo): un endpoint armado desde cero
+    ahí, como lo haría cualquier persona, llega a core.execute_api sin ninguna. Ese motor marca 'failed' cuando un
+    caso no trae aserciones (nada quedó confirmado — ver core.py y tests/test_lab.py), que es correcto para un caso
+    guardado pero engañoso para un turno de chat en vivo: una respuesta HTTP sin error sí fue un turno exitoso."""
+    project = core.create_project('Sin aserciones')
+    env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                               'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                               'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}},
+                               'assertions': [],   # como lo deja la pantalla de Chat: no tiene editor de aserciones
+                               'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                        'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+    core.set_active_project(project['id'])
+    await user.open(f'/chat?case={case["id"]}')
+    await user.should_see('Hilo:')
+    user.find(marker='chat-input').type('Hola')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¡Gracias por aceptar!', retries=30)
+    await user.should_see(marker='chat-evidence-1')
+    user.find(marker='chat-evidence-1').click()
+    await user.should_see('Descargar evidencia:')
+    await user.should_not_see('Falló')         # un HTTP 200 sin aserciones no es un turno fallido en el chat
+
+
+async def test_chat_conversation_evidence_covers_every_selected_turn_with_its_request_and_response(user, chat_app):
+    """«Evidencia de la conversación» arma UN solo reporte con los turnos elegidos (todos por defecto) — y cada
+    turno incluido trae su propia petición/respuesta, igual que el detalle de un turno suelto, no solo el status."""
+    project = core.create_project('Evidencia conversación')
+    env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                               'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                               'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}},
+                               'assertions': [],
+                               'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                        'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+    core.set_active_project(project['id'])
+    await user.open(f'/chat?case={case["id"]}')
+    user.find(marker='chat-input').type('Hola')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¡Gracias por aceptar!', retries=30)
+    user.find(marker='chat-input').type('Quiero un seguro de vida')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¿Cuál es el nombre completo', retries=30)
+
+    user.find(marker='chat-evidence-all').click()
+    await user.should_see('Evidencia de la conversación')
+    await user.should_see(marker='chat-evidence-all-cb-1')          # turno 0: usuario, turno 1: respuesta del bot
+    await user.should_see(marker='chat-evidence-all-cb-3')          # turno 2: usuario, turno 3: respuesta del bot
+
+    user.find(marker='chat-evidence-all-html').click()
+    await user.should_see('Evidencia generada')
+
+
 async def test_chat_page_without_a_case_asks_for_the_mapping_first(user, chat_app):
     """A fresh chat (no saved case) needs the four paths confirmed before it will send anything — typing and
     pressing Enter beforehand is a no-op, not a request against an unconfigured mapping."""

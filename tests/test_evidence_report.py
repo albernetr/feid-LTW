@@ -62,6 +62,32 @@ def test_build_report_data_for_a_suite_group_nests_flow_substeps(world):
     assert case_step['type'] == 'api' and 'request' in case_step
 
 
+def test_build_multi_report_data_combines_loose_runs_with_their_request_and_response(world):
+    """A diferencia de una Suite, acá las corridas no vienen agrupadas por un doc de `runs` (p. ej. los turnos de
+    una conversación de Chat, que nunca se persisten: persist=False) — build_multi_report_data las junta tal
+    como llegan, cada una con su propia petición/respuesta."""
+    case_a = world['api_case']('turno 1', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    case_b = world['api_case']('turno 2', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    run_a = core.execute_api(case_a, world['env'], None, False)
+    run_b = core.execute_api(case_b, world['env'], None, False)
+    data = evidence_report.build_multi_report_data('Conversación de prueba', [run_a, run_b])
+    assert data['title'] == 'Conversación de prueba' and data['run_type'] == 'conversation'
+    assert data['status'] == 'passed'
+    assert data['summary'] == {'total': 2, 'passed': 2, 'failed': 0, 'skipped': 0}
+    assert [s['name'] for s in data['steps']] == ['turno 1', 'turno 2']
+    assert data['steps'][0]['request']['method'] == 'GET' and '/health' in data['steps'][0]['request']['url']
+    assert data['steps'][1]['response']['body']
+
+
+def test_build_multi_report_data_fails_overall_if_any_included_turn_failed(world):
+    case_ok = world['api_case']('turno ok', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    case_bad = world['api_case']('turno malo', 'GET', '/health', [{'type': 'status', 'expected': 999}])
+    run_ok = core.execute_api(case_ok, world['env'], None, False)
+    run_bad = core.execute_api(case_bad, world['env'], None, False)
+    data = evidence_report.build_multi_report_data('Conversación', [run_ok, run_bad])
+    assert data['status'] == 'failed' and data['summary'] == {'total': 2, 'passed': 1, 'failed': 1, 'skipped': 0}
+
+
 def test_render_evidence_html_contains_steps_and_status(world):
     case = world['api_case']('crear', 'POST', '/api/items', [{'type': 'status', 'expected': 201}],
                              headers={'Authorization': 'Bearer tok-abc123'}, body={'name': 'x'})

@@ -380,9 +380,10 @@ def _evidence_stem(run_doc):
     return (run_doc.get('case_name') or run_doc.get('suite_name') or run_doc.get('group_name') or run_doc.get('id') or 'evidencia').replace(' ', '_')
 
 
-async def _render_evidence(data, kind):
+async def render_evidence(data, kind):
     """Devuelve (bytes, content_type) en el formato pedido — mismo contenido en los tres, reusado tanto para
-    descargar como para enviar a un ticket."""
+    descargar como para enviar a un ticket (y, desde otras páginas como Chat, para un reporte de varias corridas
+    sueltas armado a mano con evidence_report.build_multi_report_data)."""
     if kind == 'pdf':
         with tempfile.TemporaryDirectory() as folder:
             target = Path(folder) / 'r.pdf'
@@ -397,7 +398,7 @@ async def _render_evidence(data, kind):
 
 async def _download_evidence(run_doc, kind):
     data = evidence_report.build_report_data(run_doc)
-    content, _ = await _render_evidence(data, kind)
+    content, _ = await render_evidence(data, kind)
     ui.download(content, f'{_evidence_stem(run_doc)}.{kind}')
     ui.notify('Evidencia generada', type='positive')
 
@@ -420,7 +421,7 @@ def _send_to_ticket_dialog(run_doc):
             if not ticket_value:
                 raise ValueError('Indica el ticket o work item de destino')
             data = evidence_report.build_report_data(run_doc)
-            content, content_type = await _render_evidence(data, kind.value)
+            content, content_type = await render_evidence(data, kind.value)
             integration = core.get('integrations', integ.value)
             await run.io_bound(integrations.attach_evidence, integration, f'{_evidence_stem(run_doc)}.{kind.value}', content, content_type, ticket_value)
             ui.notify('Evidencia enviada', type='positive')

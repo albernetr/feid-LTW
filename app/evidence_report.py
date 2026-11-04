@@ -76,6 +76,21 @@ def build_report_data(run):
             'summary': {'total': len(steps), 'passed': passed, 'failed': failed, 'skipped': skipped}, 'steps': steps}
 
 
+def build_multi_report_data(title, runs):
+    """Misma estructura que build_report_data, para una lista de corridas sueltas elegidas a mano (p. ej. los
+    turnos de una conversación de Chat que el agente nunca persiste en Historial: persist=False). A diferencia de
+    una Suite, acá no hay un doc de `runs` que las agrupe — cada una ya es un run_doc completo (petición,
+    respuesta, aserciones) tal como lo arma core.execute_api."""
+    steps = [_step_from_run(r) for r in runs]
+    passed = sum(1 for s in steps if s['status'] == 'passed')
+    failed = sum(1 for s in steps if s['status'] in ('failed', 'error'))
+    skipped = sum(1 for s in steps if s['status'] in ('skipped', 'cancelled'))
+    return {'format': FORMAT, 'title': title, 'run_id': None, 'run_type': 'conversation',
+            'status': 'passed' if failed == 0 else 'failed',
+            'started_at': runs[0].get('started_at') if runs else None, 'finished_at': runs[-1].get('finished_at') if runs else None,
+            'generated_at': core.now(), 'summary': {'total': len(steps), 'passed': passed, 'failed': failed, 'skipped': skipped}, 'steps': steps}
+
+
 # --------------------------------------------------------------------------- HTML / PDF
 
 HTML_CSS = '''
