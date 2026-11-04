@@ -75,12 +75,12 @@ def _base_locator(page, spec):
     raise ValueError('Locator no soportado: ' + str(kind))
 
 
-def _resolve_url(base, target, allowed_host):
+def _resolve_url(base, target, allowed_hosts):
     if urlparse(target).scheme:
         url = target
     else:
         url = urljoin(base.rstrip('/') + '/', target.lstrip('/'))
-    if urlparse(url).hostname != allowed_host:
+    if urlparse(url).hostname not in allowed_hosts:
         raise ValueError('Navegación fuera del host autorizado.')
     return url
 
@@ -210,20 +210,27 @@ def execute_ui(case, environment, variables=None, meta=None):
         if problems:
             raise ValueError('; '.join(problems))
         base = environment.get('ui_base_url') or environment.get('base_url', '')
-        allowed_host = urlparse(base).hostname
-        if not allowed_host:
+        base_host = urlparse(base).hostname
+        if not base_host:
             raise ValueError('Configura la URL base del ambiente.')
+        # Hosts adicionales de confianza (SSO/MFA como PingID, que redirige a otro dominio) — nunca cualquier
+        # dominio: solo los que el ambiente declaró explícitamente (ver Ambientes → «Hosts adicionales»).
+        allowed_hosts = {base_host} | {h for h in (environment.get('trusted_hosts') or []) if h}
         _use_system_browsers()
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            context = browser.new_context(accept_downloads=False)
+            # Una sesión capturada a mano (ver core.save_ui_session/recorder.capture_session) deja al caso
+            # arrancar ya logueado — sin eso, un login detrás de SSO/MFA no se puede completar solo: la
+            # aprobación por push al teléfono no la puede scriptear ninguna herramienta.
+            session_state = core.get_ui_session(environment['id']) if environment.get('id') else None
+            context = browser.new_context(accept_downloads=False, storage_state=session_state)
             context.tracing.start(screenshots=True, snapshots=True)
             page = context.new_page()
             page.set_default_timeout(int(case.get('timeout_ms', 10000)))
 
-            def guard(route):  # navigations/redirects to other hosts are blocked at network level
-                if route.request.is_navigation_request() and urlparse(route.request.url).hostname != allowed_host:
+            def guard(route):  # navigations/redirects to a host outside allowed_hosts are blocked at network level
+                if route.request.is_navigation_request() and urlparse(route.request.url).hostname not in allowed_hosts:
                     route.abort()
                 else:
                     route.continue_()
@@ -234,7 +241,7 @@ def execute_ui(case, environment, variables=None, meta=None):
                     outcome = {'index': index, 'action': action}
                     run['steps'].append(outcome)
                     if action == 'navigate':
-                        page.goto(_resolve_url(base, step['url'], allowed_host), wait_until='domcontentloaded')
+                        page.goto(_resolve_url(base, step['url'], allowed_hosts), wait_until='domcontentloaded')
                     elif action == 'assert_url':
                         if step['expected'] not in page.url:
                             raise AssertionError(f'URL actual «{page.url}» no contiene «{step["expected"]}»')

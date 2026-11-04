@@ -494,6 +494,61 @@ async def test_environments_edit_test_refresh_button(user: User):
         server.shutdown()
 
 
+async def test_environments_edit_saves_trusted_hosts(user: User):
+    project = core.create_project('SSO hosts')
+    core.set_active_project(project['id'])
+    await user.open('/environments/edit')
+    user.find('env-base-url').clear()
+    user.find('env-base-url').type('https://app.example.com')
+    user.find('env-trusted-hosts').type(' auth.example.com , Otro.Example.com ')
+    user.find('env-name').clear()
+    user.find('env-name').type('Con SSO')
+    user.find('env-save').click()
+    await eventually(lambda: core.list_project_items('environments', project['id']) != [])
+    [env] = core.list_project_items('environments', project['id'])
+    assert env['trusted_hosts'] == ['auth.example.com', 'otro.example.com']   # recortados y en minúsculas
+
+
+async def test_environments_edit_rejects_a_trusted_host_with_a_scheme_or_path(user: User):
+    project = core.create_project('SSO hosts malos')
+    core.set_active_project(project['id'])
+    await user.open('/environments/edit')
+    user.find('env-base-url').clear()
+    user.find('env-base-url').type('https://app.example.com')
+    user.find('env-trusted-hosts').type('https://auth.example.com')
+    user.find('env-name').clear()
+    user.find('env-name').type('Mal host')
+    user.find('env-save').click()
+    await user.should_see('no es un host válido')
+    assert core.list_project_items('environments', project['id']) == []
+
+
+async def test_environments_edit_requires_saving_before_capturing_a_session(user: User):
+    project = core.create_project('Sin guardar')
+    core.set_active_project(project['id'])
+    await user.open('/environments/edit')
+    user.find('env-session-capture').click()
+    await user.should_see('Guarda el ambiente primero')
+
+
+async def test_environments_edit_captures_and_clears_a_ui_session(user: User, monkeypatch):
+    from app import recorder
+    project = core.create_project('Con sesión')
+    core.set_active_project(project['id'])
+    env = core.save('environments', {'name': 'qa', 'project_id': project['id'], 'base_url': 'https://qa.example.com', 'variables': {}, 'auth': {'type': 'none'}})
+    captured = {'cookies': [{'name': 'session', 'value': 'abc'}], 'origins': []}
+    monkeypatch.setattr(recorder, 'capture_session', lambda url: captured)   # sin abrir una ventana real
+    await user.open(f'/environments/edit?id={env["id"]}')
+    await user.should_see('Sin sesión guardada')
+    user.find('env-session-capture').click()
+    await eventually(lambda: core.get_ui_session(env['id']) == captured)
+    await user.open(f'/environments/edit?id={env["id"]}')   # la recarga (ui.navigate.reload) ya debería mostrar el estado nuevo; reabro para confirmarlo
+    await user.should_see('Sesión guardada el')
+    user.find('env-session-clear').click()
+    user.find(marker='confirm-dialog-accept').click()
+    await eventually(lambda: core.get_ui_session(env['id']) is None)
+
+
 async def test_modules_table_row_click_opens_the_detail_page(user: User):
     from nicegui import ui
     seed()

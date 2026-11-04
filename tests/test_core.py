@@ -555,3 +555,51 @@ def test_save_dataset_can_update_an_existing_one_by_id():
     assert len(items) == 1   # no duplicó: actualizó el mismo registro
     assert items[0]['columns'] == ['nombre', 'rfc']
     assert len(items[0]['rows']) == 2
+
+
+# --------------------------------------------------------------------------- sesión de Casos UI (SSO/MFA)
+
+def test_validate_hostname_accepts_a_bare_host_and_rejects_urls_or_paths():
+    assert core.validate_hostname('auth.miempresa.com') == 'auth.miempresa.com'
+    assert core.validate_hostname('  MiEmpresa.PingOne.com  ') == 'miempresa.pingone.com'   # recortado y en minúsculas
+    for bad in ('https://auth.miempresa.com', 'auth.miempresa.com/login', 'con espacio.com', ''):
+        with pytest.raises(ValueError):
+            core.validate_hostname(bad)
+
+
+def test_save_get_clear_ui_session_roundtrip():
+    project = core.create_project('SSO')
+    env = core.save('environments', {'name': 'qa', 'project_id': project['id'], 'base_url': 'https://qa.example.com', 'variables': {}, 'auth': {'type': 'none'}})
+    assert core.get_ui_session(env['id']) is None
+    state = {'cookies': [{'name': 'session', 'value': 'abc'}], 'origins': []}
+    core.save_ui_session(env['id'], state)
+    assert core.get_ui_session(env['id']) == state
+    assert core.get('environments', env['id'])['ui_session_saved_at']   # queda registrado cuándo se guardó
+    core.clear_ui_session(env['id'])
+    assert core.get_ui_session(env['id']) is None
+    assert 'ui_session_saved_at' not in core.get('environments', env['id'])
+
+
+def test_save_ui_session_requires_an_existing_environment():
+    with pytest.raises(ValueError):
+        core.save_ui_session('no-existe', {'cookies': [], 'origins': []})
+
+
+def test_saving_the_environment_again_keeps_the_saved_session_reference():
+    """Editar y guardar el ambiente desde la pantalla no debe perder la referencia a una sesión ya capturada."""
+    project = core.create_project('SSO2')
+    env = core.save('environments', {'name': 'qa', 'project_id': project['id'], 'base_url': 'https://qa.example.com', 'variables': {}, 'auth': {'type': 'none'}})
+    core.save_ui_session(env['id'], {'cookies': [], 'origins': []})
+    saved_at = core.get('environments', env['id'])['ui_session_saved_at']
+    reloaded = core.get('environments', env['id'])
+    core.save('environments', {**reloaded, 'name': 'qa renombrado'})   # igual que hace environments.py al guardar, preservando el campo
+    assert core.get('environments', env['id'])['ui_session_saved_at'] == saved_at
+
+
+def test_exporting_an_environment_never_carries_the_session_timestamp():
+    """La sesión vive en el llavero de esta máquina, bajo el id actual — importarla con otro id no la trae."""
+    project = core.create_project('SSO3')
+    env = core.save('environments', {'name': 'qa', 'project_id': project['id'], 'base_url': 'https://qa.example.com', 'variables': {}, 'auth': {'type': 'none'}})
+    core.save_ui_session(env['id'], {'cookies': [], 'origins': []})
+    sanitized = core._sanitize_for_export('environments', core.get('environments', env['id']))
+    assert 'ui_session_saved_at' not in sanitized

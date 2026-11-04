@@ -85,6 +85,7 @@ Un **ambiente** define *dónde* se ejecutan las pruebas.
 | **Nombre** | Por ejemplo `QA`, `Preproducción`. |
 | **URL base (API)** | Obligatoria, con `http://` o `https://`. Ej.: `https://qa.empresa.com`. |
 | **URL base de la interfaz** | Opcional. Solo si tu sitio web está en otra dirección que la API; la usan los **casos UI**. |
+| **Hosts adicionales de confianza** | Opcional. Dominios extra a los que un Caso UI puede navegar (SSO/MFA) — ver más abajo. |
 | **Autenticación** | **Sin autenticación**, **Bearer token** o **API Key**. |
 | **Secreto guardado en el sistema** | Elige un secreto de la lista (ver abajo). |
 | **…o variable de entorno** | Alternativa: el nombre de una variable de entorno del sistema (por ejemplo `QA_TOKEN`). |
@@ -94,6 +95,17 @@ Un **ambiente** define *dónde* se ejecutan las pruebas.
 Pulsa **Nuevo ambiente** y luego **Guardar ambiente**. La lista es una tabla: haz clic en una fila (o en su icono ✎) para editarlo; el 🗑 lo elimina (no se puede si alguna suite lo usa).
 
 Con **Bearer**, LTW envía `Authorization: Bearer <valor del secreto>`; con **API Key**, el header elegido con el valor del secreto. Si falta el secreto o la variable de entorno, el caso termina en **Error** con ese mensaje y **no se envía**.
+
+### Hosts adicionales y sesión guardada (SSO/MFA, como PingID)
+
+Un **Caso UI** solo puede navegar dentro del host de la **URL base**: cualquier otro dominio se bloquea a nivel de red, para que un caso nunca termine en un sitio ajeno por accidente. Un login real detrás de **SSO/MFA** (PingID, Okta, Azure AD…) típicamente redirige a OTRO dominio y además pide una aprobación (push al teléfono, código) que **ninguna herramienta puede scriptear** — ni LTW ni ninguna otra, porque depende de un humano o de la API propia del proveedor.
+
+Dos campos resuelven esto:
+
+- **Hosts adicionales de confianza**: lista separada por coma de los dominios a los que un Caso UI puede navegar además de la URL base (p. ej. `auth.miempresa.com, miempresa.pingone.com`). Sin esto, la redirección al proveedor de SSO se corta ahí.
+- **Sesión guardada**: en vez de automatizar el login (imposible con MFA), lo evitás — inicias sesión **una sola vez, a mano**, en una ventana real que abre **«Capturar sesión ahora»** (requiere guardar el ambiente primero). Cerrá la ventana una vez logueado y LTW guarda las cookies/sesión resultantes en el **Administrador de credenciales** de esta máquina. Desde ese momento, cualquier Caso UI contra este ambiente **arranca ya autenticado**, sin pasar por el formulario de login. **Borrar sesión** la quita (pide confirmación); volver a guardar el ambiente no la pierde.
+
+> La sesión vive en esta máquina, no viaja en exportaciones ni se comparte entre ambientes: cada persona del equipo que necesite correr Casos UI contra un sistema con SSO tiene que capturar la suya.
 
 ### Obtención de token o clave (opcional)
 

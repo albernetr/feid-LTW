@@ -1,7 +1,7 @@
 import json
 from nicegui import run, ui
-from .. import core
-from .common import frame, guard, confirm, empty_state, require_project, kv_editor, protected_page
+from .. import core, recorder
+from .common import frame, guard, confirm, empty_state, require_project, kv_editor, fmt_time, protected_page
 
 AUTH_LABELS = {'none': 'Sin autenticación', 'bearer': 'Bearer', 'api_key': 'API Key'}
 
@@ -20,6 +20,7 @@ def _delete_environment(env_id, env_name, on_done):
             detail = f' ({step_count} paso(s) con ambiente propio)' if step_count else ''
             ui.notify(f'No se puede eliminar: lo usan {len(affected)} flujo(s){detail}', type='negative', multi_line=True)
             return
+        core.secret_delete(core.ui_session_secret_name(env_id))   # sesión guardada para Casos UI, si había una
         core.delete('environments', env_id)
         ui.notify('Ambiente eliminado', type='positive')
         on_done()
@@ -133,6 +134,12 @@ def environment_edit(id: str = ''):
                 name = ui.input('Nombre', value=(current or {}).get('name', 'QA')).props('outlined dense').classes('w-60').mark('env-name')
                 base = ui.input('URL base (API)', value=(current or {}).get('base_url', ''), placeholder='https://qa.ejemplo.com').props('outlined dense').classes('grow').mark('env-base-url')
             ui_base = ui.input('URL base de la interfaz (si es distinta; opcional)', value=(current or {}).get('ui_base_url', '')).props('outlined dense').classes('w-full').mark('env-ui-base-url')
+            trusted_hosts = ui.input('Hosts adicionales de confianza para Casos UI (separados por coma)',
+                                     value=', '.join((current or {}).get('trusted_hosts', [])),
+                                     placeholder='auth.miempresa.com, miempresa.pingone.com') \
+                .props('outlined dense').classes('w-full').mark('env-trusted-hosts')
+            ui.label('Un Caso UI solo navega dentro del host de arriba; si el login pasa por otro dominio (SSO/MFA — PingID, Okta, Azure AD…), '
+                     'agrégalo acá o la redirección se bloquea.').classes('text-xs text-gray-500')
             backend0, frontend0 = core.environment_flags(current) if current else (True, True)
             with ui.row().classes('items-center gap-4'):
                 env_backend = ui.checkbox('Sirve backend (API)', value=backend0).mark('env-is-backend')
@@ -272,13 +279,45 @@ def environment_edit(id: str = ''):
                     auth_item['refresh'] = refresh_cfg
                     if current and current.get('auth', {}).get('token_expires_at') and current['auth'].get('refresh') == refresh_cfg:
                         auth_item['token_expires_at'] = current['auth']['token_expires_at']  # unchanged config: keep what we already know
+                hosts = [core.validate_hostname(h) for h in (trusted_hosts.value or '').split(',') if h.strip()]
                 item = {'name': clean_name, 'project_id': pid, 'base_url': base.value.strip(), 'ui_base_url': (ui_base.value or '').strip(),
-                        'is_backend': env_backend.value, 'is_frontend': env_frontend.value, 'auth': auth_item, 'variables': clean}
+                        'trusted_hosts': hosts, 'is_backend': env_backend.value, 'is_frontend': env_frontend.value, 'auth': auth_item, 'variables': clean}
                 if current:
                     item['id'] = current['id']
+                    if current.get('ui_session_saved_at'):
+                        item['ui_session_saved_at'] = current['ui_session_saved_at']   # editar/guardar no debe perder la referencia a la sesión ya capturada
                 core.save('environments', item)
                 ui.notify('Ambiente guardado', type='positive')
                 ui.navigate.to('/environments')
+
+            ui.separator().classes('my-2')
+            ui.label('Sesión guardada para Casos UI (SSO/MFA)').classes('font-medium')
+            saved_at = (current or {}).get('ui_session_saved_at')
+            ui.label(f'Sesión guardada el {fmt_time(saved_at)}.' if saved_at else
+                     'Sin sesión guardada: los Casos UI contra este ambiente arrancan sin iniciar sesión.').classes('text-sm text-gray-600').mark('env-session-status')
+            ui.label('Si el login pasa por SSO/MFA (PingID y similares), ningún Caso UI lo puede completar solo — la aprobación por push al teléfono '
+                     'no la puede scriptear ninguna herramienta. En su lugar, iniciá sesión una vez acá a mano; los Casos UI arrancan ya con esa sesión.').classes('text-xs text-gray-500')
+
+            async def capture():
+                if not current:
+                    raise ValueError('Guarda el ambiente primero para poder capturar una sesión.')
+                target = (ui_base.value or base.value or '').strip()
+                core.validate_base_url(target)
+                ui.notify('Se abrirá una ventana de navegador aparte en tu escritorio: iniciá sesión ahí (incluida la verificación en dos pasos si la pide) y cerrala al terminar.', type='info', multi_line=True)
+                state = await run.io_bound(recorder.capture_session, target)
+                core.save_ui_session(current['id'], state)
+                ui.notify('Sesión guardada', type='positive')
+                ui.navigate.reload()
+
+            def clear():
+                core.clear_ui_session(current['id'])
+                ui.notify('Sesión borrada', type='positive')
+                ui.navigate.reload()
+            with ui.row().classes('gap-2'):
+                ui.button('Capturar sesión ahora', icon='fingerprint', on_click=guard(capture)).props('outline dense no-caps').mark('env-session-capture')
+                if saved_at:
+                    ui.button('Borrar sesión', icon='delete', on_click=lambda: confirm('¿Borrar la sesión guardada de este ambiente?', clear)).props('outline dense no-caps color=negative').mark('env-session-clear')
+
             ui.separator().classes('my-2')
             with ui.row().classes('gap-2'):
                 ui.button('Guardar ambiente', icon='save', on_click=guard(save)).props('color=primary').mark('env-save')

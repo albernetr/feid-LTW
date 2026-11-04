@@ -57,6 +57,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/clientes':
             rows = ''.join(f'<li>{i["name"]}</li>' for i in self.server.items)
             return self._send(200, PAGE.format(title='Clientes', body=f'<h1>Clientes</h1><ul>{rows}</ul>'), 'text/html')
+        if path == '/set-cookie':   # para probar que una sesión guardada (storage_state) llega al navegador antes del primer paso
+            body = PAGE.format(title='Cookie', body='<p>ok</p>').encode()
+            self.send_response(200)
+            self.send_header('Set-Cookie', 'session=qa-token; Path=/')
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path == '/whoami':
+            cookie = self.headers.get('Cookie') or 'ninguna'
+            return self._send(200, PAGE.format(title='Whoami', body=f'<p data-testid="cookie">{cookie}</p>'), 'text/html')
         if path.startswith('/api/users/'):  # public, deterministic except for requested_at
             ident = path.rsplit('/', 1)[1]
             if not ident.isdigit() or not 1 <= int(ident) <= 5:

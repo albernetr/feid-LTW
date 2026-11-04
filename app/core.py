@@ -2234,6 +2234,51 @@ def validate_base_url(url, required=True):
     return value
 
 
+def validate_hostname(value):
+    """A bare hostname (no scheme, no path, no port needed) for `environments.trusted_hosts` — un host de SSO
+    al que un Caso UI puede navegar además de la URL base (ver automation.execute_ui)."""
+    value = (value or '').strip()
+    if not value or '/' in value or ' ' in value or urlparse('http://' + value).hostname != value.lower():
+        raise ValueError(f'«{value}» no es un host válido (sin http://, sin ruta — solo el dominio, p. ej. auth.miempresa.com)')
+    return value.lower()
+
+
+def ui_session_secret_name(environment_id):
+    return f'LTW_UI_SESSION_{environment_id}'
+
+
+def save_ui_session(environment_id, storage_state):
+    """Guarda la sesión (cookies/localStorage) que alguien capturó a mano iniciando sesión en un navegador real
+    — pensado para SSO/MFA (PingID y similares) que ningún Caso UI puede completar solo, porque la aprobación
+    por push al teléfono no la puede scriptear ninguna herramienta. Un Caso UI que corre contra este ambiente
+    arranca ya con esa sesión cargada, sin pasar por el login. Ver recorder.capture_session()."""
+    environment = get('environments', environment_id)
+    if environment is None:
+        raise ValueError('Ambiente inexistente')
+    secret_set(ui_session_secret_name(environment_id), json.dumps(storage_state, ensure_ascii=False))
+    save('environments', {**environment, 'ui_session_saved_at': now()})
+
+
+def get_ui_session(environment_id):
+    raw = secret_get(ui_session_secret_name(environment_id))
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
+
+
+def clear_ui_session(environment_id):
+    environment = get('environments', environment_id)
+    if environment is None:
+        raise ValueError('Ambiente inexistente')
+    secret_delete(ui_session_secret_name(environment_id))
+    env = dict(environment)
+    env.pop('ui_session_saved_at', None)
+    save('environments', env)
+
+
 def split_url(url):
     """'https://h:8443/a/b?x=1' -> ('https://h:8443', '/a/b?x=1'); raises ValueError on invalid URLs."""
     parsed = urlparse((url or '').strip())
@@ -2813,6 +2858,7 @@ def _sanitize_for_export(table, obj):
     obj = copy.deepcopy(obj)
     if table == 'environments':
         obj.pop('secrets', None)
+        obj.pop('ui_session_saved_at', None)   # la sesión en sí vive en el llavero de ESTA máquina, bajo el id actual del ambiente — importarla con otro id (o en otra máquina) no la trae consigo
         obj['variables'] = {k: v for k, v in obj.get('variables', {}).items() if not SENSITIVE_NAME.search(k)}
     elif table == 'schedules':
         obj['enabled'] = False

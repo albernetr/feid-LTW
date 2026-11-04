@@ -146,6 +146,39 @@ def test_ui_case_with_real_chromium(world):
     assert 'sin resolver' in automation.execute_ui(unresolved, world['env'])['error']
 
 
+def test_trusted_hosts_allows_navigating_to_an_additional_host(world):
+    """`localhost` y `127.0.0.1` son hosts DISTINTOS para el chequeo (aunque el mismo servidor responda a los
+    dos) — sirve para probar `trusted_hosts` (SSO/MFA como PingID) sin levantar un segundo dominio real."""
+    alt_url = world['app'].url.replace('127.0.0.1', 'localhost') + '/clientes'
+    case = core.save('cases', {'name': 'cross-host', 'type': 'ui', 'steps': [
+        {'action': 'navigate', 'url': alt_url}, {'action': 'assert_url', 'expected': '/clientes'}]})
+    assert 'fuera del host' in automation.execute_ui(case, world['env'])['error']   # sin listarlo, sigue bloqueado
+    trusting_env = dict(world['env'], trusted_hosts=['localhost'])
+    result = automation.execute_ui(case, trusting_env)
+    assert result['status'] == 'passed', result
+
+
+def test_ui_session_lets_a_case_start_already_logged_in(world):
+    """Una sesión guardada (core.save_ui_session, ver recorder.capture_session) se carga en el contexto ANTES
+    del primer paso: un caso que nunca pasa por el formulario de login puede llegar ya autenticado, igual que
+    un login real de SSO/MFA capturado a mano una sola vez."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context()
+        context.new_page().goto(world['app'].url + '/set-cookie')
+        state = context.storage_state()
+        browser.close()
+    case = core.save('cases', {'name': 'whoami', 'type': 'ui', 'steps': [
+        {'action': 'navigate', 'url': '/whoami'},
+        {'action': 'assert_text', 'locator': {'by': 'testid', 'value': 'cookie'}, 'expected': 'session=qa-token'}]})
+    before = automation.execute_ui(case, world['env'])
+    assert before['status'] == 'failed'   # sin sesión guardada todavía: no hay cookie que mandar
+    core.save_ui_session(world['env']['id'], state)
+    after = automation.execute_ui(case, world['env'])
+    assert after['status'] == 'passed', after
+
+
 def test_recorded_script_runs_as_ui_case(world):
     script = f'''
 page.goto("{world["app"].url}/login")

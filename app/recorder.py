@@ -4,6 +4,7 @@ The generated script is NEVER executed: it is parsed with ast and only a whiteli
 subset of calls is translated into declarative steps. Everything else is reported.
 """
 import ast
+import json
 import os
 import re
 import subprocess
@@ -214,6 +215,29 @@ def launch_codegen(url, timeout=900):
             if failure:
                 raise ValueError(failure)
         return script
+
+
+def capture_session(url, timeout=900):
+    """Opens the same codegen window as launch_codegen, but to log in by hand instead of recording steps — even
+    through an identity provider on another domain (SSO, MFA) that a Caso UI could never navigate to on its own
+    (host bloqueado, ver automation.execute_ui). Playwright saves the resulting cookies/localStorage when the
+    window closes; that's what a later Caso UI replays against to start already logged in (ver
+    core.save_ui_session / Ambientes → «Sesión guardada»)."""
+    url = _checked_url(url)
+    with tempfile.TemporaryDirectory() as tmp:
+        state_path = Path(tmp) / 'state.json'
+        result = subprocess.run(_playwright_command() + ['codegen', '--target', 'python', '--save-storage', str(state_path), url],
+                                check=False, timeout=timeout, env=_env(), capture_output=True, text=True)
+        if not state_path.exists():
+            failure = _navigation_failure(result)
+            raise ValueError(failure or 'No se guardó ninguna sesión (¿cerraste la ventana sin llegar a iniciar sesión?).')
+        try:
+            state = json.loads(state_path.read_text(encoding='utf-8'))
+        except ValueError:
+            raise ValueError('El archivo de sesión que generó Playwright no es válido.')
+        if not state.get('cookies') and not state.get('origins'):
+            raise ValueError('La sesión capturada está vacía: inicia sesión en la ventana antes de cerrarla.')
+        return state
 
 
 def open_browser(url, timeout=900):
