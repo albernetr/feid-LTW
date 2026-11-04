@@ -34,21 +34,36 @@ def cases_list():
             return
         pid = core.get_active_project_id()
         envs = core.list_project_items('environments', pid)
+        all_items = [c for c in core.list_project_items('cases', pid) if is_api(c)]
+        modules_by_id = {m['id']: m for m in core.list_project_items('modules', pid)}
+        group_names = {g['id']: g['name'] for g in core.list_project_items('module_groups', pid)}
+
+        def case_group_ids(case):
+            component = modules_by_id.get(case.get('module_id'))
+            return core.component_module_group_ids(component) if component else []
+
         with ui.row().classes('items-center gap-3'):
             ui.button('Nuevo caso', icon='add', on_click=lambda: ui.navigate.to('/cases/edit')).props('color=primary')
             env_select = ui.select({e['id']: e['name'] for e in envs}, value=envs[0]['id'] if envs else None, label='Ejecutar en ambiente').props('outlined dense').classes('w-60')
+            component_options = {mid: modules_by_id[mid]['name'] for mid in sorted({c['module_id'] for c in all_items if c.get('module_id')}) if mid in modules_by_id}
+            group_options = {gid: group_names[gid] for gid in sorted({g for c in all_items for g in case_group_ids(c)}) if gid in group_names}
+            selected = {'tag': None, 'component': None, 'group': None}
+            if component_options:
+                ui.select(component_options, label='Componente', clearable=True).props('outlined dense').classes('w-56').mark('cases-filter-component') \
+                    .on_value_change(lambda e: (selected.__setitem__('component', e.value), render.refresh()))
+            if group_options:
+                ui.select(group_options, label='Módulo', clearable=True).props('outlined dense').classes('w-56').mark('cases-filter-group') \
+                    .on_value_change(lambda e: (selected.__setitem__('group', e.value), render.refresh()))
         if not envs:
             ui.label('Registra un ambiente para poder ejecutar casos.').classes('text-amber-700')
-        all_items = [c for c in core.list_project_items('cases', pid) if is_api(c)]
         if not all_items:
             empty_state('No hay casos API en este proyecto.')
             return
 
         all_tags = sorted({t for c in all_items for t in c.get('tags', [])})
-        selected_tag = {'value': None}
         if all_tags:
             def pick_tag(tag):
-                selected_tag['value'] = None if selected_tag['value'] == tag else tag
+                selected['tag'] = None if selected['tag'] == tag else tag
                 render.refresh()
             with ui.row().classes('items-center gap-1 flex-wrap'):
                 ui.label('Etiquetas del contrato:').classes('text-xs text-gray-500')
@@ -57,9 +72,11 @@ def cases_list():
 
         @ui.refreshable
         def render():
-            items = [c for c in all_items if not selected_tag['value'] or selected_tag['value'] in c.get('tags', [])]
+            items = [c for c in all_items if (not selected['tag'] or selected['tag'] in c.get('tags', []))
+                     and (not selected['component'] or c.get('module_id') == selected['component'])
+                     and (not selected['group'] or selected['group'] in case_group_ids(c))]
             if not items:
-                ui.label('Ningún caso con esa etiqueta.').classes('text-gray-500')
+                ui.label('Ningún caso coincide con los filtros.').classes('text-gray-500')
             for case in items:
                 with ui.card().classes('w-full'):
                     with ui.row().classes('items-center gap-3 w-full no-wrap'):

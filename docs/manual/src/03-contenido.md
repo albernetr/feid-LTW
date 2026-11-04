@@ -156,6 +156,7 @@ Un **caso API** es una petición HTTP guardada con las **aserciones** que debe c
 
 - **Nuevo caso** abre el editor vacío.
 - **Ejecutar en ambiente** elige el ambiente para los botones ▶ de la lista. Si no hay ambientes se te avisa.
+- **Componente** y **Módulo** filtran la lista por el componente del caso o por el módulo (grupo) al que pertenece ese componente — aparecen solo si hay algo que filtrar. Se combinan entre sí y con las **etiquetas del contrato**, de abajo.
 - Cada tarjeta muestra el **método**, el **nombre** (con el **estado de su última ejecución** al lado, si ya corrió alguna vez), la **ruta** y el número de aserciones, y estos botones:
 
 | Botón | Acción |

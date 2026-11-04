@@ -125,6 +125,40 @@ async def test_creating_and_running_a_case_from_the_ui_stamps_created_by_and_exe
     assert run['executed_by'] == test_account['id']
 
 
+async def test_cases_list_filters_by_component_and_module(user: User):
+    from nicegui import ui
+
+    async def visible_names():
+        """El clic en una opción del desplegable no se procesa en el mismo tick — hay que esperar a que
+        render.refresh() termine antes de leer qué tarjetas quedaron, o se lee el estado anterior."""
+        await eventually(lambda: True)   # cede el control una vez; suficiente para que el on_value_change corra
+        return {c.text for c in user.find(kind=ui.label).elements if c.text in ('Cobrar', 'Enviar')}
+
+    project = core.create_project('Filtros')
+    core.set_active_project(project['id'])
+    group = core.create_module_group('Pagos', project['id'])
+    payments = core.create_component('API Pagos', project['id'], module_group_ids=[group['id']])
+    shipping = core.create_component('API Envíos', project['id'])
+    core.save('cases', {'name': 'Cobrar', 'type': 'api', 'project_id': project['id'], 'module_id': payments['id'],
+                        'method': 'POST', 'path': '/pagar', 'assertions': []})
+    core.save('cases', {'name': 'Enviar', 'type': 'api', 'project_id': project['id'], 'module_id': shipping['id'],
+                        'method': 'POST', 'path': '/enviar', 'assertions': []})
+    await user.open('/cases')
+    await user.should_see('Cobrar')
+    await user.should_see('Enviar')
+
+    user.find(marker='cases-filter-component').click()
+    user.find('API Pagos').click()
+    assert await visible_names() == {'Cobrar'}
+
+    await user.open('/cases')   # página nueva: filtros vuelven a «todos»
+    await user.should_see('Cobrar')
+    await user.should_see('Enviar')
+    user.find(marker='cases-filter-group').click()
+    user.find('Pagos').click()
+    assert await visible_names() == {'Cobrar'}   # «Enviar» es de un componente sin módulo: no coincide
+
+
 async def test_openapi_upload_works_with_nicegui_3(user: User):
     from nicegui import ui
     from nicegui.elements.upload_files import SmallFileUpload
