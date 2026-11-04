@@ -250,6 +250,7 @@ def suite_edit(id: str = ''):
                 ui.label('Cambios rápidos, sin salir de la suite. El componente/contrato y el encadenamiento del caso se editan en Casos API.').classes('text-xs text-gray-500')
                 headers = {k: str(v) for k, v in (case.get('headers') or {}).items()}
                 query = {k: str(v) for k, v in (case.get('query') or {}).items()}
+                case_vars = {k: str(v) for k, v in (case.get('variables') or {}).items()}
                 rules = [dict(r) for r in case.get('assertions', [])]
                 body_state = {'value': case.get('body')}
                 cname = ui.input('Nombre', value=case['name']).props('outlined dense').classes('w-full')
@@ -265,6 +266,9 @@ def suite_edit(id: str = ''):
                         kv_editor(headers, 'Header', 'Valor')
                         ui.label('Query params').classes('font-medium text-sm')
                         kv_editor(query, 'Parámetro', 'Valor')
+                        ui.label('Variables').classes('font-medium text-sm')
+                        ui.label('{{nombre}} en headers/query/body de este caso, propias de él (además de las de la suite y del ambiente).').classes('text-xs text-gray-500')
+                        kv_editor(case_vars, 'Nombre', 'Valor')
                         ui.label('Body (JSON)').classes('font-medium text-sm')
                         json_box(body_state['value'], lambda v: body_state.__setitem__('value', v))
                     with ui.tab_panel(tab_assert):
@@ -279,6 +283,7 @@ def suite_edit(id: str = ''):
                                 raise ValueError(f'Aserción {index}: {problem}')
                         updated = core.save('cases', {**case, 'name': cname.value.strip(), 'method': method.value, 'path': (path.value or '/').strip(),
                                             'headers': {k: v for k, v in headers.items() if k.strip()}, 'query': {k: v for k, v in query.items() if k.strip()},
+                                            'variables': {k: v for k, v in case_vars.items() if k.strip()},
                                             'body': body_state['value'], 'assertions': rules})
                         cases[case_id] = updated   # para que la suite lo muestre actualizado al volver, sin recargar la página
                         ui.notify('Caso actualizado', type='positive')

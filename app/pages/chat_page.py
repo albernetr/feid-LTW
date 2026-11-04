@@ -105,7 +105,10 @@ def build(preset_case_id=None):
         @ui.refreshable
         def case_picker():
             project_id = core.get_active_project_id()
-            cases = [c for c in core.list_project_items('cases', project_id) if c.get('type') != 'ui'] if project_id else []
+            # Solo casos con mapeo de chat configurado: los «Turno N: …» que genera cada suite al guardar una
+            # conversación son casos API comunes (chat=None, un paso suelto dentro del flujo) y no se pueden
+            # retomar como chat — listarlos acá solo confundía (el chat quedaba en blanco al elegir uno).
+            cases = [c for c in core.list_project_items('cases', project_id) if c.get('chat')] if project_id else []
             options = {'': 'Caso nuevo (sin guardar)', **{c['id']: c['name'] for c in cases}}
             ui.select(options, value='', label='Retomar conversación', on_change=lambda e: load_case(core.get('cases', e.value)) if e.value else None) \
                 .props('outlined dense options-dense').classes('w-56').tooltip('Continúa una conversación guardada exactamente donde quedó')
