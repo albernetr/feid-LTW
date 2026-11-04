@@ -42,7 +42,7 @@ No todas las partes tienen el mismo recorrido. Esto no mide «¿funciona?» sino
 | Nivel | Qué significa | Incluye |
 |---|---|---|
 | 🟢 **Estable** | Probado contra sistemas reales, con pruebas automáticas y fallos reales encontrados y corregidos. | Motor de aserciones y ejecución de casos API (26 tipos) · Protocolo para agentes (`ltw.spec`/`ltw.report`/`ltw.failure`) · Importar contratos OpenAPI (archivo, URL, Swagger UI/Redoc/FastAPI) · Exploración automática de contratos · Importar/Exportar del workspace · Seguridad de secretos |
-| 🟡 **Beta** | Funciona y tiene pruebas, pero con menos uso real sostenido o un límite conocido que conviene vigilar. | Suites y flujos con enriquecimiento entre componentes · Observador de interfaces (el tap/proxy en vivo, más que aprender del historial) · Resumen ejecutivo y reporte de estatus · Casos UI y el espacio de trabajo unificado · Actualización automática de token por petición HTTP · Componentes creados manualmente sin contrato · Módulos y Funcionalidades (agrupación por dominio y trazabilidad de negocio) · Componentes con múltiples ambientes y backend+frontend a la vez |
+| 🟡 **Beta** | Funciona y tiene pruebas, pero con menos uso real sostenido o un límite conocido que conviene vigilar. | Suites y flujos con enriquecimiento entre componentes · Observador de interfaces (el tap/proxy en vivo, más que aprender del historial) · Resumen ejecutivo y reporte de estatus · Casos UI y el espacio de trabajo unificado · Actualización automática de token por petición HTTP · Componentes creados manualmente sin contrato · Módulos y Funcionalidades (agrupación por dominio y trazabilidad de negocio) · Componentes con múltiples ambientes y backend+frontend a la vez · Chat multi-turno (conversar con un bot paso a paso, retomar, plantillas, congelar como suite) · Consecutivos con nombre (`{{seq:nombre}}`) y consecutivo propio de una suite (`seq_start`) · Conjuntos de datos (subidos o armados a mano) y `{{random:conjunto.columna}}` · Sorteos en una Suite (misma fila de datos para todos los pasos) y ejecutar/generar N conversaciones |
 | ⚪ **Experimental** | Usable, pero la calidad depende de algo fuera de LTW (el modelo que conectes) o de un uso que casi no se ha probado. | Asistente con modelo de lenguaje (depende del modelo que conectes) · Programaciones de larga duración sin supervisión · Actualización automática de token por comando del sistema |
 
 Límites conocidos de cada sección, en detalle: [KNOWN_LIMITATIONS.md](../../KNOWN_LIMITATIONS.md).
@@ -214,6 +214,8 @@ Espacio de trabajo: historial propio de peticiones sueltas (no necesita proyecto
 | **Observador** | Taps, catálogo de interfaces y cambios. |
 | **Programaciones** | Ejecuciones automáticas. |
 | **Modelos de IA** | Registra varios modelos de lenguaje (locales o en la nube) y elige cuál está activo, sin repetir URL ni clave cada vez. |
+| **Variables y secuencias** | Lo que cada variable integrada (`{{now_date}}`, `{{uuid}}`, `{{seq}}`…) resolvería ahora mismo, el consecutivo global y cada consecutivo con nombre (`{{seq:nombre}}`) usado hasta ahora, con su valor editable. |
+| **Conjuntos de datos** | Valores de referencia subidos (.txt/.csv/.json) o armados a mano, para usar como `{{random:conjunto.columna}}` en cualquier caso. |
 | **Historial** | Resultados de ejecuciones y evidencias. |
 | **Importar / Exportar** | Paquetes ZIP y diagnóstico. |
 
