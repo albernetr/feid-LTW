@@ -328,3 +328,14 @@ La conexión a Azure SQL y los modelos de IA registrados (cada uno con su clave 
 
 - **Exportar**: elegí qué incluir (modelos de IA, base de datos, o ambas), escribí una **frase de cifrado** y descargá el archivo (`ltw-config-equipo.json`) — queda cifrado con esa frase (PBKDF2 + Fernet); ni la contraseña de Azure SQL ni las claves de API quedan en texto plano dentro del archivo. Compartí la frase por un **canal distinto** del archivo (nunca en el mismo correo o chat).
 - **Importar**: subí el archivo recibido y escribí la misma frase. Si traía una conexión de base de datos, queda guardada (igual que «Establecer», sin activar); si traía modelos, cada uno se registra con su clave — un modelo cuyo nombre choque con uno distinto ya registrado en esa máquina se **omite** (se avisa cuál y por qué) sin interrumpir el resto de la importación. **Importar nunca activa nada solo**: activar un modelo o el backend de base de datos sigue siendo un paso aparte, confirmado, en su propia pantalla.
+
+## 15.6 Sincronizar SQLite y Azure SQL a demanda
+
+Con los dos backends configurados («dual»: ver 15.4), **Configuraciones → Base de datos** muestra una tarjeta **«Sincronizar bases de datos»** para copiar datos de uno al otro — sin cambiar cuál backend está **activo** (eso lo decide «Establecer/Activar», más arriba) y sin tocar la base que no es el destino. Útil cuando alguien trabajó un rato con un backend y después quiere juntar lo nuevo con el otro, o migrar de uno a otro sin perder nada.
+
+- **Sentido**: SQLite → Azure SQL, o Azure SQL → SQLite.
+- **Estrategia**: **Fusionar** agrega al destino lo que le falta y **nunca sobrescribe** lo que ya tiene (gana el destino); **Reemplazar** sobrescribe en el destino cualquier registro que también exista en el origen (gana el origen) — pide escribir **CONFIRMAR**, porque puede pisar datos reales.
+- **Incluir historial**: sin marcar, solo se sincronizan proyectos, componentes, ambientes, casos, flujos, suites, programaciones, conjuntos de datos e integraciones (lo mismo que ya exporta/importa un paquete); marcado, también el historial de ejecuciones.
+- **Vista previa** muestra, por tabla, cuántos registros hay en el origen, cuántos son nuevos para el destino y cuántos ya coinciden — sin escribir nada. **Sincronizar** hace el mismo recorrido pero escribiendo.
+
+> **Qué no hace:** no es una replicación continua ni resuelve conflictos campo por campo — es una copia explícita, a demanda, en el sentido y con la estrategia que elijas cada vez. Las cuentas de usuario no se sincronizan (igual que con los paquetes): cada base tiene su propia lista.

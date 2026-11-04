@@ -5,8 +5,14 @@ SQLite esté activo, listos para reactivar sin volver a escribirlos. El cambio s
 aplicación — nunca se aplica en caliente (ver manual, capítulo 15.4)."""
 import os
 from nicegui import run, ui
-from .. import azure_sql_backend, storage_config
-from .common import frame, guard, confirm_with_phrase, protected_page, team_config_card
+from .. import azure_sql_backend, storage_config, storage_sync
+from .common import frame, guard, confirm, confirm_with_phrase, protected_page, team_config_card
+
+SYNC_TABLE_LABELS = {'projects': 'Proyectos', 'module_groups': 'Grupos de módulos', 'modules': 'Componentes',
+                     'environments': 'Ambientes', 'cases': 'Casos', 'features': 'Funcionalidades', 'suites': 'Flujos',
+                     'schedules': 'Programaciones', 'datasets': 'Conjuntos de datos', 'suite_groups': 'Suites',
+                     'integrations': 'Integraciones', 'runs': 'Historial'}
+SYNC_DIRECTIONS = {'sqlite_to_azure': 'SQLite → Azure SQL', 'azure_to_sqlite': 'Azure SQL → SQLite'}
 
 ACTIVATE_PHRASE = 'CONFIRMAR'
 
@@ -99,5 +105,47 @@ def storage_settings():
                 ui.button('Probar conexión', icon='bolt', on_click=guard(probe)).props('color=primary').mark('storage-probe-submit')
                 ui.button('Establecer (sin activar)', icon='save', on_click=lambda: open_establish_dialog(False)).props('outline').mark('storage-establish')
                 ui.button('Establecer y activar', icon='power_settings_new', on_click=lambda: open_establish_dialog(True)).props('outline color=positive').mark('storage-establish-activate')
+
+        with ui.card().classes('w-full'):
+            ui.label('Sincronizar bases de datos').classes('text-lg font-semibold')
+            ui.label('Copia datos de un backend al otro, a demanda — no cambia cuál backend está activo ni reemplaza «Establecer/Activar» de arriba. '
+                      '«Fusionar» nunca sobrescribe lo que ya existe en el destino, solo agrega lo que falta; «Reemplazar» sí sobrescribe las coincidencias.').classes('text-sm text-gray-500')
+            if storage_config.azure_sql_connection_config() is None:
+                ui.label('Todavía no hay una conexión de Azure SQL guardada — establecela arriba primero.').classes('text-sm text-amber-700')
+            else:
+                with ui.row().classes('w-full gap-3 items-end flex-wrap'):
+                    direction = ui.select(SYNC_DIRECTIONS, value='sqlite_to_azure', label='Sentido').props('outlined dense').classes('w-64').mark('storage-sync-direction')
+                    strategy = ui.select({'merge': 'Fusionar (omite lo que ya existe)', 'replace': 'Reemplazar coincidencias'},
+                                         value='merge', label='Estrategia').props('outlined dense').classes('w-72').mark('storage-sync-strategy')
+                include_runs = ui.checkbox('Incluir historial (ejecuciones)').mark('storage-sync-include-runs')
+                preview_box = ui.column().classes('w-full gap-1')
+
+                async def do_preview():
+                    preview_box.clear()
+                    summary = await run.io_bound(storage_sync.preview_sync, direction.value, strategy.value, include_runs.value)
+                    with preview_box:
+                        rows = [(table, counts) for table, counts in summary.items() if counts['total']]
+                        if not rows:
+                            ui.label('No hay nada para sincronizar en ese sentido.').classes('text-gray-500')
+                        for table, counts in rows:
+                            ui.label(f'{SYNC_TABLE_LABELS.get(table, table)}: {counts["total"]} ({counts["new"]} nuevo(s), {counts["existing"]} coincidente(s))')
+
+                async def do_sync():
+                    summary = await run.io_bound(storage_sync.sync, direction.value, strategy.value, include_runs.value)
+                    written = sum(summary.values())
+                    ui.notify(f'Sincronizado: {written} registro(s) escritos.' if written else 'No había nada para sincronizar.', type='positive')
+                    preview_box.clear()
+
+                def open_sync_dialog():
+                    label = SYNC_DIRECTIONS[direction.value]
+                    if strategy.value == 'replace':
+                        confirm_with_phrase(f'Esto puede sobrescribir datos reales en el destino ({label}, reemplazando coincidencias).',
+                                            ACTIVATE_PHRASE, do_sync, 'Sincronizar')
+                    else:
+                        confirm(f'¿Sincronizar {label}? «Fusionar» nunca sobrescribe lo que ya existe en el destino.', do_sync, 'Sincronizar')
+
+                with ui.row().classes('gap-2'):
+                    ui.button('Vista previa', icon='visibility', on_click=guard(do_preview)).props('outline').mark('storage-sync-preview')
+                    ui.button('Sincronizar', icon='sync', on_click=guard(open_sync_dialog)).props('color=primary').mark('storage-sync-submit')
 
         team_config_card()
