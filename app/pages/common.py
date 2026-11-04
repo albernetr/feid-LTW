@@ -5,7 +5,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from nicegui import ui, run
-from .. import core, automation, evidence_report
+from .. import core, automation, evidence_report, integrations
 
 NAV = [
     ('Inicio', '/', 'home'), ('Resumen', '/resumen', 'monitor_heart'), ('Espacio de trabajo', '/workspace', 'space_dashboard'), ('Proyectos', '/projects', 'folder_open'),
@@ -13,6 +13,7 @@ NAV = [
     ('Casos API', '/cases', 'http'), ('Casos UI', '/ui-cases', 'web'), ('Funcionalidades', '/features', 'flag'),
     ('Flujos', '/suites', 'playlist_play'), ('Suites', '/suite-groups', 'folder_special'), ('Chat', '/chat', 'forum'), ('Observador', '/observer', 'visibility'), ('Programaciones', '/schedules', 'schedule'),
     ('Modelos de IA', '/models', 'smart_toy'), ('Variables y secuencias', '/sequences', 'numbers'), ('Conjuntos de datos', '/datasets', 'dataset'),
+    ('Integraciones', '/integrations', 'extension'),
     ('Historial', '/runs', 'history'), ('Importar / Exportar', '/portable', 'swap_vert'),
 ]
 STATUS_COLOR = {'passed': 'positive', 'failed': 'negative', 'error': 'warning', 'cancelled': 'grey', 'skipped': 'grey'}
@@ -208,21 +209,61 @@ def agent_brief(run_id):
     dialog.open()
 
 
-async def _download_evidence(run_doc, kind):
-    """Evidencia paso a paso de una corrida, en el formato pedido — mismo contenido en los tres."""
-    data = evidence_report.build_report_data(run_doc)
-    stem = (run_doc.get('case_name') or run_doc.get('suite_name') or run_doc.get('group_name') or run_doc.get('id') or 'evidencia').replace(' ', '_')
+CONTENT_TYPES = {'html': 'text/html', 'pdf': 'application/pdf',
+                 'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}
+
+
+def _evidence_stem(run_doc):
+    return (run_doc.get('case_name') or run_doc.get('suite_name') or run_doc.get('group_name') or run_doc.get('id') or 'evidencia').replace(' ', '_')
+
+
+async def _render_evidence(data, kind):
+    """Devuelve (bytes, content_type) en el formato pedido — mismo contenido en los tres, reusado tanto para
+    descargar como para enviar a un ticket."""
     if kind == 'pdf':
         with tempfile.TemporaryDirectory() as folder:
             target = Path(folder) / 'r.pdf'
             await run.io_bound(evidence_report.render_evidence_pdf, evidence_report.render_evidence_html(data), target)
-            ui.download(target.read_bytes(), f'{stem}.pdf')
-    elif kind == 'docx':
-        content = await run.io_bound(evidence_report.render_evidence_docx, data)
-        ui.download(content, f'{stem}.docx')
-    else:
-        ui.download(evidence_report.render_evidence_html(data).encode('utf-8'), f'{stem}.html')
+            return target.read_bytes(), CONTENT_TYPES['pdf']
+    if kind == 'docx':
+        return await run.io_bound(evidence_report.render_evidence_docx, data), CONTENT_TYPES['docx']
+    return evidence_report.render_evidence_html(data).encode('utf-8'), CONTENT_TYPES['html']
+
+
+async def _download_evidence(run_doc, kind):
+    data = evidence_report.build_report_data(run_doc)
+    content, _ = await _render_evidence(data, kind)
+    ui.download(content, f'{_evidence_stem(run_doc)}.{kind}')
     ui.notify('Evidencia generada', type='positive')
+
+
+def _send_to_ticket_dialog(run_doc):
+    pid = core.get_active_project_id()
+    items = core.list_project_items('integrations', pid) if pid else []
+    if not items:
+        ui.notify('No hay integraciones configuradas. Ve a «Integraciones» para agregar una.', type='warning')
+        return
+    with ui.dialog() as dialog, ui.card().classes('w-96'):
+        ui.label('Enviar evidencia a un ticket').classes('text-lg font-semibold')
+        integ = ui.select({i['id']: f'{i["name"]} ({core.INTEGRATION_PLATFORMS.get(i["platform"], i["platform"])})' for i in items},
+                          value=items[0]['id'], label='Integración').props('outlined dense').classes('w-full')
+        ticket = ui.input('Ticket (Jira, p. ej. PROJ-123) o work item (Azure DevOps)').props('outlined dense').classes('w-full')
+        kind = ui.select({'pdf': 'PDF', 'html': 'HTML', 'docx': 'Word'}, value='pdf', label='Formato').props('outlined dense').classes('w-full')
+
+        async def send():
+            ticket_value = (ticket.value or '').strip()
+            if not ticket_value:
+                raise ValueError('Indica el ticket o work item de destino')
+            data = evidence_report.build_report_data(run_doc)
+            content, content_type = await _render_evidence(data, kind.value)
+            integration = core.get('integrations', integ.value)
+            await run.io_bound(integrations.attach_evidence, integration, f'{_evidence_stem(run_doc)}.{kind.value}', content, content_type, ticket_value)
+            ui.notify('Evidencia enviada', type='positive')
+            dialog.close()
+        with ui.row().classes('gap-2 justify-end w-full'):
+            ui.button('Cancelar', on_click=dialog.close).props('flat')
+            ui.button('Enviar', icon='send', on_click=guard(send)).props('color=primary')
+    dialog.open()
 
 
 def show_run(run):
@@ -302,6 +343,7 @@ def show_run(run):
                 ui.button('HTML', icon='download', on_click=guard(lambda: _download_evidence(run, 'html'))).props('flat dense no-caps')
                 ui.button('PDF', icon='picture_as_pdf', on_click=guard(lambda: _download_evidence(run, 'pdf'))).props('flat dense no-caps')
                 ui.button('Word', icon='description', on_click=guard(lambda: _download_evidence(run, 'docx'))).props('flat dense no-caps')
+                ui.button('Enviar a Jira/Azure DevOps', icon='send', on_click=guard(lambda: _send_to_ticket_dialog(run))).props('flat dense no-caps')
         with ui.row().classes('justify-end w-full'):
             ui.button('Cerrar', on_click=dialog.close).props('flat')
     dialog.open()

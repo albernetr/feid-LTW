@@ -286,7 +286,7 @@ def test_safe_delete_also_purges_orphaned_history_and_its_evidence():
     run = core.save('runs', {'type': 'api', 'project_id': project['id'], 'status': 'passed', 'screenshot': 'suelto.png'})
     interface = core.save('interfaces', {'module': 'M', 'method': 'GET', 'project_id': project['id']})
     assert core.project_stats(project['id']) == {'module_groups': 0, 'modules': 0, 'environments': 0, 'cases': 0, 'features': 0, 'suites': 0, 'schedules': 0, 'taps': 0,
-                                                  'datasets': 0, 'suite_groups': 0}
+                                                  'datasets': 0, 'suite_groups': 0, 'integrations': 0}
 
     core.delete_project(project['id'])
 

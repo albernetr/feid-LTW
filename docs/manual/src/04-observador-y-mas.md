@@ -140,7 +140,7 @@ El menú **Historial** reúne los resultados de **casos y suites ejecutados** (m
 
 ## 13.1 Buscar y filtrar
 
-- **Estado** (Pasó, Falló, Error, Cancelada, Omitido), **Tipo** (API, UI, Suite) y **Buscar por nombre**.
+- **Estado** (Pasó, Falló, Error, Cancelada, Omitido), **Tipo** (API, UI, Flujo, Suite) y **Buscar por nombre**.
 - La tabla muestra **Inicio**, **Tipo**, **Nombre**, **Estado** y **Detalle** (código y tiempo, o número de casos). Ordena por fecha y pagina de 15 en 15.
 - Se muestran las ejecuciones del proyecto activo (y las que no tienen proyecto).
 
@@ -150,7 +150,8 @@ El menú **Historial** reúne los resultados de **casos y suites ejecutados** (m
 
 Un clic en una fila abre su detalle:
 
-- **Suite:** la lista de pasos con su estado, alias, ambiente e intentos, y **Ver detalle** de cada uno.
+- **Flujo:** la lista de pasos con su estado, alias, ambiente e intentos, y **Ver detalle** de cada uno.
+- **Suite** (grupo): cada Flujo o Caso suelto miembro, con su propio estado y **Ver detalle**.
 - **Caso API:** petición, **reglas de enriquecimiento aplicadas**, **petición enviada**, aserciones ✓/✗ con lo obtenido, variables extraídas y la respuesta.
 - **Caso UI:** cada paso con ✓/✗, la **captura de pantalla** (visible en el cuadro y descargable con **Descargar captura**) y la **traza de Playwright** (si falló; **Descargar traza**). Para abrirla: `python -m playwright show-trace archivo.zip`.
 - Si falló: **Brief para agente** (ver [capítulo 17](#cap-17)).
@@ -159,11 +160,17 @@ Un clic en una fila abre su detalle:
 
 Las evidencias se sirven **solo desde el directorio de evidencias** de LTW; no es posible pedir otros archivos del equipo.
 
-## 13.3 Retención y limpieza
+## 13.3 Evidencia descargable y envío a Jira/Azure DevOps
+
+El detalle de cualquier ejecución (Caso API, Caso UI, Flujo o **Suite**) tiene **«Descargar evidencia»**, con tres formatos — mismo contenido en los tres (petición enviada, respuesta, aserciones ✓/✗, capturas de UI, paso a paso): **HTML**, **PDF** y **Word**. En un Flujo o una Suite, cada paso o miembro se expande con su propio detalle; si un miembro de una Suite es a su vez un Flujo, sus pasos quedan anidados adentro. El Word usa un formato simple (sin buscar igualar el diseño del PDF), pensado para adjuntar a mano a un ticket.
+
+Para adjuntarlo **automáticamente** sin descargar nada, configura primero una integración en **Integraciones** (menú lateral): elige la plataforma (**Jira**, Cloud en `atlassian.net`, o **Azure DevOps**), guarda el token/PAT como **secreto** del sistema (igual que la autenticación de un Ambiente) y pulsa **«Probar conexión»** para confirmar que los datos son correctos antes de usarla. Luego, desde el detalle de cualquier ejecución, **«Enviar a Jira/Azure DevOps»** pide la integración, el ticket (Jira, p. ej. `PROJ-123`) o el work item (Azure DevOps, un número) y el formato, y adjunta el archivo con tus propias credenciales.
+
+## 13.4 Retención y limpieza
 
 En **Retención de evidencias** indica **Conservar (días)** (30 por defecto) y pulsa **Purgar ahora** (pide confirmación). Se eliminan las ejecuciones **más antiguas** que ese número de días **y sus archivos** (capturas, trazas), y se conservan como máximo las 1000 más recientes. Las ejecuciones guardan el cuerpo enviado y la respuesta (hasta 50 000 caracteres): trátalas como información restringida y úsalas con datos de preproducción.
 
-## 13.4 Resumen ejecutivo y reporte de estatus
+## 13.5 Resumen ejecutivo y reporte de estatus
 
 Pensado para quien **no** quiere leer ejecuciones una por una —product owner, líder, dirección—: responde en una pantalla *¿cómo estamos?, ¿mejora o empeora?, ¿qué falla y desde cuándo?*. Está en **Resumen** (menú lateral).
 

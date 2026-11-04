@@ -37,7 +37,7 @@ Ejemplos paso a paso para los usos más comunes. Cada receta indica en qué pant
 3. **Ver detalle** en un paso fallido: verás **qué se esperaba y qué se obtuvo** en frases (por ejemplo «Código HTTP igual a 201 → 401»).
 4. Para avisar al equipo técnico, en el detalle pulsa **Brief para agente** y **Copiar Markdown**: es un resumen completo del fallo que cualquier persona (o agente) puede usar.
 5. **Programaciones**: pide que programen el flujo (por ejemplo, L–V a las 07:30).
-6. **Resumen** (menú lateral): cada mañana mira el **semáforo** y la lista *Qué está fallando y desde cuándo*. Para un comité o un correo, **Reporte de estatus** genera el documento (HTML o PDF) con tus comentarios, y **Copiar resumen** un texto corto (ver 13.4).
+6. **Resumen** (menú lateral): cada mañana mira el **semáforo** y la lista *Qué está fallando y desde cuándo*. Para un comité o un correo, **Reporte de estatus** genera el documento (HTML o PDF) con tus comentarios, y **Copiar resumen** un texto corto (ver 13.5).
 
 > Mantén abierto `scripts\scheduler.bat` en el equipo que ejecuta las programaciones.
 

@@ -54,7 +54,7 @@ ARTIFACTS = ROOT / 'evidence'
 SECRET_SERVICE = 'local-test-workspace'
 SENSITIVE_HEADERS = ('authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization')
 SENSITIVE_NAME = re.compile(r'token|password|passwd|secret|key|authorization|cookie', re.I)
-TABLES = ('projects', 'module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'datasets', 'suite_groups')
+TABLES = ('projects', 'module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'datasets', 'suite_groups', 'integrations')
 ALL_TABLES = TABLES + ('settings', 'runs', 'taps', 'interfaces', 'lab_history', 'llm_profiles', 'sequences')
 UUID_RE = re.compile(r'^[0-9a-fA-F-]{8,64}$')
 
@@ -282,13 +282,13 @@ def project_stats(project_id):
         raise ValueError('Proyecto inexistente')
     return {
         table: sum(item.get('project_id') == project_id for item in list_items(table))
-        for table in ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps', 'datasets', 'suite_groups')
+        for table in ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps', 'datasets', 'suite_groups', 'integrations')
     }
 
 
 PROJECT_RESOURCE_LABELS = {'module_groups': 'módulo(s)', 'modules': 'componente(s)', 'environments': 'ambiente(s)', 'cases': 'caso(s)',
                            'features': 'funcionalidad(es)', 'suites': 'flujo(s)', 'schedules': 'programación(es)', 'taps': 'tap(s) de observación',
-                           'datasets': 'conjunto(s) de datos', 'suite_groups': 'suite(s)'}
+                           'datasets': 'conjunto(s) de datos', 'suite_groups': 'suite(s)', 'integrations': 'integración(es)'}
 
 
 def _purge_project_history(project_id):
@@ -323,7 +323,7 @@ def delete_project(project_id):
         set_active_project(None)
 
 
-CASCADE_TABLES = ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps', 'datasets', 'suite_groups')
+CASCADE_TABLES = ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps', 'datasets', 'suite_groups', 'integrations')
 
 
 def delete_project_cascade(project_id):
@@ -677,6 +677,34 @@ def save_suite_group(name, project_id, members, **options):
 
 def suite_group_members(group):
     return copy.deepcopy(group.get('members') or [])
+
+
+# --------------------------------------------------------------------------- integrations (Jira / Azure DevOps)
+
+INTEGRATION_PLATFORMS = {'jira': 'Jira (Cloud)', 'azdo': 'Azure DevOps'}
+INTEGRATION_FIELDS = {'jira': ('site_url', 'email', 'secret'), 'azdo': ('organization', 'project', 'secret')}
+
+
+def save_integration(name, project_id, platform, config, **options):
+    """Config NO sensible de una integración: solo el NOMBRE del secreto (token API de Jira o PAT de Azure
+    DevOps), nunca su valor — vive en el almacén del sistema (secret_set/secret_get), igual que la
+    autenticación de un Ambiente. `platform` es 'jira' o 'azdo'; cada una exige sus propios campos."""
+    if not (name or '').strip():
+        raise ValueError('El nombre de la integración es obligatorio')
+    if platform not in INTEGRATION_PLATFORMS:
+        raise ValueError('Plataforma inválida (jira o azdo)')
+    config = {k: (v or '').strip() for k, v in (config or {}).items()}
+    missing = [f for f in INTEGRATION_FIELDS[platform] if not config.get(f)]
+    if missing:
+        raise ValueError(f'{INTEGRATION_PLATFORMS[platform]}: falta ' + ', '.join(missing))
+    item = {'name': name.strip(), 'platform': platform, 'config': config}
+    if options.get('id'):
+        item['id'] = options['id']
+    if project_id is not None:
+        item['project_id'] = project_id
+    if 'expected_updated_at' in options:
+        return save('integrations', item, expected_updated_at=options['expected_updated_at'])
+    return save('integrations', item)
 
 
 # --------------------------------------------------------------------------- OpenAPI

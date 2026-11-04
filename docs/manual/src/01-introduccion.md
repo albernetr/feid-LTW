@@ -217,6 +217,7 @@ Espacio de trabajo: historial propio de peticiones sueltas (no necesita proyecto
 | **Modelos de IA** | Registra varios modelos de lenguaje (locales o en la nube) y elige cuál está activo, sin repetir URL ni clave cada vez. |
 | **Variables y secuencias** | Lo que cada variable integrada (`{{now_date}}`, `{{uuid}}`, `{{seq}}`…) resolvería ahora mismo, el consecutivo global y cada consecutivo con nombre (`{{seq:nombre}}`) usado hasta ahora, con su valor editable. |
 | **Conjuntos de datos** | Valores de referencia subidos (.txt/.csv/.json) o armados a mano, para usar como `{{random:conjunto.columna}}` en cualquier caso. |
+| **Integraciones** | Configura Jira o Azure DevOps para adjuntar la evidencia de una corrida a un ticket/work item con un clic, usando tus propias credenciales. |
 | **Historial** | Resultados de ejecuciones y evidencias. |
 | **Importar / Exportar** | Paquetes ZIP y diagnóstico. |
 
