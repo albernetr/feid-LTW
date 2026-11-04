@@ -7,7 +7,7 @@ import json
 from nicegui import ui, run
 from .. import core, workspace as ws
 from .common import frame, guard
-from .widgets import kv_rows
+from .widgets import kv_rows, dynamic_variable_chips
 
 HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 HEADER_SUGGESTIONS = (('+ Content-Type', 'Content-Type', 'application/json'), ('+ Accept', 'Accept', 'application/json'), ('+ Bearer', 'Authorization', 'Bearer {{secret:TOKEN}}'))
@@ -131,10 +131,9 @@ def build(preset_case_id=None):
             W['headers_view'] = kv_rows(lambda: d['headers'], 'Header', 'Valor', None, HEADER_SUGGESTIONS)
             ui.separator().classes('my-1')
             ui.label('Variables').classes('font-medium text-sm')
-            ui.label('Ponés {{nombre}} en el body (o en headers) y cambiás el valor acá cuando quieras, sin tocar el JSON. '
-                      'Ya vienen solas {{now_date}}, {{now_time}}, {{now_iso}}, {{uuid}} y {{seq}} (un consecutivo); no hace falta declararlas.') \
-                .classes('text-xs text-gray-500')
+            ui.label('Ponés {{nombre}} en el body (o en headers) y cambiás el valor acá cuando quieras, sin tocar el JSON.').classes('text-xs text-gray-500')
             W['variables_view'] = kv_rows(lambda: d['variables'], 'Nombre', 'Valor')
+            dynamic_variable_chips()
             ui.separator().classes('my-1')
             ui.label('Body base (JSON)').classes('font-medium text-sm')
             ui.label('Lo que no cambia turno a turno (status, source, campaign, attributes…) — distinto caso a caso. '

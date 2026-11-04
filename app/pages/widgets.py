@@ -55,6 +55,23 @@ def kv_rows(get_rows, key_label='Nombre', value_label='Valor', on_change=None, s
     return view
 
 
+DYNAMIC_VAR_HINTS = (('now_date', 'fecha de hoy'), ('now_time', 'hora actual'), ('now_iso', 'fecha y hora, ISO 8601'),
+                      ('now_epoch', 'segundos desde 1970'), ('uuid', 'identificador único'), ('seq', 'consecutivo global'))
+
+
+def dynamic_variable_chips():
+    """Botones para copiar las variables integradas ({{now_date}}, {{uuid}}, {{seq}}…): se calculan solas en cada
+    envío, nunca hay que declararlas acá — tocar uno copia el texto al portapapeles para pegarlo donde haga falta
+    (headers, query, body). El detalle (y los consecutivos con nombre, {{seq:nombre}}) vive en Variables y secuencias."""
+    with ui.row().classes('items-center gap-1 flex-wrap'):
+        ui.label('Ya calculadas, toca para copiar:').classes('text-xs text-gray-500')
+        for name, hint in DYNAMIC_VAR_HINTS:
+            token = '{{' + name + '}}'
+            ui.button(token, on_click=lambda _, t=token: (ui.clipboard.write(t), ui.notify(f'Copiado {t}', type='positive'))) \
+                .props('flat dense size=sm no-caps color=grey-8').tooltip(hint)
+        ui.link('Ver / ajustar consecutivos →', '/sequences').classes('text-xs')
+
+
 def json_box(value, on_set):
     """Editable JSON with the same fold/unfold affordances as a JSON formatter, instead of one giant textarea
     that only ever grows taller. on_set(value) runs with the parsed value whenever it changes validly."""

@@ -1304,6 +1304,20 @@ def reset_named_sequence(name, value=0):
     save('sequences', {'id': name, 'value': int(value)})
 
 
+def list_named_sequences():
+    """Todos los {{seq:nombre}} usados hasta ahora, por nombre — para mostrarlos y ajustarlos a mano en pantalla."""
+    return sorted(({'name': s['id'], 'value': s['value']} for s in list_items('sequences')), key=lambda s: s['name'].lower())
+
+
+def current_sequence():
+    """El valor actual de {{seq}} (global), sin avanzarlo."""
+    return int(get_setting(SEQ_SETTING, 0))
+
+
+def set_sequence(value):
+    set_setting(SEQ_SETTING, int(value))
+
+
 def dynamic_variables():
     """Valores integrados que no tiene sentido escribir a mano ni dejar fijos en un caso: fecha/hora actuales,
     un identificador único y un consecutivo. Se resuelven de nuevo en cada envío y tienen la prioridad más baja:

@@ -2,7 +2,7 @@ import json
 from nicegui import ui, run
 from .. import core, automation
 from .common import frame, guard, confirm, empty_state, require_project, kv_editor, show_run, status_badge, parse_value, show_value
-from .widgets import assertion_rows, json_box
+from .widgets import assertion_rows, json_box, dynamic_variable_chips
 from .cases import HTTP_METHODS
 
 
@@ -269,6 +269,7 @@ def suite_edit(id: str = ''):
                         ui.label('Variables').classes('font-medium text-sm')
                         ui.label('{{nombre}} en headers/query/body de este caso, propias de él (además de las de la suite y del ambiente).').classes('text-xs text-gray-500')
                         kv_editor(case_vars, 'Nombre', 'Valor')
+                        dynamic_variable_chips()
                         ui.label('Body (JSON)').classes('font-medium text-sm')
                         json_box(body_state['value'], lambda v: body_state.__setitem__('value', v))
                     with ui.tab_panel(tab_assert):

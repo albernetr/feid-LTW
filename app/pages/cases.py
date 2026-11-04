@@ -2,7 +2,7 @@ import json
 from nicegui import ui, run
 from .. import core
 from .common import frame, guard, confirm, empty_state, require_project, kv_editor, show_run, status_badge
-from .widgets import assertion_rows
+from .widgets import assertion_rows, dynamic_variable_chips
 
 HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 
@@ -114,6 +114,7 @@ def case_edit(id: str = '', module: str = '', op: int = -1):
         extracts = [dict(r) for r in base.get('extract', [])]
         headers = {k: str(v) for k, v in (base.get('headers') or {}).items()}
         query = {k: str(v) for k, v in (base.get('query') or {}).items()}
+        variables = {k: str(v) for k, v in (base.get('variables') or {}).items()}
         last_response = {'body': None}   # lo que devolvió la última ejecución de este caso en esta sesión
 
         def response_paths():
@@ -169,6 +170,11 @@ def case_edit(id: str = '', module: str = '', op: int = -1):
                 kv_editor(headers, 'Header', 'Valor')
                 ui.label('Query params').classes('font-medium')
                 kv_editor(query, 'Parámetro', 'Valor')
+                ui.label('Variables').classes('font-medium')
+                ui.label('{{nombre}} propias de este caso (además de las del ambiente — para un valor que se repite en todos los casos de un '
+                         'ambiente, decláralo ahí en vez de repetirlo acá en cada caso).').classes('text-xs text-gray-500')
+                kv_editor(variables, 'Nombre', 'Valor')
+                dynamic_variable_chips()
                 body = ui.textarea('Body JSON (opcional; admite {{variables}} dentro de textos)',
                                    value=json.dumps(base['body'], indent=2, ensure_ascii=False) if base.get('body') is not None else '').props('outlined autogrow').classes('w-full font-mono')
             with ui.tab_panel(tab_assert):
@@ -223,12 +229,15 @@ def case_edit(id: str = '', module: str = '', op: int = -1):
                 data = json.loads(body.value) if (body.value or '').strip() else None
             except ValueError as exc:
                 raise ValueError(f'El body no es JSON válido: {exc}')
-            item = {'name': name.value.strip(), 'type': 'api', 'project_id': pid, 'module_id': module_select.value, 'method': method.value,
+            # Parte de lo guardado (current): conserva campos que este formulario no edita — variables, el mapeo
+            # de Chat y su transcripción, environment_id — en vez de perderlos cada vez que se guarda desde acá.
+            # `cases.py` no tenía Variables hasta ahora, así que guardar un caso con variables puestas desde Chat
+            # o desde el editor embebido en una Suite las borraba en silencio en cuanto se volvía a guardar aquí.
+            item = {**(current or {}), 'name': name.value.strip(), 'type': 'api', 'project_id': pid, 'module_id': module_select.value, 'method': method.value,
                     'path': path.value.strip(), 'timeout': timeout.value or 20, 'body': data,
                     'headers': {k: v for k, v in headers.items() if k.strip()}, 'query': {k: v for k, v in query.items() if k.strip()},
+                    'variables': {k: v for k, v in variables.items() if k.strip()},
                     'assertions': rules, 'extract': [dict(r, name=r['name'].strip()) for r in extracts], 'tags': base.get('tags', [])}
-            if current:
-                item['id'] = current['id']
             return item
 
         ui.separator()
