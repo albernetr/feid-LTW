@@ -213,6 +213,26 @@ def confirm(message, on_yes, confirm_label='Eliminar'):
     dialog.open()
 
 
+def confirm_with_phrase(message, phrase, on_yes, confirm_label='Confirmar'):
+    """Como confirm(), pero para una acción de más impacto: hay que escribir `phrase` exactamente para
+    habilitar el botón — mismo patrón ya usado por «Reiniciar workspace» (app/pages/portable.py)."""
+    with ui.dialog() as dialog, ui.card():
+        ui.label(message).classes('font-semibold text-red-700')
+        ui.label(f'Escribe {phrase} para confirmar.').classes('text-sm text-gray-600')
+        typed = ui.input(label='Confirmación').props('outlined dense').mark('confirm-phrase-input')
+        with ui.row().classes('justify-end w-full gap-2'):
+            ui.button('Cancelar', on_click=dialog.close).props('flat')
+
+            async def accept():
+                if typed.value != phrase:
+                    ui.notify(f'Escribe exactamente {phrase} para confirmar.', type='warning')
+                    return
+                dialog.close()
+                await guard(on_yes)()
+            ui.button(confirm_label, on_click=accept, color='negative').mark('confirm-phrase-accept')
+    dialog.open()
+
+
 def status_badge(status):
     return ui.badge(STATUS_LABEL.get(status, status), color=STATUS_COLOR.get(status, 'grey'))
 

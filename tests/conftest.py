@@ -1,9 +1,97 @@
+import re
 import keyring
 import keyring.backend
 import pytest
 from nicegui import app as nicegui_app
 from nicegui.testing import User
 from app import core
+
+
+class FakeAzureCursor:
+    """Simula un cursor de pytds contra un dict compartido (table -> {id: payload}) — nunca toca la red.
+    Usado tanto por tests/test_azure_sql_backend.py (SQL exacto que arma cada operación) como por cualquier
+    pantalla que, en un test, deba creer que Azure SQL está activo (p. ej. storage_settings.py) sin conectarse
+    de verdad a nada que se parezca a un dominio real de *.database.windows.net."""
+
+    def __init__(self, store):
+        self.store = store
+        self.rowcount = 0
+        self.calls = []
+        self._result = None
+
+    def execute(self, sql, params=()):
+        self.calls.append((sql, params))
+        normalized = ' '.join(sql.split())
+        if 'sys.tables' in normalized or normalized.startswith('CREATE TABLE'):
+            return
+        table_rows = None
+        for table in self.store:
+            if f' {table} ' in f' {normalized} ' or normalized.endswith(table):
+                table_rows = self.store[table]
+                break
+        if table_rows is None:
+            m = re.search(r'(?:FROM|INTO|UPDATE)\s+(\w+)', normalized)
+            table_rows = self.store.setdefault(m.group(1), {}) if m else {}
+        if normalized.startswith('SELECT payload FROM'):
+            identifier = params[0] if params else None
+            if identifier is None:
+                self._result = [(v,) for v in table_rows.values()]
+            else:
+                self._result = (table_rows[identifier],) if identifier in table_rows else None
+        elif normalized.startswith('UPDATE'):
+            payload, identifier = params
+            if identifier in table_rows:
+                table_rows[identifier] = payload
+                self.rowcount = 1
+            else:
+                self.rowcount = 0
+        elif normalized.startswith('INSERT'):
+            identifier, payload = params
+            table_rows[identifier] = payload
+            self.rowcount = 1
+        elif normalized.startswith('DELETE'):
+            identifier = params[0]
+            table_rows.pop(identifier, None)
+
+    def fetchone(self):
+        return self._result if not isinstance(self._result, list) else (self._result[0] if self._result else None)
+
+    def fetchall(self):
+        return self._result if isinstance(self._result, list) else []
+
+
+class FakeAzureConnection:
+    def __init__(self, store):
+        self.store = store
+        self.autocommit = True
+        self.closed = False
+        self.committed = False
+        self.rolled_back = False
+
+    def cursor(self):
+        return FakeAzureCursor(self.store)
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def fake_azure_sql(monkeypatch):
+    """Hace que azure_sql_backend hable contra un dict en memoria en vez de la red — para cualquier test que
+    necesite que el backend Azure SQL "funcione" (incluida la sola carga de una página protegida, que ya hace
+    core.initialize()) sin arriesgarse a tocar un servidor real."""
+    from app import azure_sql_backend
+    store = {}
+    azure_sql_backend.close()   # descarta cualquier conexión (falsa o real) cacheada por un test anterior
+    monkeypatch.setattr(azure_sql_backend, '_connect', lambda config=None: FakeAzureConnection(store))
+    yield store
+    azure_sql_backend.close()
 
 
 class MemoryKeyring(keyring.backend.KeyringBackend):

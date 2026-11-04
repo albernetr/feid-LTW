@@ -25,20 +25,29 @@ class AzureSqlConfigError(ValueError):
 
 
 def enabled():
-    return os.environ.get('LTW_BACKEND', 'sqlite').strip().lower() == 'azure_sql'
+    from . import storage_config
+    return storage_config.active_backend() == 'azure_sql'
 
 
 def _config():
+    """Variables de entorno LTW_AZURE_SQL_* si están puestas (gana siempre, para usos con contenedores/CI);
+    si no, la configuración guardada desde Configuraciones → Base de datos (storage_config.py)."""
     server = os.environ.get('LTW_AZURE_SQL_SERVER', '').strip()
     database = os.environ.get('LTW_AZURE_SQL_DATABASE', '').strip()
     user = os.environ.get('LTW_AZURE_SQL_USER', '').strip()
     password = os.environ.get('LTW_AZURE_SQL_PASSWORD', '')
-    missing = [name for name, value in (('LTW_AZURE_SQL_SERVER', server), ('LTW_AZURE_SQL_DATABASE', database),
-                                        ('LTW_AZURE_SQL_USER', user), ('LTW_AZURE_SQL_PASSWORD', password)) if not value]
-    if missing:
-        raise AzureSqlConfigError('Faltan variables de entorno para Azure SQL: ' + ', '.join(missing))
-    port = int(os.environ.get('LTW_AZURE_SQL_PORT', '1433'))
-    return {'server': server, 'database': database, 'user': user, 'password': password, 'port': port}
+    if server or database or user or password:
+        missing = [name for name, value in (('LTW_AZURE_SQL_SERVER', server), ('LTW_AZURE_SQL_DATABASE', database),
+                                            ('LTW_AZURE_SQL_USER', user), ('LTW_AZURE_SQL_PASSWORD', password)) if not value]
+        if missing:
+            raise AzureSqlConfigError('Faltan variables de entorno para Azure SQL: ' + ', '.join(missing))
+        port = int(os.environ.get('LTW_AZURE_SQL_PORT', '1433'))
+        return {'server': server, 'database': database, 'user': user, 'password': password, 'port': port}
+    from . import storage_config
+    cfg = storage_config.azure_sql_connection_config()
+    if cfg is None:
+        raise AzureSqlConfigError('No hay una configuración de Azure SQL guardada ni variables de entorno LTW_AZURE_SQL_*.')
+    return cfg
 
 
 def _connect(config=None):

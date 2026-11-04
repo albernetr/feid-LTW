@@ -1,78 +1,10 @@
 """El adaptador de Azure SQL, con una conexión/cursor falsos (sin red real) — verifica el SQL exacto que arma
-para cada operación y el camino de upsert (UPDATE primero, INSERT si no existía la fila)."""
+para cada operación y el camino de upsert (UPDATE primero, INSERT si no existía la fila). FakeAzureConnection/
+FakeAzureCursor y el fixture `fake_azure_sql` viven en conftest.py (también los usa storage_sync/
+storage_settings)."""
 import pytest
 from app import azure_sql_backend as backend
-
-
-class FakeCursor:
-    def __init__(self, store):
-        self.store = store   # dict compartido: table -> {id: payload}
-        self.rowcount = 0
-        self.calls = []
-        self._result = None
-
-    def execute(self, sql, params=()):
-        self.calls.append((sql, params))
-        normalized = ' '.join(sql.split())
-        table_rows = None
-        if 'sys.tables' in normalized or normalized.startswith('CREATE TABLE'):
-            return
-        for table in self.store:
-            if f' {table} ' in f' {normalized} ' or normalized.endswith(table):
-                table_rows = self.store[table]
-                break
-        if table_rows is None:
-            # a table referenced that isn't seeded yet (e.g. a fresh upsert) — infer it from the SQL text
-            import re
-            m = re.search(r'(?:FROM|INTO|UPDATE)\s+(\w+)', normalized)
-            table_rows = self.store.setdefault(m.group(1), {}) if m else {}
-        if normalized.startswith('SELECT payload FROM'):
-            identifier = params[0] if params else None
-            if identifier is None:   # list_items: no WHERE clause
-                self._result = [(v,) for v in table_rows.values()]
-            else:
-                self._result = (table_rows[identifier],) if identifier in table_rows else None
-        elif normalized.startswith('UPDATE'):
-            payload, identifier = params
-            if identifier in table_rows:
-                table_rows[identifier] = payload
-                self.rowcount = 1
-            else:
-                self.rowcount = 0
-        elif normalized.startswith('INSERT'):
-            identifier, payload = params
-            table_rows[identifier] = payload
-            self.rowcount = 1
-        elif normalized.startswith('DELETE'):
-            identifier = params[0]
-            table_rows.pop(identifier, None)
-
-    def fetchone(self):
-        return self._result if not isinstance(self._result, list) else (self._result[0] if self._result else None)
-
-    def fetchall(self):
-        return self._result if isinstance(self._result, list) else []
-
-
-class FakeConnection:
-    def __init__(self, store):
-        self.store = store
-        self.autocommit = True
-        self.closed = False
-        self.committed = False
-        self.rolled_back = False
-
-    def cursor(self):
-        return FakeCursor(self.store)
-
-    def commit(self):
-        self.committed = True
-
-    def rollback(self):
-        self.rolled_back = True
-
-    def close(self):
-        self.closed = True
+from conftest import FakeAzureConnection
 
 
 @pytest.fixture(autouse=True)
@@ -83,10 +15,8 @@ def reset_backend():
 
 
 @pytest.fixture
-def store(monkeypatch):
-    shared = {}
-    monkeypatch.setattr(backend, '_connect', lambda: FakeConnection(shared))
-    return shared
+def store(fake_azure_sql):
+    return fake_azure_sql
 
 
 def test_enabled_reads_ltw_backend_env_var(monkeypatch):
@@ -98,17 +28,32 @@ def test_enabled_reads_ltw_backend_env_var(monkeypatch):
     assert backend.enabled() is False
 
 
-def test_config_requires_every_variable(monkeypatch):
+def test_config_falls_back_to_storage_config_when_no_env_vars_are_set(monkeypatch):
     for name in ('LTW_AZURE_SQL_SERVER', 'LTW_AZURE_SQL_DATABASE', 'LTW_AZURE_SQL_USER', 'LTW_AZURE_SQL_PASSWORD'):
         monkeypatch.delenv(name, raising=False)
-    with pytest.raises(backend.AzureSqlConfigError, match='LTW_AZURE_SQL_SERVER'):
+    with pytest.raises(backend.AzureSqlConfigError, match='No hay una configuración'):
         backend._config()
-    monkeypatch.setenv('LTW_AZURE_SQL_SERVER', 'test-ws.database.windows.net')
+
+
+def test_config_requires_every_env_var_once_any_one_of_them_is_set(monkeypatch):
+    for name in ('LTW_AZURE_SQL_SERVER', 'LTW_AZURE_SQL_DATABASE', 'LTW_AZURE_SQL_USER', 'LTW_AZURE_SQL_PASSWORD'):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv('LTW_AZURE_SQL_SERVER', 'test-ws.database.windows.net')   # solo una: las otras 3 siguen faltando
+    with pytest.raises(backend.AzureSqlConfigError, match='LTW_AZURE_SQL_DATABASE'):
+        backend._config()
     monkeypatch.setenv('LTW_AZURE_SQL_DATABASE', 'ltw')
     monkeypatch.setenv('LTW_AZURE_SQL_USER', 'devsquad')
     monkeypatch.setenv('LTW_AZURE_SQL_PASSWORD', 'x')
     cfg = backend._config()
     assert cfg == {'server': 'test-ws.database.windows.net', 'database': 'ltw', 'user': 'devsquad', 'password': 'x', 'port': 1433}
+
+
+def test_config_uses_storage_config_when_no_env_vars_are_set_at_all(monkeypatch):
+    from app import storage_config
+    for name in ('LTW_AZURE_SQL_SERVER', 'LTW_AZURE_SQL_DATABASE', 'LTW_AZURE_SQL_USER', 'LTW_AZURE_SQL_PASSWORD'):
+        monkeypatch.delenv(name, raising=False)
+    storage_config.set_azure_sql('srv.database.windows.net', 'db', 'user', 'pw', port=1434)
+    assert backend._config() == {'server': 'srv.database.windows.net', 'database': 'db', 'user': 'user', 'password': 'pw', 'port': 1434}
 
 
 def test_check_table_rejects_anything_not_a_plain_identifier():
@@ -153,7 +98,7 @@ def test_connection_is_cached_and_reused_across_calls(store, monkeypatch):
 
 
 def test_transaction_cursor_translates_qmark_placeholders_and_upserts(store):
-    con = FakeConnection(store)
+    con = FakeAzureConnection(store)
     cursor = backend.TransactionCursor(con)
     cursor.upsert('cases', 'c1', '{"v": 1}')
     assert store['cases']['c1'] == '{"v": 1}'

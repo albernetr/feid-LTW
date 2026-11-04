@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 from nicegui import ui
 from .. import core, logs
-from .common import frame, guard, read_upload, protected_page
+from .common import frame, guard, read_upload, protected_page, confirm_with_phrase
 
 MAX_ZIP = 50_000_000
 
@@ -113,19 +113,5 @@ def portable():
                 ui.navigate.to('/')
 
             def open_reset_dialog():
-                with ui.dialog() as dialog, ui.card():
-                    ui.label('Esto borra TODO el workspace y no se puede deshacer.').classes('font-semibold text-red-700')
-                    ui.label('Escribe REINICIAR para confirmar.').classes('text-sm text-gray-600')
-                    phrase = ui.input(label='Confirmación').props('outlined dense')
-                    with ui.row().classes('justify-end w-full gap-2'):
-                        ui.button('Cancelar', on_click=dialog.close).props('flat')
-
-                        async def accept():
-                            if phrase.value != 'REINICIAR':
-                                ui.notify('Escribe exactamente REINICIAR para confirmar.', type='warning')
-                                return
-                            dialog.close()
-                            await guard(do_reset)()
-                        ui.button('Borrar todo y reiniciar', on_click=accept, color='negative')
-                dialog.open()
+                confirm_with_phrase('Esto borra TODO el workspace y no se puede deshacer.', 'REINICIAR', do_reset, 'Borrar todo y reiniciar')
             ui.button('Reiniciar workspace (borra todo)', icon='delete_forever', on_click=open_reset_dialog).props('outline color=negative')
