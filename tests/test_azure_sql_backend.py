@@ -159,3 +159,20 @@ def test_transaction_cursor_translates_qmark_placeholders_and_upserts(store):
     assert store['cases']['c1'] == '{"v": 1}'
     cursor.execute('DELETE FROM cases WHERE id=?', ('c1',))
     assert 'c1' not in store.get('cases', {})
+
+
+def test_describe_error_unwraps_a_bare_timeouterror_to_find_the_real_cause():
+    """pytds hace `raise TimeoutError() from ex` sin texto propio — describe_error debe bajar por __cause__
+    hasta encontrar el mensaje real, en vez de mostrar un TimeoutError vacío."""
+    real = ValueError('Deny Public Network Access is set to Yes')
+    wrapped = TimeoutError()
+    wrapped.__cause__ = real
+    assert backend.describe_error(wrapped) == 'ValueError: Deny Public Network Access is set to Yes'
+
+
+def test_describe_error_uses_the_outer_exception_when_it_already_has_a_message():
+    assert backend.describe_error(ValueError('credenciales inválidas')) == 'ValueError: credenciales inválidas'
+
+
+def test_describe_error_falls_back_to_the_type_name_when_nothing_has_a_message():
+    assert backend.describe_error(TimeoutError()) == 'TimeoutError'

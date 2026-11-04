@@ -42,10 +42,15 @@ def _config():
 
 
 def _connect():
+    import certifi
     import pytds
     cfg = _config()
+    # Azure SQL exige la conexión cifrada; pytds solo la activa si se le pasa un archivo de certificados raíz
+    # (cafile) — sin esto, el servidor la rechaza con "Client does not have encryption enabled but it is
+    # required". certifi trae el mismo paquete de raíces confiables que ya usa httpx en el resto de la app.
     return pytds.connect(server=cfg['server'], port=cfg['port'], database=cfg['database'],
-                         user=cfg['user'], password=cfg['password'], autocommit=True, login_timeout=15, timeout=30)
+                         user=cfg['user'], password=cfg['password'], autocommit=True, login_timeout=15, timeout=30,
+                         cafile=certifi.where())
 
 
 def _live_connection():
@@ -90,6 +95,18 @@ def test_connection():
         cur.fetchone()
     finally:
         con.close()
+
+
+def describe_error(exc):
+    """pytds suele envolver el error real (p. ej. del servidor) en un TimeoutError propio sin texto
+    (utils.exponential_backoff hace `raise TimeoutError() from ex`) — esto arma un mensaje legible bajando por
+    la cadena `__cause__` hasta encontrar uno, en vez de mostrar un TimeoutError vacío."""
+    current = exc
+    while current is not None:
+        if str(current):
+            return f'{type(current).__name__}: {current}'
+        current = current.__cause__
+    return type(exc).__name__
 
 
 def _check_table(table):

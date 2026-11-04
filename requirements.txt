@@ -7,5 +7,9 @@ jsonschema>=4.20,<5
 keyring>=25,<26
 python-docx>=1.1,<2
 python-tds>=1.15,<2
-pyOpenSSL>=24,<27
+# pyOpenSSL>=25 quita X509.get_extension(), que python-tds todavía usa para validar el certificado del
+# servidor (ver app/azure_sql_backend.py) — probado: 24.2.1 funciona, 26.4.0 falla con
+# "'X509' object has no attribute 'get_extension'". Revisar este techo cuando python-tds lo arregle.
+pyOpenSSL>=24,<25
+certifi>=2024.2.2
 tzdata>=2024.1; platform_system == "Windows"

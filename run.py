@@ -23,7 +23,7 @@ if __name__ in {'__main__', '__mp_main__'}:
         try:
             azure_sql_backend.test_connection()
         except Exception as exc:
-            print(f'No se pudo conectar: {exc}', file=sys.stderr)
+            print(f'No se pudo conectar: {azure_sql_backend.describe_error(exc)}', file=sys.stderr)
             sys.exit(1)
         print('Conexión correcta.')
         sys.exit(0)
