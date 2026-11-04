@@ -1,6 +1,6 @@
 from nicegui import run, ui
 from .. import core, llm
-from .common import frame, guard, confirm, empty_state, protected_page
+from .common import frame, guard, confirm, empty_state, protected_page, team_config_card
 
 
 @protected_page('/models')
@@ -14,6 +14,7 @@ def models_list():
         active_id = llm.active_profile_id()
         if not profiles:
             empty_state('No hay modelos registrados todavía.')
+            team_config_card()
             return
 
         def activate(profile_id, name):
@@ -77,6 +78,7 @@ def models_list():
         table.on('editModel', lambda e: ui.navigate.to(f'/models/edit?id={e.args["id"]}'))
         table.on('deleteModel', lambda e: remove(e.args['id'], e.args['name']))
         ui.label('El modelo «en uso» es el que de verdad consulta la pestaña Agente del Espacio de trabajo.').classes('text-xs text-gray-500')
+        team_config_card()
 
 
 @protected_page('/models/edit')

@@ -233,6 +233,66 @@ def confirm_with_phrase(message, phrase, on_yes, confirm_label='Confirmar'):
     dialog.open()
 
 
+def team_config_card():
+    """Tarjeta «Exportar / importar configuración del equipo»: junta modelos de IA (con su clave) y la conexión
+    a base de datos (con su contraseña) en un solo archivo cifrado — lo único que no puede vivir en git pero
+    que todo el equipo necesita igual. Se muestra tanto en /models como en /storage para que sea visible desde
+    cualquiera de las dos pantallas de «Configuraciones»."""
+    from .. import team_config
+    with ui.card().classes('w-full'):
+        ui.label('Exportar / importar configuración del equipo').classes('text-lg font-semibold')
+        ui.label('Junta en un solo archivo cifrado los modelos de IA (con su clave) y la conexión a base de '
+                 'datos (con su contraseña) — lo que no puede ir a git pero el equipo necesita igual. '
+                 'Comparte la frase de cifrado por un canal distinto del archivo (nunca en el mismo correo/chat).').classes('text-sm text-gray-500')
+        with ui.row().classes('w-full gap-8 flex-wrap'):
+            with ui.column().classes('gap-2'):
+                ui.label('Exportar').classes('font-semibold')
+                exp_models = ui.checkbox('Modelos de IA', value=True).mark('team-config-export-models')
+                exp_db = ui.checkbox('Base de datos', value=True).mark('team-config-export-db')
+                exp_phrase = ui.input('Frase de cifrado', password=True, password_toggle_button=True) \
+                    .props('outlined dense').classes('w-64').mark('team-config-export-phrase')
+
+                def do_export():
+                    phrase = (exp_phrase.value or '').strip()
+                    if not phrase:
+                        raise ValueError('Indica una frase para cifrar el archivo')
+                    data = team_config.export_encrypted(phrase, include_db=exp_db.value, include_models=exp_models.value)
+                    ui.download(data, 'ltw-config-equipo.json')
+                    ui.notify('Archivo descargado. Comparte la frase por un canal aparte (no en el mismo correo/chat).',
+                             type='positive', multi_line=True)
+                ui.button('Exportar', icon='download', on_click=guard(do_export)).props('color=primary').mark('team-config-export-submit')
+
+            with ui.column().classes('gap-2'):
+                ui.label('Importar').classes('font-semibold')
+                pending = {}
+
+                async def on_upload(event):
+                    pending['data'] = await read_upload(event)
+                    ui.notify('Archivo cargado. Escribe la frase y pulsa Importar.', type='positive')
+                ui.upload(label='Elige el archivo', on_upload=on_upload, auto_upload=True) \
+                    .props('accept=.json flat bordered').classes('w-64').mark('team-config-import-upload')
+                imp_phrase = ui.input('Frase de cifrado', password=True, password_toggle_button=True) \
+                    .props('outlined dense').classes('w-64').mark('team-config-import-phrase')
+
+                def do_import():
+                    if 'data' not in pending:
+                        raise ValueError('Primero elige el archivo exportado por tu equipo')
+                    phrase = (imp_phrase.value or '').strip()
+                    if not phrase:
+                        raise ValueError('Indica la frase que se usó para exportarlo')
+                    summary = team_config.import_encrypted(pending['data'], phrase)
+                    parts = []
+                    if summary['db']:
+                        parts.append('conexión de base de datos guardada')
+                    if summary['models_imported']:
+                        parts.append(f'{summary["models_imported"]} modelo(s) de IA importado(s)')
+                    for skipped in summary['models_skipped']:
+                        ui.notify(f'Se omitió el modelo «{skipped["name"]}»: {skipped["reason"]}', type='warning', multi_line=True)
+                    ui.notify('Importado: ' + (', '.join(parts) if parts else 'nada nuevo') + '. Nada se activó solo.',
+                             type='positive', multi_line=True)
+                ui.button('Importar', icon='upload', on_click=guard(do_import)).props('outline').mark('team-config-import-submit')
+
+
 def status_badge(status):
     return ui.badge(STATUS_LABEL.get(status, status), color=STATUS_COLOR.get(status, 'grey'))
 

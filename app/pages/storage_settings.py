@@ -6,7 +6,7 @@ aplicación — nunca se aplica en caliente (ver manual, capítulo 15.4)."""
 import os
 from nicegui import run, ui
 from .. import azure_sql_backend, storage_config
-from .common import frame, guard, confirm_with_phrase, protected_page
+from .common import frame, guard, confirm_with_phrase, protected_page, team_config_card
 
 ACTIVATE_PHRASE = 'CONFIRMAR'
 
@@ -99,3 +99,5 @@ def storage_settings():
                 ui.button('Probar conexión', icon='bolt', on_click=guard(probe)).props('color=primary').mark('storage-probe-submit')
                 ui.button('Establecer (sin activar)', icon='save', on_click=lambda: open_establish_dialog(False)).props('outline').mark('storage-establish')
                 ui.button('Establecer y activar', icon='power_settings_new', on_click=lambda: open_establish_dialog(True)).props('outline color=positive').mark('storage-establish-activate')
+
+        team_config_card()
