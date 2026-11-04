@@ -4,7 +4,7 @@ import json
 import os
 from nicegui import app, ui, run
 from .. import core, workspace as ws, agent, llm
-from .common import frame, guard, confirm, fmt_time, protected_page
+from .common import frame, guard, confirm, fmt_time, protected_page, show_run
 from .suites import run_suite
 from .widgets import kv_rows, assertion_rows, method_badge, status_chip
 
@@ -388,6 +388,9 @@ def build(preset_case_id=None, prefill=None):
                             if asserts:
                                 ok = sum(1 for a in asserts if a['passed'])
                                 ui.badge(f'{ok}/{len(asserts)} pruebas', color='positive' if ok == len(asserts) else 'negative').classes('text-xs')
+                            if S.get('run'):   # solo la última petición RECIÉN enviada (no una recuperada del historial, ver load_draft)
+                                ui.button('Ver detalle y evidencia', icon='fact_check', on_click=lambda: show_run(S['run'])) \
+                                    .props('flat dense size=sm no-caps color=grey-8').mark('ws-evidence')
                     tabs_available = ['Cuerpo', 'Headers', 'Pruebas', 'Diff'] if result is not None else []
                     if S['conn']:
                         tabs_available.append('Conectividad')

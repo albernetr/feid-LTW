@@ -701,6 +701,18 @@ async def test_workspace_sends_records_history_and_saves_into_a_new_project(user
     assert core.execute_api(case, env)['status'] == 'passed'
 
 
+async def test_workspace_offers_detail_and_evidence_for_the_last_sent_request(user: User, sample_app):
+    """Igual que en Chat, Espacio de trabajo no guarda sus envíos en el Historial (persist=False) — pero la
+    última petición enviada sí puede abrir el mismo detalle (show_run) con la evidencia descargable."""
+    await user.open('/workspace')
+    user.find('ws-url').type(sample_app.url + '/api/users/2')
+    user.find('ws-send').click()
+    await eventually(lambda: any('"name": "user2"' in text for text in code_texts(user)))
+    user.find(marker='ws-evidence').click()
+    await user.should_see('Descargar evidencia:')
+    await user.should_see('HTML')
+
+
 async def test_workspace_history_reload_and_search(user: User, sample_app):
     from app import workspace as ws_logic
     d = ws_logic.new_draft()
