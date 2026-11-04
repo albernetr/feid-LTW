@@ -541,3 +541,16 @@ def test_save_dataset_and_sample():
         core.save_dataset('leads', project['id'], ['x'], [{'x': '1'}])
     other = core.create_project('Otro')
     assert core.dataset_sample('leads', other['id']) is None   # un conjunto es propio de su proyecto, como un ambiente o un caso
+
+
+def test_save_dataset_can_update_an_existing_one_by_id():
+    """La pantalla de edición reusa save_dataset con id=... para guardar cambios (columnas/filas agregadas, quitadas
+    o editadas a mano) sin crear un duplicado."""
+    project = core.create_project('Datos')
+    created = core.save_dataset('leads', project['id'], ['nombre'], [{'nombre': 'Ana'}])
+    updated = core.save_dataset('leads', project['id'], ['nombre', 'rfc'], [{'nombre': 'Ana', 'rfc': 'AAA'}, {'nombre': 'Beto', 'rfc': 'BBB'}], id=created['id'])
+    assert updated['id'] == created['id']
+    items = core.list_project_items('datasets', project['id'])
+    assert len(items) == 1   # no duplicó: actualizó el mismo registro
+    assert items[0]['columns'] == ['nombre', 'rfc']
+    assert len(items[0]['rows']) == 2
