@@ -94,9 +94,20 @@ def suite_groups_list():
                 if not ids:
                     raise ValueError('Marca al menos una suite')
                 await run_many_groups(ids, f'Ejecutando {len(ids)} suite(s) seleccionadas')
+
+            def remove_selected():
+                ids = [gid for gid, picked in selected.items() if picked]
+                if not ids:
+                    raise ValueError('Marca al menos una suite')
+                def do_delete():
+                    for gid in ids:
+                        core.delete('suite_groups', gid)
+                    ui.navigate.reload()
+                confirm(f'¿Eliminar {len(ids)} suite(s) seleccionadas?', do_delete)
             if items:
                 ui.button('Ejecutar todas las Suites', icon='playlist_play', on_click=guard(run_all)).props('outline color=positive no-caps')
                 ui.button('Ejecutar seleccionadas', icon='play_arrow', on_click=guard(run_selected)).props('outline color=positive no-caps')
+                ui.button('Eliminar seleccionadas', icon='delete', on_click=guard(remove_selected)).props('outline color=negative no-caps')
         if not items:
             empty_state('No hay suites. Una suite junta varios Flujos y/o Casos sueltos para correrlos todos de una vez.')
         for group in items:
@@ -105,7 +116,11 @@ def suite_groups_list():
                     ui.checkbox(value=False, on_change=lambda e, gid=group['id']: selected.__setitem__(gid, e.value)) \
                         .props('dense').tooltip('Marcar para «Ejecutar seleccionadas»')
                     with ui.column().classes('gap-0 grow'):
-                        ui.label(group['name']).classes('font-semibold')
+                        with ui.row().classes('items-center gap-2'):
+                            ui.label(group['name']).classes('font-semibold')
+                            last = core.last_run_for_suite_group(group['id'])
+                            if last:
+                                status_badge(last['status'])
                         policy = 'se detiene al primer fallo' if group.get('on_failure') == 'stop' else 'continúa tras fallos'
                         flows = sum(1 for m in group['members'] if m['type'] == 'flow')
                         cases = sum(1 for m in group['members'] if m['type'] == 'case')

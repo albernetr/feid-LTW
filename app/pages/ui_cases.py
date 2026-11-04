@@ -132,7 +132,11 @@ def ui_cases_page(id: str = '', name: str = '', url: str = ''):
                                 else:
                                     method_badge(case.get('method', ''))
                                 with ui.column().classes('gap-0 grow').style('min-width:0'):
-                                    ui.label(case['name']).classes('text-sm truncate').style('max-width:100%')
+                                    with ui.row().classes('items-center gap-1 no-wrap'):
+                                        ui.label(case['name']).classes('text-sm truncate').style('max-width:100%')
+                                        last = core.last_run_for_case(case['id'])
+                                        if last:
+                                            status_badge(last['status']).classes('text-xs')
                                     ui.label(f'{len(case.get("steps", []))} paso(s)' if is_ui else case.get('path', '')).classes('text-xs text-gray-500 truncate')
                                 if not is_ui:
                                     ui.icon('open_in_new', size='xs', color='grey').tooltip('Se edita en Espacio de trabajo')

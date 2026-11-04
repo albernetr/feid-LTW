@@ -144,7 +144,7 @@ Un **caso API** es una petición HTTP guardada con las **aserciones** que debe c
 
 - **Nuevo caso** abre el editor vacío.
 - **Ejecutar en ambiente** elige el ambiente para los botones ▶ de la lista. Si no hay ambientes se te avisa.
-- Cada tarjeta muestra el **método**, el **nombre**, la **ruta** y el número de aserciones, y estos botones:
+- Cada tarjeta muestra el **método**, el **nombre** (con el **estado de su última ejecución** al lado, si ya corrió alguna vez), la **ruta** y el número de aserciones, y estos botones:
 
 | Botón | Acción |
 |---|---|
@@ -249,7 +249,7 @@ Casos UI es, como el [Espacio de trabajo](#cap-6) de las peticiones de API, **un
 | **Centro** | El nombre del caso, los controles de **Navegador** y la lista de **Pasos** (el contenido del caso). |
 | **Derecha** | Herramientas: **Grabador** (pegar un script) y **Guardar** (ambiente, timeout, guardar/ejecutar/eliminar). |
 
-- Clic en una fila de **Guardados** de un caso UI lo carga completo (nombre, pasos) para seguir editándolo. Clic en un **caso API** te lleva al [Espacio de trabajo](#cap-6) con ese caso ya cargado: un caso es un caso, sin importar dónde se creó.
+- Clic en una fila de **Guardados** de un caso UI lo carga completo (nombre, pasos) para seguir editándolo. Clic en un **caso API** te lleva al [Espacio de trabajo](#cap-6) con ese caso ya cargado: un caso es un caso, sin importar dónde se creó. Cada fila muestra, junto al nombre, el **estado de su última ejecución** si ya corrió alguna vez.
 - Clic en una fila de **Historial** carga una **copia editable** de los pasos que se ejecutaron entonces (útil para ajustar y volver a intentar sin tocar el caso guardado) y abre el detalle de esa ejecución (capturas, traza).
 - El icono 📄+ junto al nombre empieza un caso nuevo en blanco.
 
@@ -328,7 +328,7 @@ Una **suite** es una lista ordenada de casos (API y UI) que se ejecutan **en sec
 
 ![Lista de suites](img/40-suites.png)
 
-Cada tarjeta muestra el nombre y un resumen: número de casos, **ruta de ambientes** (`Identidad → Pedidos` si cruza componentes), política de fallo, reintentos y cuántos pasos están enriquecidos. Botones: ▶ **Ejecutar**, ✎ **Editar**, 🗑 **Eliminar** (no se puede si tiene programaciones).
+Cada tarjeta muestra el nombre (con el **estado de su última ejecución** al lado, si ya corrió alguna vez) y un resumen: número de casos, **ruta de ambientes** (`Identidad → Pedidos` si cruza componentes), política de fallo, reintentos y cuántos pasos están enriquecidos. Botones: ▶ **Ejecutar**, ✎ **Editar**, 🗑 **Eliminar** (no se puede si tiene programaciones). Con el checkbox de cada tarjeta marcado, **Ejecutar seleccionados** corre solo esos; **Eliminar seleccionados** los borra de una vez (misma confirmación, y el mismo límite: no borra uno con programaciones).
 
 ![Resultado de ejecutar una suite](img/41-suite-resultado.png)
 

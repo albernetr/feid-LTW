@@ -510,6 +510,18 @@ def last_run_for_suite(suite_id):
     return max(runs, key=lambda r: r.get('started_at', '')) if runs else None
 
 
+def last_run_for_case(case_id):
+    """El último run decisivo (no cancelado/omitido) de un caso (API o UI), o None si nunca se ejecutó."""
+    runs = [r for r in list_items('runs') if r.get('type') in ('api', 'ui') and r.get('case_id') == case_id and r.get('status') in ('passed', 'failed', 'error')]
+    return max(runs, key=lambda r: r.get('started_at', '')) if runs else None
+
+
+def last_run_for_suite_group(group_id):
+    """El último run decisivo (no cancelado/omitido) de una suite (grupo), o None si nunca se ejecutó."""
+    runs = [r for r in list_items('runs') if r.get('type') == 'suite_group' and r.get('group_id') == group_id and r.get('status') in ('passed', 'failed', 'error')]
+    return max(runs, key=lambda r: r.get('started_at', '')) if runs else None
+
+
 def feature_health(feature_id):
     """Para la trazabilidad de negocio: de las suites ligadas a la funcionalidad, cuántas pasan en su última corrida."""
     suites = [s for s in list_items('suites') if s.get('feature_id') == feature_id]

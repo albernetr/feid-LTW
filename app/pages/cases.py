@@ -65,7 +65,11 @@ def cases_list():
                     with ui.row().classes('items-center gap-3 w-full no-wrap'):
                         ui.badge(case.get('method', ''), color='primary').classes('w-16 justify-center')
                         with ui.column().classes('gap-0 grow'):
-                            ui.label(case['name']).classes('font-semibold')
+                            with ui.row().classes('items-center gap-2'):
+                                ui.label(case['name']).classes('font-semibold')
+                                last = core.last_run_for_case(case['id'])
+                                if last:
+                                    status_badge(last['status'])
                             extra_tags = [t for t in case.get('tags', []) if t != 'auto-explorado']
                             tail = f' · {", ".join(extra_tags)}' if extra_tags else ''
                             ui.label(f'{case.get("path", "")} · {len(case.get("assertions", []))} aserciones{tail}').classes('font-mono text-sm text-gray-500')

@@ -232,9 +232,23 @@ def suites_list():
                 if not ids:
                     raise ValueError('Marca al menos un flujo')
                 await run_many_suites(ids, f'Ejecutando {len(ids)} flujo(s) seleccionados')
+
+            def remove_selected():
+                ids = [sid for sid, picked in selected.items() if picked]
+                if not ids:
+                    raise ValueError('Marca al menos un flujo')
+                blocked = [s for s in items if s['id'] in ids and [x for x in core.list_items('schedules') if x.get('suite_id') == s['id']]]
+                if blocked:
+                    raise ValueError('No se puede eliminar: ' + ', '.join(f'«{s["name"]}»' for s in blocked) + ' tiene(n) programación(es)')
+                def do_delete():
+                    for sid in ids:
+                        core.delete('suites', sid)
+                    ui.navigate.reload()
+                confirm(f'¿Eliminar {len(ids)} flujo(s) seleccionados?', do_delete)
             if items:
                 ui.button('Ejecutar todos los Flujos', icon='playlist_play', on_click=guard(run_all)).props('outline color=positive no-caps')
                 ui.button('Ejecutar seleccionados', icon='play_arrow', on_click=guard(run_selected)).props('outline color=positive no-caps')
+                ui.button('Eliminar seleccionados', icon='delete', on_click=guard(remove_selected)).props('outline color=negative no-caps')
         if not items:
             empty_state('No hay flujos. Agrupa casos en el orden en que deben ejecutarse; cada paso puede apuntar a otro ambiente/componente.')
         for suite in items:
@@ -246,6 +260,9 @@ def suites_list():
                     with ui.column().classes('gap-0 grow'):
                         with ui.row().classes('items-center gap-2'):
                             ui.label(suite['name']).classes('font-semibold')
+                            last = core.last_run_for_suite(suite['id'])
+                            if last:
+                                status_badge(last['status'])
                             fname = feature_name(suite)
                             if fname:
                                 ui.badge(fname, color='pink')
