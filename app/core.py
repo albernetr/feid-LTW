@@ -54,7 +54,7 @@ ARTIFACTS = ROOT / 'evidence'
 SECRET_SERVICE = 'local-test-workspace'
 SENSITIVE_HEADERS = ('authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization')
 SENSITIVE_NAME = re.compile(r'token|password|passwd|secret|key|authorization|cookie', re.I)
-TABLES = ('projects', 'module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'datasets')
+TABLES = ('projects', 'module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'datasets', 'suite_groups')
 ALL_TABLES = TABLES + ('settings', 'runs', 'taps', 'interfaces', 'lab_history', 'llm_profiles', 'sequences')
 UUID_RE = re.compile(r'^[0-9a-fA-F-]{8,64}$')
 
@@ -282,12 +282,13 @@ def project_stats(project_id):
         raise ValueError('Proyecto inexistente')
     return {
         table: sum(item.get('project_id') == project_id for item in list_items(table))
-        for table in ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps')
+        for table in ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps', 'datasets', 'suite_groups')
     }
 
 
 PROJECT_RESOURCE_LABELS = {'module_groups': 'módulo(s)', 'modules': 'componente(s)', 'environments': 'ambiente(s)', 'cases': 'caso(s)',
-                           'features': 'funcionalidad(es)', 'suites': 'suite(s)', 'schedules': 'programación(es)', 'taps': 'tap(s) de observación'}
+                           'features': 'funcionalidad(es)', 'suites': 'flujo(s)', 'schedules': 'programación(es)', 'taps': 'tap(s) de observación',
+                           'datasets': 'conjunto(s) de datos', 'suite_groups': 'suite(s)'}
 
 
 def _purge_project_history(project_id):
@@ -322,7 +323,7 @@ def delete_project(project_id):
         set_active_project(None)
 
 
-CASCADE_TABLES = ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps', 'datasets')
+CASCADE_TABLES = ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps', 'datasets', 'suite_groups')
 
 
 def delete_project_cascade(project_id):
@@ -611,7 +612,7 @@ def materialize_suite_variants(suite, count):
     venga o no de una suite materializada así (es un valor independiente por diseño, no ligado a esta suite)."""
     if count < 1:
         raise ValueError('La cantidad debe ser al menos 1')
-    base_name = (suite.get('name') or 'Suite').strip()
+    base_name = (suite.get('name') or 'Flujo').strip()
     steps = suite_steps(suite)
     created = []
     for index in range(1, count + 1):
@@ -628,6 +629,54 @@ def materialize_suite_variants(suite, count):
                                    seq_start=suite.get('seq_start'), feature_id=suite.get('feature_id'),
                                    steps=copy.deepcopy(steps), draws=[]))
     return created
+
+
+# --------------------------------------------------------------------------- suite groups ("Suites": grupos de Flujos/Casos)
+
+def save_suite_group(name, project_id, members, **options):
+    """Una Suite: un grupo que junta varios Flujos y/o Casos sueltos para correrlos todos de una vez y sacar un
+    solo reporte combinado — a diferencia de un Flujo (tabla `suites`), que es UNA secuencia ordenada de pasos
+    encadenados. Cada miembro es {'type': 'flow'|'case', 'id': ...}; el orden de la lista es el orden de corrida.
+    `environment_id` es el ambiente que usan los miembros tipo 'case' (un Flujo ya trae el suyo propio)."""
+    if not (name or '').strip():
+        raise ValueError('El nombre de la suite es obligatorio')
+    if not members:
+        raise ValueError('Selecciona al menos un flujo o caso')
+    clean = []
+    for index, member in enumerate(members, 1):
+        kind, member_id = member.get('type'), member.get('id')
+        if kind not in ('flow', 'case'):
+            raise ValueError(f'Miembro {index}: tipo inválido')
+        item = get('suites' if kind == 'flow' else 'cases', member_id)
+        if item is None:
+            raise ValueError(f'Miembro {index}: {"flujo" if kind == "flow" else "caso"} inexistente')
+        if project_id is not None and item.get('project_id') != project_id:
+            raise ValueError(f'Miembro {index}: no pertenece al proyecto activo')
+        clean.append({'type': kind, 'id': member_id})
+    on_failure = options.get('on_failure', 'continue')
+    if on_failure not in ('continue', 'stop'):
+        raise ValueError('Política de fallo inválida')
+    environment_id = options.get('environment_id') or None
+    if environment_id:
+        env = get('environments', environment_id)
+        if env is None:
+            raise ValueError('Ambiente inexistente')
+        if project_id is not None and env.get('project_id') != project_id:
+            raise ValueError('El ambiente no pertenece al proyecto activo')
+    elif any(m['type'] == 'case' for m in clean):
+        raise ValueError('Elige un ambiente: lo necesitan los casos sueltos del grupo')
+    item = {'name': name.strip(), 'members': clean, 'on_failure': on_failure, 'environment_id': environment_id}
+    if options.get('id'):
+        item['id'] = options['id']
+    if project_id is not None:
+        item['project_id'] = project_id
+    if 'expected_updated_at' in options:
+        return save('suite_groups', item, expected_updated_at=options['expected_updated_at'])
+    return save('suite_groups', item)
+
+
+def suite_group_members(group):
+    return copy.deepcopy(group.get('members') or [])
 
 
 # --------------------------------------------------------------------------- OpenAPI

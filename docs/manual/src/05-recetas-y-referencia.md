@@ -24,19 +24,19 @@ Ejemplos paso a paso para los usos más comunes. Cada receta indica en qué pant
 1. **Importar / Exportar → Importar** el paquete: elige **Fusionar**, revisa la **vista previa** y confirma. Crea tus secretos con los nombres indicados.
 2. **Espacio de trabajo → Guardados**: abre un caso, cambia el **Body** o **Params** a tu gusto y pulsa **Enviar**. Mira **Cuerpo**, **Pruebas** y **Diff**.
 3. Para varios valores de entrada, escribe `{{id}}` en la URL, abre **Lote**, **Actualizar columnas**, **Cargar filas** (un valor por línea) y **Ejecutar lote**.
-4. **Guardar lote como suite** (modo **Respuesta exacta**, ignorando los campos que sugiera). Queda una **suite de regresión** con un caso por fila.
-5. Cuando haya una versión nueva del sistema, **ejecuta la suite**: las filas que fallen te dicen **qué campo cambió** (`$.name: obtenido "USER" (esperado "user1")`).
+4. **Guardar lote como flujo** (modo **Respuesta exacta**, ignorando los campos que sugiera). Queda un **flujo de regresión** con un caso por fila.
+5. Cuando haya una versión nueva del sistema, **ejecuta el flujo**: las filas que fallen te dicen **qué campo cambió** (`$.name: obtenido "USER" (esperado "user1")`).
 6. Si el cambio es **intencional**, vuelve a la petición en el Espacio de trabajo, envíala, **Generar pruebas** con la nueva respuesta y **Guardar** con **Actualizar el caso guardado**.
 
 ## 16.3 Product Owner: ejecutar y saber si «todo sale como se espera»
 
 **Objetivo:** ejecutar las pruebas acordadas y entender el resultado sin leer código.
 
-1. **Suites**: busca la suite acordada (por ejemplo *Smoke del catálogo*) y pulsa ▶. Espera el cuadro de resultado.
+1. **Flujos**: busca el flujo acordado (por ejemplo *Smoke del catálogo*) y pulsa ▶. Espera el cuadro de resultado.
 2. Verde **Pasó** = todo cumple lo esperado. **Falló** = el servicio respondió, pero no como se esperaba. **Error** = no se pudo ni probar (servicio caído, dato faltante).
 3. **Ver detalle** en un paso fallido: verás **qué se esperaba y qué se obtuvo** en frases (por ejemplo «Código HTTP igual a 201 → 401»).
 4. Para avisar al equipo técnico, en el detalle pulsa **Brief para agente** y **Copiar Markdown**: es un resumen completo del fallo que cualquier persona (o agente) puede usar.
-5. **Programaciones**: pide que programen la suite (por ejemplo, L–V a las 07:30).
+5. **Programaciones**: pide que programen el flujo (por ejemplo, L–V a las 07:30).
 6. **Resumen** (menú lateral): cada mañana mira el **semáforo** y la lista *Qué está fallando y desde cuándo*. Para un comité o un correo, **Reporte de estatus** genera el documento (HTML o PDF) con tus comentarios, y **Copiar resumen** un texto corto (ver 13.4).
 
 > Mantén abierto `scripts\scheduler.bat` en el equipo que ejecuta las programaciones.

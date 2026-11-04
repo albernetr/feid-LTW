@@ -9,7 +9,7 @@ NAV = [
     ('Inicio', '/', 'home'), ('Resumen', '/resumen', 'monitor_heart'), ('Espacio de trabajo', '/workspace', 'space_dashboard'), ('Proyectos', '/projects', 'folder_open'),
     ('Módulos', '/module-groups', 'account_tree'), ('Componentes', '/modules', 'widgets'), ('Ambientes', '/environments', 'dns'),
     ('Casos API', '/cases', 'http'), ('Casos UI', '/ui-cases', 'web'), ('Funcionalidades', '/features', 'flag'),
-    ('Flujos', '/suites', 'playlist_play'), ('Chat', '/chat', 'forum'), ('Observador', '/observer', 'visibility'), ('Programaciones', '/schedules', 'schedule'),
+    ('Flujos', '/suites', 'playlist_play'), ('Suites', '/suite-groups', 'folder_special'), ('Chat', '/chat', 'forum'), ('Observador', '/observer', 'visibility'), ('Programaciones', '/schedules', 'schedule'),
     ('Modelos de IA', '/models', 'smart_toy'), ('Variables y secuencias', '/sequences', 'numbers'), ('Conjuntos de datos', '/datasets', 'dataset'),
     ('Historial', '/runs', 'history'), ('Importar / Exportar', '/portable', 'swap_vert'),
 ]
@@ -211,7 +211,7 @@ def show_run(run):
     with ui.dialog() as dialog, ui.card().classes('w-[820px] max-w-full'):
         with ui.row().classes('items-center gap-3'):
             status_badge(run.get('status'))
-            ui.label(run.get('case_name') or run.get('suite_name') or '').classes('text-lg font-semibold')
+            ui.label(run.get('case_name') or run.get('suite_name') or run.get('group_name') or '').classes('text-lg font-semibold')
             ui.label(fmt_time(run.get('started_at'))).classes('text-gray-500 text-sm')
         if run.get('error'):
             ui.label(run['error']).classes('text-red-700 whitespace-pre-wrap')
@@ -224,6 +224,17 @@ def show_run(run):
                                  + (f' ({entry["environment"]})' if entry.get('environment') else ''))
                         if entry.get('attempts', 1) > 1:
                             ui.label(f'({entry["attempts"]} intentos)').classes('text-gray-500 text-sm')
+                        if entry.get('error'):
+                            ui.label(entry['error']).classes('text-red-700 text-sm')
+                        if entry.get('run_id') and core.get('runs', entry['run_id']):
+                            ui.button('Ver detalle', on_click=lambda _, r=entry['run_id']: show_run(core.get('runs', r))).props('flat dense')
+        elif run.get('type') == 'suite_group':
+            with ui.column().classes('w-full gap-1'):
+                for entry in run.get('item_runs', []):
+                    with ui.row().classes('items-center gap-2'):
+                        status_badge(entry['status'])
+                        ui.badge('Flujo' if entry['type'] == 'flow' else 'Caso', color='deep-orange' if entry['type'] == 'flow' else 'primary').classes('text-xs')
+                        ui.label(entry.get('name') or entry['id'][:8])
                         if entry.get('error'):
                             ui.label(entry['error']).classes('text-red-700 text-sm')
                         if entry.get('run_id') and core.get('runs', entry['run_id']):

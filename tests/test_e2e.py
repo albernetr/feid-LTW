@@ -181,7 +181,7 @@ def test_portability_end_to_end(world, tmp_path):
     preview = core.preview_import(path, 'merge')
     assert preview['summary']['suites']['new'] == 1 and core.list_items('suites') == []
     counts = core.import_workspace(path, 'merge')
-    assert counts == {'projects': 1, 'module_groups': 0, 'modules': 0, 'environments': 1, 'cases': 1, 'features': 0, 'suites': 1, 'schedules': 1, 'datasets': 0}
+    assert counts == {'projects': 1, 'module_groups': 0, 'modules': 0, 'environments': 1, 'cases': 1, 'features': 0, 'suites': 1, 'schedules': 1, 'datasets': 0, 'suite_groups': 0}
     assert core.list_items('schedules')[0]['enabled'] is False
     imported_suite = core.list_items('suites')[0]
     assert core.get('cases', imported_suite['case_ids'][0])
@@ -341,3 +341,32 @@ def test_execute_suite_many_draws_independently_each_run(world):
     assert summary['passed'] == 5
     names = {core.get('runs', r['case_runs'][0]['run_id'])['request']['body']['name'] for r in summary['runs']}
     assert len(names) > 1   # con 5 opciones y 5 corridas, prácticamente seguro que no todas coincidan
+
+
+def test_suite_group_runs_flows_and_loose_cases_together(world):
+    """Una Suite (grupo) junta Flujos y Casos sueltos y los corre todos en un solo run combinado — a diferencia
+    de un Flujo, que es UNA secuencia encadenada de pasos."""
+    flow_case = world['api_case']('paso del flujo', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    flow = core.save_suite('mini flujo', world['env']['id'], [flow_case['id']], world['pid'])
+    loose_case = world['api_case']('caso suelto', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    group = core.save_suite_group('mi suite', world['pid'], [{'type': 'flow', 'id': flow['id']}, {'type': 'case', 'id': loose_case['id']}],
+                                  environment_id=world['env']['id'])
+    result = automation.execute_suite_group(group)
+    assert result['status'] == 'passed', result
+    assert result['type'] == 'suite_group'
+    assert [i['type'] for i in result['item_runs']] == ['flow', 'case']
+    assert all(i['status'] == 'passed' for i in result['item_runs'])
+
+
+def test_suite_group_requires_an_environment_for_loose_cases(world):
+    case = world['api_case']('suelto', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    with pytest.raises(ValueError, match='ambiente'):
+        core.save_suite_group('sin ambiente', world['pid'], [{'type': 'case', 'id': case['id']}])
+
+
+def test_suite_group_cascades_on_project_delete(world):
+    case = world['api_case']('suelto', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    core.save_suite_group('a borrar', world['pid'], [{'type': 'case', 'id': case['id']}], environment_id=world['env']['id'])
+    assert len(core.list_project_items('suite_groups', world['pid'])) == 1
+    core.delete_project_cascade(world['pid'])
+    assert core.list_items('suite_groups') == []

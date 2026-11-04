@@ -210,6 +210,7 @@ Espacio de trabajo: historial propio de peticiones sueltas (no necesita proyecto
 | **Casos UI** | Casos de navegador con pasos y grabador. |
 | **Funcionalidades** | Capacidades de negocio que pueden cruzar varios componentes/módulos; se validan con Suites. |
 | **Flujos** | Pasos encadenados entre componentes (antes llamados «Suites»). |
+| **Suites** | Un grupo que junta varios Flujos y/o Casos sueltos para correrlos todos de una vez y sacar un solo reporte combinado — a diferencia de un Flujo, no encadena nada entre sus miembros. |
 | **Chat** | Conversar en vivo con un chatbot/API conversacional, turno a turno, y congelarlo como suite. |
 | **Observador** | Taps, catálogo de interfaces y cambios. |
 | **Programaciones** | Ejecuciones automáticas. |
@@ -232,7 +233,7 @@ Espacio de trabajo: historial propio de peticiones sueltas (no necesita proyecto
 2. **Componentes** → regístralos (nombre, lo que exponen); importa el contrato después, si aplica (opcional pero muy útil).
 3. **Ambientes** → registra dónde se prueba.
 4. **Espacio de trabajo** → explora y guarda casos.
-5. **Suites** → agrupa casos; **Programaciones** → automatiza.
+5. **Flujos** → encadena casos; **Suites** → agrupa Flujos y casos sueltos; **Programaciones** → automatiza.
 6. **Observador** → vigila el tráfico y los cambios.
 
 > **Consejo.** No necesitas seguir este orden para empezar a probar: puedes abrir el **Espacio de trabajo**, escribir una URL y enviarla sin tener proyecto ni ambiente. Los eliges al **guardar**.

@@ -401,6 +401,50 @@ def execute_suite(suite, cancel=None, on_progress=None):
     return core.save('runs', summary)
 
 
+def execute_suite_group(group, cancel=None, on_progress=None):
+    """Corre todos los miembros de una Suite (grupo) en el orden declarado: cada Flujo vía execute_suite (con su
+    propio motor completo: Sorteos, variables, encadenamiento), cada Caso suelto como un único envío contra el
+    ambiente del grupo. Agrega todo en un solo run tipo 'suite_group', consultable igual que uno de Flujo."""
+    environment = core.get('environments', group.get('environment_id')) if group.get('environment_id') else None
+    summary = {'id': core.uid(), 'type': 'suite_group', 'group_id': group['id'], 'group_name': group.get('name', ''),
+               'project_id': group.get('project_id'), 'started_at': core.now(), 'item_runs': []}
+    halt = None
+    for member in core.suite_group_members(group):
+        if halt is None and cancel is not None and cancel.is_set():
+            halt = 'cancelled'
+        if halt:
+            summary['item_runs'].append({'type': member['type'], 'id': member['id'], 'status': 'cancelled' if halt == 'cancelled' else 'skipped'})
+            continue
+        if member['type'] == 'flow':
+            flow = core.get('suites', member['id'])
+            if flow is None:
+                entry = {'type': 'flow', 'id': member['id'], 'status': 'error', 'error': 'Flujo inexistente'}
+            else:
+                result = execute_suite(flow, cancel, on_progress)
+                entry = {'type': 'flow', 'id': member['id'], 'name': flow.get('name', ''), 'run_id': result['id'], 'status': result['status']}
+        else:
+            case = core.get('cases', member['id'])
+            if case is None or environment is None:
+                reason = 'Caso inexistente' if case is None else 'Esta suite no tiene ambiente para casos sueltos'
+                entry = {'type': 'case', 'id': member['id'], 'status': 'error', 'error': reason}
+            else:
+                result = _run_case(case, environment, {}, None, None, {'suite_group_id': group['id']})
+                entry = {'type': 'case', 'id': member['id'], 'name': case.get('name', ''), 'run_id': result['id'], 'status': result['status']}
+        summary['item_runs'].append(entry)
+        if on_progress:
+            on_progress(entry)
+        if entry['status'] not in ('passed',) and group.get('on_failure') == 'stop':
+            halt = 'stopped'
+    statuses = [r['status'] for r in summary['item_runs']]
+    if 'cancelled' in statuses:
+        summary['status'] = 'cancelled'
+    else:
+        summary['status'] = 'passed' if statuses and all(s == 'passed' for s in statuses) else 'failed'
+    summary['finished_at'] = core.now()
+    logs.event('suite_group.finished', group=summary['group_name'], status=summary['status'], items=len(statuses))
+    return core.save('runs', summary)
+
+
 def execute_suite_many(suite, count, cancel=None, on_run=None):
     """Corre la misma suite `count` veces seguidas (ej. N conversaciones con datos distintos). Cada corrida vuelve
     a sortear sus Sorteos y sus {{random:...}} sueltos de forma independiente — no es lo mismo que materializar N

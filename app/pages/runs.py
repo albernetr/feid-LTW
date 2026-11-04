@@ -11,7 +11,7 @@ def runs_page():
 
         with ui.row().classes('items-center gap-3'):
             status = ui.select({'': 'Todos los estados', **STATUS_LABEL}, value='', label='Estado').props('outlined dense').classes('w-48')
-            kind = ui.select({'': 'Todos los tipos', 'api': 'API', 'ui': 'UI', 'suite': 'Flujo'}, value='', label='Tipo').props('outlined dense').classes('w-44')
+            kind = ui.select({'': 'Todos los tipos', 'api': 'API', 'ui': 'UI', 'suite': 'Flujo', 'suite_group': 'Suite'}, value='', label='Tipo').props('outlined dense').classes('w-44')
             text = ui.input('Buscar por nombre').props('outlined dense clearable').classes('w-60')
 
         columns = [
@@ -25,12 +25,13 @@ def runs_page():
         def rows():
             result = []
             for run in all_runs:
-                label = run.get('case_name') or run.get('suite_name') or ''
+                label = run.get('case_name') or run.get('suite_name') or run.get('group_name') or ''
                 if status.value and run['status'] != status.value or kind.value and run['type'] != kind.value or (text.value or '').lower() not in label.lower():
                     continue
                 detail = (f'HTTP {run["http_status"]} · {run.get("duration_ms")} ms' if run.get('http_status') else
-                          f'{len(run.get("case_runs", []))} casos' if run['type'] == 'suite' else run.get('error', '')[:80])
-                type_label = 'FLUJO' if run['type'] == 'suite' else run['type'].upper()
+                          f'{len(run.get("case_runs", []))} casos' if run['type'] == 'suite' else
+                          f'{len(run.get("item_runs", []))} miembro(s)' if run['type'] == 'suite_group' else run.get('error', '')[:80])
+                type_label = {'suite': 'FLUJO', 'suite_group': 'SUITE'}.get(run['type'], run['type'].upper())
                 result.append({'id': run['id'], 'started': fmt_time(run.get('started_at')), 'type': type_label, 'name': label,
                                'status': STATUS_LABEL.get(run['status'], run['status']), 'detail': detail})
             return result

@@ -57,7 +57,7 @@ def home():
         for run in runs:
             with ui.row().classes('items-center gap-3'):
                 status_badge(run['status'])
-                ui.label(run.get('case_name') or run.get('suite_name') or '')
+                ui.label(run.get('case_name') or run.get('suite_name') or run.get('group_name') or '')
                 ui.label(fmt_time(run.get('started_at'))).classes('text-gray-500 text-sm')
                 ui.button('Detalle', on_click=lambda _, r=run: show_run(r)).props('flat dense')
         ui.label('Carpeta del workspace: ' + str(core.ROOT)).classes('text-xs text-gray-500')
