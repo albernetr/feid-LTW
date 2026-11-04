@@ -53,6 +53,109 @@ def _ask_count(title, hint, run_label):
     return result
 
 
+def _show_batch_result(summary, label):
+    """`label(index, run_doc)` arma el texto de cada fila. Mismo diálogo de resumen para «ejecutar N veces» y
+    para «ejecutar todos/seleccionados» — ambos devuelven el mismo `{total, completed, passed, failed, runs}`."""
+    with ui.dialog() as result_dialog, ui.card().classes('w-[520px] max-w-full'):
+        ok = summary['passed'] == summary['completed'] and summary['completed'] == summary['total']
+        ui.label(f'{summary["passed"]} de {summary["completed"]} pasaron' + (f' (se canceló tras {summary["completed"]} de {summary["total"]})' if summary['completed'] < summary['total'] else '')) \
+            .classes('text-lg font-semibold ' + ('text-positive' if ok else 'text-negative'))
+        with ui.column().classes('w-full gap-1').style('max-height:300px;overflow:auto'):
+            for index, run_doc in enumerate(summary['runs'], 1):
+                with ui.row().classes('items-center gap-2'):
+                    status_badge(run_doc['status'])
+                    ui.label(label(index, run_doc)).classes('text-sm')
+                    ui.button('Ver', on_click=lambda _, r=run_doc: show_run(r)).props('flat dense size=sm')
+        ui.button('Cerrar', on_click=result_dialog.close).props('color=primary')
+    result_dialog.open()
+
+
+async def run_many_suites(ids, title):
+    if not ids:
+        raise ValueError('No hay flujos para ejecutar')
+    token = automation.new_cancel_token()
+    progress = {'done': 0, 'passed': 0}
+    with ui.dialog().props('persistent') as dialog, ui.card().classes('w-96'):
+        ui.label(title).classes('text-lg font-semibold')
+        ui.linear_progress(show_value=False).props('indeterminate')
+        status = ui.label('Iniciando…').classes('text-gray-600 text-sm')
+
+        def cancel():
+            token.set()
+            status.set_text('Cancelando tras el flujo en curso…')
+        ui.button('Cancelar', icon='stop', on_click=cancel).props('outline color=negative')
+    dialog.open()
+
+    def on_run(index, result):
+        progress['done'] = index
+        if result['status'] == 'passed':
+            progress['passed'] += 1
+    timer = ui.timer(0.5, lambda: status.set_text(f'{progress["done"]} de {len(ids)} flujo(s) terminados · {progress["passed"]} pasaron'))
+    try:
+        summary = await run.io_bound(automation.execute_suites, ids, token, on_run)
+    finally:
+        timer.cancel()
+        dialog.close()
+    _show_batch_result(summary, lambda index, r: r.get('suite_name') or f'#{index}')
+
+
+def _ask_steps(suite):
+    """Diálogo: elegí qué pasos correr (todos marcados por defecto — dejarlos todos reproduce una corrida normal).
+    Los que queden destildados no se ejecutan, pero su última respuesta registrada sigue disponible para encadenar
+    los pasos que sí corren (retest parcial). Devuelve el set de alias elegidos, o None si cancelan."""
+    result = asyncio.get_running_loop().create_future()
+    steps = core.suite_steps(suite)
+    checks = {}
+    with ui.dialog() as dialog, ui.card().classes('w-96'):
+        ui.label(f'Pasos a correr de «{suite["name"]}»').classes('text-lg font-semibold')
+        ui.label('Destildá los que no querés repetir.').classes('text-xs text-gray-500')
+        for step in steps:
+            checks[step['alias']] = ui.checkbox(step['alias'], value=True)
+
+        def cancel():
+            dialog.close()
+            if not result.done():
+                result.set_result(None)
+
+        def confirm_pick():
+            dialog.close()
+            if not result.done():
+                result.set_result({alias for alias, cb in checks.items() if cb.value})
+        with ui.row().classes('w-full justify-end gap-2'):
+            ui.button('Cancelar', on_click=cancel).props('flat')
+            ui.button('Ejecutar', icon='play_arrow', on_click=confirm_pick).props('color=primary')
+    dialog.open()
+    return result
+
+
+async def run_suite_partial(suite):
+    only = await _ask_steps(suite)
+    if only is None:
+        return
+    if not only:
+        raise ValueError('Elegí al menos un paso')
+    token = automation.new_cancel_token()
+    progress = []
+    with ui.dialog().props('persistent') as dialog, ui.card().classes('w-96'):
+        ui.label(f'Ejecutando «{suite["name"]}» ({len(only)} paso(s) seleccionados)').classes('text-lg font-semibold')
+        ui.linear_progress(show_value=False).props('indeterminate')
+        status = ui.label('Iniciando…').classes('text-gray-600 text-sm')
+
+        def cancel():
+            token.set()
+            status.set_text('Cancelando tras el caso en curso…')
+        ui.button('Cancelar ejecución', icon='stop', on_click=cancel).props('outline color=negative')
+    dialog.open()
+    timer = ui.timer(0.5, lambda: status.set_text(f'{len(progress)} de {len(core.suite_steps(suite))} paso(s) terminados'))
+    try:
+        result = await run.io_bound(automation.execute_suite, suite, token, progress.append, only)
+    finally:
+        timer.cancel()
+        dialog.close()
+    show_run(result)
+    return result
+
+
 async def run_suite_many(suite):
     count = await _ask_count(f'Ejecutar «{suite["name"]}» varias veces', 'Cada corrida vuelve a sortear sus Sorteos y sus {{random:…}} de forma independiente. Queda registrada en el Historial, no se guarda nada nuevo.', 'Ejecutar')
     if not count:
@@ -80,18 +183,7 @@ async def run_suite_many(suite):
     finally:
         timer.cancel()
         dialog.close()
-    with ui.dialog() as result_dialog, ui.card().classes('w-[520px] max-w-full'):
-        ok = summary['passed'] == summary['completed'] and summary['completed'] == summary['total']
-        ui.label(f'{summary["passed"]} de {summary["completed"]} pasaron' + (f' (se canceló tras {summary["completed"]} de {summary["total"]})' if summary['completed'] < summary['total'] else '')) \
-            .classes('text-lg font-semibold ' + ('text-positive' if ok else 'text-negative'))
-        with ui.column().classes('w-full gap-1').style('max-height:300px;overflow:auto'):
-            for index, run_doc in enumerate(summary['runs'], 1):
-                with ui.row().classes('items-center gap-2'):
-                    status_badge(run_doc['status'])
-                    ui.label(f'Corrida {index}').classes('text-sm')
-                    ui.button('Ver', on_click=lambda _, r=run_doc: show_run(r)).props('flat dense size=sm')
-        ui.button('Cerrar', on_click=result_dialog.close).props('color=primary')
-    result_dialog.open()
+    _show_batch_result(summary, lambda index, r: f'Corrida {index}')
 
 
 async def generate_suite_variants(suite):
@@ -127,14 +219,30 @@ def suites_list():
         if not require_project():
             return
         pid = core.get_active_project_id()
-        ui.button('Nuevo flujo', icon='add', on_click=lambda: ui.navigate.to('/suites/edit')).props('color=primary')
-        items = core.list_project_items('suites', pid)
+        with ui.row().classes('items-center gap-2'):
+            ui.button('Nuevo flujo', icon='add', on_click=lambda: ui.navigate.to('/suites/edit')).props('color=primary')
+            items = core.list_project_items('suites', pid)
+            selected = {}
+
+            async def run_all():
+                await run_many_suites([s['id'] for s in items], f'Ejecutando los {len(items)} flujo(s)')
+
+            async def run_selected():
+                ids = [sid for sid, picked in selected.items() if picked]
+                if not ids:
+                    raise ValueError('Marca al menos un flujo')
+                await run_many_suites(ids, f'Ejecutando {len(ids)} flujo(s) seleccionados')
+            if items:
+                ui.button('Ejecutar todos los Flujos', icon='playlist_play', on_click=guard(run_all)).props('outline color=positive no-caps')
+                ui.button('Ejecutar seleccionados', icon='play_arrow', on_click=guard(run_selected)).props('outline color=positive no-caps')
         if not items:
             empty_state('No hay flujos. Agrupa casos en el orden en que deben ejecutarse; cada paso puede apuntar a otro ambiente/componente.')
         for suite in items:
             route, enriched = flow_summary(suite)
             with ui.card().classes('w-full'):
                 with ui.row().classes('items-center gap-3 w-full no-wrap'):
+                    ui.checkbox(value=False, on_change=lambda e, sid=suite['id']: selected.__setitem__(sid, e.value)) \
+                        .props('dense').tooltip('Marcar para «Ejecutar seleccionados»')
                     with ui.column().classes('gap-0 grow'):
                         with ui.row().classes('items-center gap-2'):
                             ui.label(suite['name']).classes('font-semibold')
@@ -145,6 +253,7 @@ def suites_list():
                         ui.label(f'{len(suite["case_ids"])} casos · {route} · {policy} · {suite.get("retries", 0)} reintento(s)'
                                  + (f' · {enriched} paso(s) enriquecido(s)' if enriched else '')).classes('text-sm text-gray-500')
                     ui.button(icon='play_arrow', on_click=guard(lambda s=suite: run_suite(s))).props('flat round color=positive').tooltip('Ejecutar')
+                    ui.button(icon='checklist', on_click=guard(lambda s=suite: run_suite_partial(s))).props('flat round color=positive').tooltip('Ejecutar solo algunos pasos (retest parcial)')
                     ui.button(icon='repeat', on_click=guard(lambda s=suite: run_suite_many(s))).props('flat round color=positive').tooltip('Ejecutar N veces (datos aleatorios distintos en cada una)')
                     ui.button(icon='dynamic_feed', on_click=guard(lambda s=suite: generate_suite_variants(s))).props('flat round').tooltip('Generar N copias con sus Sorteos ya resueltos')
                     ui.button(icon='edit', on_click=lambda _, i=suite['id']: ui.navigate.to(f'/suites/edit?id={i}')).props('flat round').tooltip('Editar')

@@ -370,3 +370,53 @@ def test_suite_group_cascades_on_project_delete(world):
     assert len(core.list_project_items('suite_groups', world['pid'])) == 1
     core.delete_project_cascade(world['pid'])
     assert core.list_items('suite_groups') == []
+
+
+def test_execute_suites_runs_only_the_given_list(world):
+    """«Ejecutar todos» y «ejecutar seleccionados» son la misma función: una lista explícita de ids, nunca
+    «todos» hardcodeado — acá se prueba con una selección parcial de 2 de 3 flujos."""
+    ids = []
+    for name in ('uno', 'dos', 'tres'):
+        case = world['api_case'](name, 'GET', '/health', [{'type': 'status', 'expected': 200}])
+        ids.append(core.save_suite(name, world['env']['id'], [case['id']], world['pid'])['id'])
+    summary = automation.execute_suites(ids[:2])
+    assert summary['total'] == summary['completed'] == 2
+    assert summary['passed'] == 2
+    names = {r['suite_name'] for r in summary['runs']}
+    assert names == {'uno', 'dos'}   # el tercero, fuera de la selección, no corrió
+
+
+def test_execute_suite_groups_runs_only_the_given_list(world):
+    case = world['api_case']('suelto', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    g1 = core.save_suite_group('g1', world['pid'], [{'type': 'case', 'id': case['id']}], environment_id=world['env']['id'])
+    core.save_suite_group('g2', world['pid'], [{'type': 'case', 'id': case['id']}], environment_id=world['env']['id'])
+    summary = automation.execute_suite_groups([g1['id']])
+    assert summary['total'] == summary['completed'] == 1
+    assert summary['runs'][0]['group_name'] == 'g1'   # g2 nunca corrió: no estaba en la lista
+
+
+def test_partial_retest_skips_steps_and_reuses_their_last_response_for_enrichment(world):
+    """Re-ejecutar solo el paso 3 de un flujo de 3 debe: no repetir el paso 1 (queda 'skipped'), y seguir pudiendo
+    enriquecer el paso 3 con lo que el paso 1 devolvió LA VEZ ANTERIOR que de verdad corrió (core.history_context,
+    el mismo mecanismo que ya usa la Vista previa del enriquecimiento)."""
+    login = world['api_case']('login', 'POST', '/api/login', [{'type': 'status', 'expected': 200}],
+                              body={'user': 'qa', 'password': 'qa-pass'})
+    middle = world['api_case']('medio', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    create = world['api_case']('crear', 'POST', '/api/items', [{'type': 'status', 'expected': 201}],
+                               headers={'Authorization': 'Bearer {{@login:$.token}}'}, body={'name': 'retest'})
+    suite = core.save_suite('con reintento', world['env']['id'], [login['id'], middle['id'], create['id']], world['pid'],
+                            steps=[{'case_id': login['id'], 'alias': 'login', 'environment_id': None, 'enrich': []},
+                                   {'case_id': middle['id'], 'alias': 'medio', 'environment_id': None, 'enrich': []},
+                                   {'case_id': create['id'], 'alias': 'crear', 'environment_id': None,
+                                    'enrich': [{'action': 'set', 'target': 'headers', 'path': 'Authorization',
+                                                'source': {'type': 'template', 'value': 'Bearer {{@login:$.token}}'}}]}])
+    full = automation.execute_suite(suite)
+    assert full['status'] == 'passed', full
+
+    retest = automation.execute_suite(suite, only_aliases={'crear'})
+    # 'crear' solo pasa si pudo resolver {{@login:$.token}} desde el contexto — si history_context no hubiera
+    # encontrado la respuesta registrada de 'login', el enriquecimiento (strict=True) habría fallado antes de
+    # enviar nada, y el status de 'crear' sería 'error', no 'passed'.
+    assert retest['status'] == 'passed', retest
+    statuses = {r['alias']: r['status'] for r in retest['case_runs']}
+    assert statuses == {'login': 'skipped', 'medio': 'skipped', 'crear': 'passed'}

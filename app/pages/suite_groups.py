@@ -4,7 +4,7 @@ solo reporte combinado — a diferencia de un Flujo, que es UNA secuencia ordena
 con lo suyo propio; lo único que comparten es el ambiente (para los Casos sueltos) y quedar en un solo reporte."""
 from nicegui import ui, run
 from .. import core, automation
-from .common import frame, guard, confirm, empty_state, require_project, show_run
+from .common import frame, guard, confirm, empty_state, require_project, show_run, status_badge
 
 
 async def run_group(group):
@@ -30,19 +30,80 @@ async def run_group(group):
     return result
 
 
+def _show_batch_result(summary, label):
+    """Mismo diálogo de resumen que usa /suites para «ejecutar todas/seleccionadas»."""
+    with ui.dialog() as result_dialog, ui.card().classes('w-[520px] max-w-full'):
+        ok = summary['passed'] == summary['completed'] and summary['completed'] == summary['total']
+        ui.label(f'{summary["passed"]} de {summary["completed"]} pasaron' + (f' (se canceló tras {summary["completed"]} de {summary["total"]})' if summary['completed'] < summary['total'] else '')) \
+            .classes('text-lg font-semibold ' + ('text-positive' if ok else 'text-negative'))
+        with ui.column().classes('w-full gap-1').style('max-height:300px;overflow:auto'):
+            for index, run_doc in enumerate(summary['runs'], 1):
+                with ui.row().classes('items-center gap-2'):
+                    status_badge(run_doc['status'])
+                    ui.label(label(index, run_doc)).classes('text-sm')
+                    ui.button('Ver', on_click=lambda _, r=run_doc: show_run(r)).props('flat dense size=sm')
+        ui.button('Cerrar', on_click=result_dialog.close).props('color=primary')
+    result_dialog.open()
+
+
+async def run_many_groups(ids, title):
+    if not ids:
+        raise ValueError('No hay suites para ejecutar')
+    token = automation.new_cancel_token()
+    progress = {'done': 0, 'passed': 0}
+    with ui.dialog().props('persistent') as dialog, ui.card().classes('w-96'):
+        ui.label(title).classes('text-lg font-semibold')
+        ui.linear_progress(show_value=False).props('indeterminate')
+        status = ui.label('Iniciando…').classes('text-gray-600 text-sm')
+
+        def cancel():
+            token.set()
+            status.set_text('Cancelando tras la suite en curso…')
+        ui.button('Cancelar', icon='stop', on_click=cancel).props('outline color=negative')
+    dialog.open()
+
+    def on_run(index, result):
+        progress['done'] = index
+        if result['status'] == 'passed':
+            progress['passed'] += 1
+    timer = ui.timer(0.5, lambda: status.set_text(f'{progress["done"]} de {len(ids)} suite(s) terminadas · {progress["passed"]} pasaron'))
+    try:
+        summary = await run.io_bound(automation.execute_suite_groups, ids, token, on_run)
+    finally:
+        timer.cancel()
+        dialog.close()
+    _show_batch_result(summary, lambda index, r: r.get('group_name') or f'#{index}')
+
+
 @ui.page('/suite-groups')
 def suite_groups_list():
     with frame('Suites', '/suite-groups'):
         if not require_project():
             return
         pid = core.get_active_project_id()
-        ui.button('Nueva suite', icon='add', on_click=lambda: ui.navigate.to('/suite-groups/edit')).props('color=primary')
-        items = core.list_project_items('suite_groups', pid)
+        with ui.row().classes('items-center gap-2'):
+            ui.button('Nueva suite', icon='add', on_click=lambda: ui.navigate.to('/suite-groups/edit')).props('color=primary')
+            items = core.list_project_items('suite_groups', pid)
+            selected = {}
+
+            async def run_all():
+                await run_many_groups([g['id'] for g in items], f'Ejecutando las {len(items)} suite(s)')
+
+            async def run_selected():
+                ids = [gid for gid, picked in selected.items() if picked]
+                if not ids:
+                    raise ValueError('Marca al menos una suite')
+                await run_many_groups(ids, f'Ejecutando {len(ids)} suite(s) seleccionadas')
+            if items:
+                ui.button('Ejecutar todas las Suites', icon='playlist_play', on_click=guard(run_all)).props('outline color=positive no-caps')
+                ui.button('Ejecutar seleccionadas', icon='play_arrow', on_click=guard(run_selected)).props('outline color=positive no-caps')
         if not items:
             empty_state('No hay suites. Una suite junta varios Flujos y/o Casos sueltos para correrlos todos de una vez.')
         for group in items:
             with ui.card().classes('w-full'):
                 with ui.row().classes('items-center gap-3 w-full no-wrap'):
+                    ui.checkbox(value=False, on_change=lambda e, gid=group['id']: selected.__setitem__(gid, e.value)) \
+                        .props('dense').tooltip('Marcar para «Ejecutar seleccionadas»')
                     with ui.column().classes('gap-0 grow'):
                         ui.label(group['name']).classes('font-semibold')
                         policy = 'se detiene al primer fallo' if group.get('on_failure') == 'stop' else 'continúa tras fallos'

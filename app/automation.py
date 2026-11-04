@@ -325,8 +325,13 @@ def _response_context(result):
     return {'http_status': result.get('http_status'), 'headers': response.get('headers', {}), 'body': body}
 
 
-def execute_suite(suite, cancel=None, on_progress=None):
-    """Runs cases in order with shared variables, retries, failure policy and cooperative cancel."""
+def execute_suite(suite, cancel=None, on_progress=None, only_aliases=None):
+    """Runs cases in order with shared variables, retries, failure policy and cooperative cancel. With
+    `only_aliases` (a set/list of step aliases), every OTHER step is skipped instead of run — no request sent, no
+    {{seq}}/Sorteo consumed — but its last recorded response (core.history_context, the same source the
+    enrichment preview already uses) still feeds the context, so a later selected step can still enrich from it.
+    Useful for a partial retest (re-run just the step that failed, or a couple of them) without repeating the
+    whole flow; leaving `only_aliases` as None runs every step, exactly like before."""
     environment = core.get('environments', suite['environment_id'])
     if environment is None:
         raise ValueError('Ambiente inexistente')
@@ -353,6 +358,14 @@ def execute_suite(suite, cancel=None, on_progress=None):
             halt = 'cancelled'
         if halt:
             summary['case_runs'].append({'case_id': case_id, 'status': 'cancelled' if halt == 'cancelled' else 'skipped'})
+            continue
+        if only_aliases is not None and alias not in only_aliases:
+            captured = core.history_context([step]).get(alias)
+            if captured is not None:
+                context[alias] = captured
+            summary['case_runs'].append({'case_id': case_id, 'alias': alias, 'status': 'skipped'})
+            if on_progress:
+                on_progress(summary['case_runs'][-1])
             continue
         case = core.get('cases', case_id)
         step_env = core.get('environments', step['environment_id']) if step.get('environment_id') else environment
@@ -392,10 +405,13 @@ def execute_suite(suite, cancel=None, on_progress=None):
         if result['status'] != 'passed' and on_failure == 'stop':
             halt = 'stopped'
     statuses = [r['status'] for r in summary['case_runs']]
+    decisive = [s for s in statuses if s != 'skipped']   # a step left out of a partial retest says nothing about health
     if 'cancelled' in statuses:
         summary['status'] = 'cancelled'
+    elif not decisive:
+        summary['status'] = 'skipped'
     else:
-        summary['status'] = 'passed' if statuses and all(s == 'passed' for s in statuses) else 'failed'
+        summary['status'] = 'passed' if all(s == 'passed' for s in decisive) else 'failed'
     summary['finished_at'] = core.now()
     logs.event('suite.finished', suite=summary['suite_name'], status=summary['status'], cases=len(statuses))
     return core.save('runs', summary)
@@ -463,6 +479,42 @@ def execute_suite_many(suite, count, cancel=None, on_run=None):
             on_run(index, result)
     passed = sum(1 for r in runs if r['status'] == 'passed')
     return {'total': count, 'completed': len(runs), 'passed': passed, 'failed': len(runs) - passed, 'runs': runs}
+
+
+def execute_suites(suite_ids, cancel=None, on_run=None):
+    """Corre cada Flujo de `suite_ids`, en ese orden, una sola vez cada uno. «Ejecutar todos los Flujos» pasa la
+    lista completa del proyecto; «Ejecutar seleccionados» pasa solo los marcados — mismo mecanismo, misma función,
+    nunca «todos» hardcodeado aparte. on_run(index, result) se llama después de cada corrida, para progreso en vivo."""
+    runs = []
+    for index, suite_id in enumerate(suite_ids, 1):
+        if cancel is not None and cancel.is_set():
+            break
+        suite = core.get('suites', suite_id)
+        if suite is None:
+            continue
+        result = execute_suite(suite, cancel=cancel)
+        runs.append(result)
+        if on_run:
+            on_run(index, result)
+    passed = sum(1 for r in runs if r['status'] == 'passed')
+    return {'total': len(suite_ids), 'completed': len(runs), 'passed': passed, 'failed': len(runs) - passed, 'runs': runs}
+
+
+def execute_suite_groups(group_ids, cancel=None, on_run=None):
+    """Igual que execute_suites, pero para Suites (grupos) — «Ejecutar todas las Suites» / «seleccionadas»."""
+    runs = []
+    for index, group_id in enumerate(group_ids, 1):
+        if cancel is not None and cancel.is_set():
+            break
+        group = core.get('suite_groups', group_id)
+        if group is None:
+            continue
+        result = execute_suite_group(group, cancel=cancel)
+        runs.append(result)
+        if on_run:
+            on_run(index, result)
+    passed = sum(1 for r in runs if r['status'] == 'passed')
+    return {'total': len(group_ids), 'completed': len(runs), 'passed': passed, 'failed': len(runs) - passed, 'runs': runs}
 
 
 # --------------------------------------------------------------------------- schedules
