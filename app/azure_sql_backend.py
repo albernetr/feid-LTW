@@ -41,10 +41,10 @@ def _config():
     return {'server': server, 'database': database, 'user': user, 'password': password, 'port': port}
 
 
-def _connect():
+def _connect(config=None):
     import certifi
     import pytds
-    cfg = _config()
+    cfg = config or _config()
     # Azure SQL exige la conexión cifrada; pytds solo la activa si se le pasa un archivo de certificados raíz
     # (cafile) — sin esto, el servidor la rechaza con "Client does not have encryption enabled but it is
     # required". certifi trae el mismo paquete de raíces confiables que ya usa httpx en el resto de la app.
@@ -85,10 +85,12 @@ def close():
             _connection = None
 
 
-def test_connection():
+def test_connection(config=None):
     """Confirma que se puede conectar y autenticar (SELECT 1), sin tocar ninguna tabla. Usado por
-    `python run.py --check-storage` y por cualquier botón «Probar conexión» que se agregue más adelante."""
-    con = _connect()
+    `python run.py --check-storage` (lee la config de las variables de entorno) y por «Probar conexión» en
+    Configuraciones → Base de datos (puede pasar una config explícita, para validar credenciales antes de
+    definir las variables de entorno y reiniciar)."""
+    con = _connect(config)
     try:
         cur = con.cursor()
         cur.execute('SELECT 1')

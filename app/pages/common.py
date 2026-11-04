@@ -17,14 +17,16 @@ NAV = [
     ('Modelos de IA', '/models', 'smart_toy'), ('Variables y secuencias', '/sequences', 'numbers'), ('Conjuntos de datos', '/datasets', 'dataset'),
     ('Integraciones', '/integrations', 'extension'),
     ('Historial', '/runs', 'history'), ('Importar / Exportar', '/portable', 'swap_vert'),
+    ('Base de datos', '/storage', 'storage'),
 ]
 # Agrupa el menú (ya son ~20 opciones) en secciones desplegables/replegables — NAV sigue siendo la lista plana
 # y autoritativa (test_manual.py la recorre tal cual); esto solo decide cómo se presenta en el drawer.
 NAV_GROUPS = [
     ('Proyecto', 'folder_open', ('/projects', '/module-groups', '/modules', '/environments')),
     ('Pruebas', 'science', ('/cases', '/ui-cases', '/features', '/suites', '/suite-groups', '/chat')),
-    ('Automatización', 'smart_toy', ('/observer', '/schedules', '/models', '/sequences', '/datasets', '/integrations')),
+    ('Automatización', 'smart_toy', ('/observer', '/schedules', '/sequences', '/datasets', '/integrations')),
     ('Resultados', 'history', ('/runs', '/portable')),
+    ('Configuraciones', 'settings', ('/models', '/storage')),
 ]
 STATUS_COLOR = {'passed': 'positive', 'failed': 'negative', 'error': 'warning', 'cancelled': 'grey', 'skipped': 'grey'}
 STATUS_LABEL = {'passed': 'Pasó', 'failed': 'Falló', 'error': 'Error', 'cancelled': 'Cancelada', 'skipped': 'Omitido'}

@@ -228,12 +228,13 @@ Espacio de trabajo: historial propio de peticiones sueltas (no necesita proyecto
 | **Integraciones** | Configura Jira o Azure DevOps para adjuntar la evidencia de una corrida a un ticket/work item con un clic, usando tus propias credenciales. |
 | **Historial** | Resultados de ejecuciones y evidencias. |
 | **Importar / Exportar** | Paquetes ZIP y diagnóstico. |
+| **Base de datos** | Qué backend de almacenamiento está activo (SQLite local o Azure SQL) y, si querés probarlo antes de activarlo, un formulario para validar credenciales de Azure SQL sin cambiar nada todavía. |
 
 - **Menú compacto.** En el **Espacio de trabajo** el menú se reduce a iconos para dejar espacio y **se expande al pasar el ratón** (imagen). En las demás pantallas se muestra completo.
 
 ![Menú expandido al pasar el ratón en el Espacio de trabajo](img/27-menu-expandido.png)
 
-- **Menú agrupado y desplegable.** En las pantallas con el menú completo, las opciones se agrupan en secciones (**Proyecto**, **Pruebas**, **Automatización**, **Resultados**) que se despliegan y repliegan con un clic, igual que cualquier sección plegable del resto de la app. Al abrir una pantalla, su sección aparece ya desplegada; las demás quedan como las dejaste la última vez (se recuerda por navegador).
+- **Menú agrupado y desplegable.** En las pantallas con el menú completo, las opciones se agrupan en secciones (**Proyecto**, **Pruebas**, **Automatización**, **Resultados**, **Configuraciones**) que se despliegan y repliegan con un clic, igual que cualquier sección plegable del resto de la app. Al abrir una pantalla, su sección aparece ya desplegada; las demás quedan como las dejaste la última vez (se recuerda por navegador). **Configuraciones** junta **Modelos de IA** y **Base de datos**: lo que ajustás una vez y rara vez volvés a tocar.
 
 - **Mensajes.** Las confirmaciones aparecen abajo en verde; los errores, en rojo, con una explicación de qué corregir. Las acciones destructivas (eliminar, purgar) piden confirmación.
 - **Pestañas animadas.** Al cambiar de pestaña el contenido se desliza un instante; si una captura o lectura parece «cortada», espera medio segundo.

@@ -314,7 +314,7 @@ set LTW_AZURE_SQL_PASSWORD=tu_contraseña
 scripts\run.bat
 ```
 
-`python run.py --check-storage` confirma qué backend está activo y, si es Azure SQL, prueba la conexión sin tocar ninguna tabla — útil antes de arrancar la aplicación completa. Usa **autenticación SQL** (usuario/contraseña, no Microsoft Entra ID) y el driver `python-tds` (sin instalar el driver ODBC de Microsoft). El servidor de Azure SQL debe permitir la conexión desde tu IP (**firewall** del servidor, en el Portal de Azure).
+`python run.py --check-storage` confirma qué backend está activo y, si es Azure SQL, prueba la conexión sin tocar ninguna tabla — útil antes de arrancar la aplicación completa. Dentro de la aplicación, **Configuraciones → Base de datos** muestra lo mismo (backend activo, «Probar conexión activa») y además deja **probar credenciales de Azure SQL antes de activarlo de verdad**: completá servidor/base/usuario/contraseña y «Probar conexión» — no guarda nada ni cambia el backend en caliente, solo confirma que esos datos funcionan antes de definir las variables de entorno de arriba y reiniciar. Usa **autenticación SQL** (usuario/contraseña, no Microsoft Entra ID) y el driver `python-tds` (sin instalar el driver ODBC de Microsoft). El servidor de Azure SQL debe permitir la conexión desde tu IP (**firewall** del servidor, en el Portal de Azure).
 
 **Límites:** pensado igual que la base compartida en red, para pocas personas a la vez, no para uso intensivo concurrente; `--reset-workspace` no está disponible con este backend (hay que vaciar las tablas a mano en el servidor); los secretos siguen sin viajar (están en el Administrador de credenciales de cada equipo, nunca en Azure SQL).
 

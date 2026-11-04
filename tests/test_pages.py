@@ -33,6 +33,36 @@ async def test_a_grouped_page_auto_expands_its_own_menu_section(user: User):
     await user.should_see('Inicio')            # los ítems sueltos (sin grupo) siempre están visibles
 
 
+async def test_configuraciones_group_has_models_and_storage(user: User):
+    await user.open('/storage')
+    await user.should_see('Configuraciones')   # encabezado del grupo
+    await user.should_see('Base de datos')     # el ítem de esta misma página
+    await user.should_see('Modelos de IA')     # agrupado junto a ella
+
+
+async def test_storage_settings_shows_sqlite_by_default_and_can_probe_azure_credentials(user: User, monkeypatch):
+    from app import azure_sql_backend
+    monkeypatch.delenv('LTW_BACKEND', raising=False)
+    await user.open('/storage')
+    await user.should_see('SQLite (local)')
+
+    calls = []
+    monkeypatch.setattr(azure_sql_backend, 'test_connection', lambda config=None: calls.append(config))
+    user.find(marker='storage-probe-server').type('test-ws.database.windows.net')
+    user.find(marker='storage-probe-database').type('lwt')
+    user.find(marker='storage-probe-user').type('devsquad')
+    user.find(marker='storage-probe-password').type('x')
+    user.find(marker='storage-probe-submit').click()
+    await user.should_see('Conexión correcta')
+    assert calls and calls[0]['server'] == 'test-ws.database.windows.net' and calls[0]['database'] == 'lwt'
+
+
+async def test_storage_settings_probe_requires_every_field(user: User):
+    await user.open('/storage')
+    user.find(marker='storage-probe-submit').click()
+    await user.should_see('Completa:')
+
+
 async def test_projects_flow_and_filtering(user: User):
     await user.open('/projects/edit')
     user.find('project-name').type('Proyecto QA')
