@@ -504,7 +504,7 @@ def show_run(run):
             if run.get('response'):
                 with ui.expansion('Respuesta').classes('w-full'):
                     ui.code(run['response'].get('body', '')[:5000], language='json').classes('w-full')
-        if run.get('id') and core.get('runs', run['id']):
+        if run.get('id'):   # no exige que esté persistida: build_report_data/_download_evidence solo leen el dict (p. ej. Chat, que nunca guarda en Historial)
             with ui.row().classes('items-center gap-2'):
                 ui.label('Descargar evidencia:').classes('text-sm text-gray-600')
                 ui.button('HTML', icon='download', on_click=guard(lambda: _download_evidence(run, 'html'))).props('flat dense no-caps')

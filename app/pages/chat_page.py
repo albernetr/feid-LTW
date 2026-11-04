@@ -6,7 +6,7 @@ import copy
 import json
 from nicegui import ui, run
 from .. import core, workspace as ws
-from .common import frame, guard, protected_page
+from .common import frame, guard, protected_page, show_run
 from .widgets import kv_rows, dynamic_variable_chips
 
 HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
@@ -23,7 +23,10 @@ def build(preset_case_id=None):
     projects_by_id = {p['id']: p['name'] for p in core.list_items('projects')}
     all_envs = [e for e in core.list_items('environments') if e.get('name')]
     d = ws.new_draft()
-    S = {'messages': [], 'thread_id': '', 'last_request': None, 'last_response': None, 'suite_id': None}
+    S = {'messages': [], 'thread_id': '', 'last_request': None, 'last_response': None, 'suite_id': None, 'runs': {}}
+    # S['runs']: índice de turno -> run_doc completo (petición/respuesta/aserciones), para «Ver detalle y evidencia».
+    # Solo en memoria — nunca entra a persist_session(), que guarda S['messages'] tal cual: una transcripción larga
+    # con el run_doc completo de cada turno (cuerpos de petición/respuesta incluidos) infla el caso guardado.
     W = {}
 
     def resolve_project():
@@ -197,7 +200,7 @@ def build(preset_case_id=None):
         ui.space()
 
         def reset_conversation():
-            S.update(messages=[], thread_id='', last_request=None, last_response=None, suite_id=None)
+            S.update(messages=[], thread_id='', last_request=None, last_response=None, suite_id=None, runs={})
             persist_session()
             refresh_all()
         ui.button('Reiniciar conversación', icon='restart_alt', on_click=guard(reset_conversation)) \
@@ -219,8 +222,8 @@ def build(preset_case_id=None):
                     if turn.get('thread_warning'):
                         ui.label(f'⚠ {turn["thread_warning"]}').classes('text-xs text-amber-700 pl-1')
                     prev = S['messages'][index - 1] if index > 0 else None
-                    if prev and prev['who'] == 'user':
-                        with ui.row().classes('items-center gap-1 pl-1 -mt-1'):
+                    with ui.row().classes('items-center gap-1 pl-1 -mt-1'):
+                        if prev and prev['who'] == 'user':
                             if prev.get('saved'):
                                 ui.label(f'✓ Guardado como «Turno {prev["turn_number"]}»').classes('text-xs text-positive')
                             else:
@@ -235,8 +238,14 @@ def build(preset_case_id=None):
                                         ui.notify(str(exc) or type(exc).__name__, type='negative', multi_line=True)
                                 ui.button('Guardar este intercambio como caso', icon='bookmark_add', on_click=save_this_turn) \
                                     .props('flat dense size=sm no-caps color=primary').mark(f'chat-save-turn-{index - 1}')
+                        if index in S['runs']:
+                            ui.button('Ver detalle y evidencia', icon='fact_check', on_click=lambda _, r=S['runs'][index]: show_run(r)) \
+                                .props('flat dense size=sm no-caps color=grey-8').mark(f'chat-evidence-{index}')
                 else:
                     ui.label(turn['text']).classes('text-xs text-red-700')
+                    if index in S['runs']:
+                        ui.button('Ver detalle y evidencia', icon='fact_check', on_click=lambda _, r=S['runs'][index]: show_run(r)) \
+                            .props('flat dense size=sm no-caps color=grey-8').classes('pl-1').mark(f'chat-evidence-{index}')
     W['chat_view'] = chat_view
     chat_view()
 
@@ -302,8 +311,10 @@ def build(preset_case_id=None):
         chat_view.refresh()
         debug_view.refresh()
         run_doc = await run.io_bound(core.execute_api, {**case, 'body': body}, env, None, False)
+        run_doc['case_name'] = f'Chat: {text[:60]}'   # para que el título de la evidencia diga algo, no quede vacío
         if run_doc['status'] == 'error':
             S['messages'].append({'who': 'error', 'text': run_doc.get('error') or 'Error de conexión'})
+            S['runs'][len(S['messages']) - 1] = run_doc
             S['last_response'] = run_doc.get('error') or ''
             chat_view.refresh()
             debug_view.refresh()
@@ -320,6 +331,7 @@ def build(preset_case_id=None):
             parsed = json.loads(raw_body)
         except (TypeError, ValueError):
             S['messages'].append({'who': 'error', 'text': f'HTTP {status}: la respuesta no es JSON'})
+            S['runs'][len(S['messages']) - 1] = run_doc
             chat_view.refresh()
             debug_view.refresh()
             persist_session()
@@ -337,6 +349,7 @@ def build(preset_case_id=None):
             # (el resto del body sale bien porque no depende de esto). Ahora queda marcado junto al turno.
             thread_warning = f'No se encontró «{chat["thread_response_path"]}» en la respuesta: el hilo no avanzó, va a salir vacío en el próximo mensaje.'
         S['messages'].append({'who': 'bot', 'text': reply if isinstance(reply, str) else json.dumps(reply, ensure_ascii=False), 'status': status, 'thread_warning': thread_warning})
+        S['runs'][len(S['messages']) - 1] = run_doc
         chat_view.refresh()
         debug_view.refresh()
         persist_session()

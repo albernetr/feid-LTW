@@ -158,6 +158,33 @@ async def test_chat_page_saves_a_reusable_template_for_new_conversations(user, c
     assert core.get('cases', case['id'])['chat_session']['messages'][0]['text'] == 'Hola de nuevo'
 
 
+async def test_chat_turn_offers_detail_and_evidence_without_persisting_the_run_doc(user, chat_app):
+    """Cada turno respondido por el bot puede abrir el mismo diálogo de detalle (show_run) que usa el resto de la
+    app, con la evidencia descargable (HTML/PDF/Word/Markdown) — aunque el chat nunca guarda la corrida en el
+    Historial (persist=False). El run_doc completo vive solo en memoria (S['runs']): lo que SÍ se persiste en el
+    caso (chat_session.messages) no debe inflarse con él."""
+    project = core.create_project('Evidencia chat')
+    env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                               'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                               'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}},
+                               'assertions': [{'type': 'status', 'expected': 200}],
+                               'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                        'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+    core.set_active_project(project['id'])
+    await user.open(f'/chat?case={case["id"]}')
+    user.find(marker='chat-input').type('Hola')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¡Gracias por aceptar!', retries=30)
+    await user.should_see(marker='chat-evidence-1')                    # turno 0: usuario, turno 1: respuesta del bot
+    user.find(marker='chat-evidence-1').click()
+    await user.should_see('Descargar evidencia:')
+    await user.should_see('HTML')
+
+    stored = core.get('cases', case['id'])['chat_session']['messages'][1]
+    assert 'run' not in stored and 'request' not in stored and 'response' not in stored   # no se infla lo persistido
+
+
 async def test_chat_page_without_a_case_asks_for_the_mapping_first(user, chat_app):
     """A fresh chat (no saved case) needs the four paths confirmed before it will send anything — typing and
     pressing Enter beforehand is a no-op, not a request against an unconfigured mapping."""
