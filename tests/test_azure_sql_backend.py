@@ -97,6 +97,46 @@ def test_connection_is_cached_and_reused_across_calls(store, monkeypatch):
     assert len(connects) == 1   # una sola conexión para las tres operaciones
 
 
+def test_concurrent_calls_never_execute_on_the_shared_connection_at_the_same_time(store, monkeypatch):
+    """Dos hilos compartiendo la MISMA conexión cacheada (p. ej. «Probar conexión» en segundo plano mientras otra
+    pestaña carga una página) no deben ejecutar sobre el socket al mismo tiempo: un TDS compartido usado por dos
+    hilos a la vez puede dejar el socket colgado para siempre (encontrado probando en vivo contra un servidor
+    real — ver commit). El lock debe cubrir la operación ENTERA, no solo obtener la conexión."""
+    import threading
+    import time
+    busy = {'count': 0}
+    violations = []
+    from conftest import FakeAzureCursor
+    original_execute = FakeAzureCursor.execute
+
+    def slow_execute(self, sql, params=()):
+        busy['count'] += 1
+        if busy['count'] > 1:
+            violations.append(busy['count'])
+        time.sleep(0.05)   # da tiempo a que el otro hilo intente entrar si el lock no lo impide
+        result = original_execute(self, sql, params)
+        busy['count'] -= 1
+        return result
+    monkeypatch.setattr(FakeAzureCursor, 'execute', slow_execute)
+
+    backend.save('cases', 'seed', '{}')   # asegura que la conexión ya está cacheada antes de la carrera
+    errors = []
+
+    def worker(fn):
+        try:
+            fn()
+        except Exception as exc:   # pragma: no cover - solo si algo revienta bajo la carrera
+            errors.append(exc)
+    threads = [threading.Thread(target=worker, args=(lambda: backend.list_items('cases'),)),
+              threading.Thread(target=worker, args=(lambda: backend.save('cases', 'c2', '{}'),))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+    assert not errors, errors
+    assert violations == []   # nunca dos hilos ejecutando sobre el mismo socket a la vez
+
+
 def test_transaction_cursor_translates_qmark_placeholders_and_upserts(store):
     con = FakeAzureConnection(store)
     cursor = backend.TransactionCursor(con)

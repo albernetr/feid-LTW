@@ -16,7 +16,13 @@ import re
 import threading
 
 TABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
-_lock = threading.Lock()
+# Reentrante: list_items/get/save/delete/initialize toman el lock para TODA la operación (no solo para obtener
+# la conexión cacheada) y _live_connection() también lo toma internamente — sin reentrancia esto se bloquearía
+# a sí mismo. Hace falta cubrir la operación completa, no solo conseguir la conexión: dos hilos ejecutando en
+# paralelo sobre el mismo socket TDS compartido (p. ej. «Probar conexión» corriendo en segundo plano mientras
+# otra pestaña carga una página) dejan el socket en un estado inconsistente que se cuelga para siempre, y como
+# casi toda página pasa por current_user() -> Azure SQL, un solo socket colgado congela la aplicación entera.
+_lock = threading.RLock()
 _connection = None
 
 
@@ -127,47 +133,52 @@ def _check_table(table):
 
 
 def initialize(all_tables):
-    con = _live_connection()
-    cur = con.cursor()
-    for table in all_tables:
-        _check_table(table)
-        cur.execute(f"IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = '{table}') "
-                    f"CREATE TABLE {table} (id NVARCHAR(400) NOT NULL PRIMARY KEY, payload NVARCHAR(MAX) NOT NULL, "
-                    f"seq INT IDENTITY(1,1) NOT NULL)")
+    with _lock:
+        con = _live_connection()
+        cur = con.cursor()
+        for table in all_tables:
+            _check_table(table)
+            cur.execute(f"IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = '{table}') "
+                        f"CREATE TABLE {table} (id NVARCHAR(400) NOT NULL PRIMARY KEY, payload NVARCHAR(MAX) NOT NULL, "
+                        f"seq INT IDENTITY(1,1) NOT NULL)")
 
 
 def list_items(table):
     _check_table(table)
-    con = _live_connection()
-    cur = con.cursor()
-    cur.execute(f'SELECT payload FROM {table} ORDER BY seq DESC')
-    return [row[0] for row in cur.fetchall()]
+    with _lock:
+        con = _live_connection()
+        cur = con.cursor()
+        cur.execute(f'SELECT payload FROM {table} ORDER BY seq DESC')
+        return [row[0] for row in cur.fetchall()]
 
 
 def get(table, identifier):
     _check_table(table)
-    con = _live_connection()
-    cur = con.cursor()
-    cur.execute(f'SELECT payload FROM {table} WHERE id=%s', (identifier,))
-    row = cur.fetchone()
-    return row[0] if row else None
+    with _lock:
+        con = _live_connection()
+        cur = con.cursor()
+        cur.execute(f'SELECT payload FROM {table} WHERE id=%s', (identifier,))
+        row = cur.fetchone()
+        return row[0] if row else None
 
 
 def save(table, identifier, payload_json):
     """Upsert: UPDATE primero (la mayoría de los guardados son ediciones), INSERT si no existía la fila."""
     _check_table(table)
-    con = _live_connection()
-    cur = con.cursor()
-    cur.execute(f'UPDATE {table} SET payload=%s WHERE id=%s', (payload_json, identifier))
-    if cur.rowcount == 0:
-        cur.execute(f'INSERT INTO {table} (id, payload) VALUES (%s, %s)', (identifier, payload_json))
+    with _lock:
+        con = _live_connection()
+        cur = con.cursor()
+        cur.execute(f'UPDATE {table} SET payload=%s WHERE id=%s', (payload_json, identifier))
+        if cur.rowcount == 0:
+            cur.execute(f'INSERT INTO {table} (id, payload) VALUES (%s, %s)', (identifier, payload_json))
 
 
 def delete(table, identifier):
     _check_table(table)
-    con = _live_connection()
-    cur = con.cursor()
-    cur.execute(f'DELETE FROM {table} WHERE id=%s', (identifier,))
+    with _lock:
+        con = _live_connection()
+        cur = con.cursor()
+        cur.execute(f'DELETE FROM {table} WHERE id=%s', (identifier,))
 
 
 class TransactionCursor:
