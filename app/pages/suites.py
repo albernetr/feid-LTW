@@ -95,11 +95,11 @@ async def run_suite_many(suite):
 
 
 async def generate_suite_variants(suite):
-    count = await _ask_count(f'Generar copias de «{suite["name"]}»', 'Crea N suites nuevas, cada una con sus Sorteos ya resueltos a valores fijos — quedan como flujos propios, editables y re-ejecutables.', 'Generar')
+    count = await _ask_count(f'Generar copias de «{suite["name"]}»', 'Crea N flujos nuevos, cada uno con sus Sorteos ya resueltos a valores fijos — quedan como flujos propios, editables y re-ejecutables.', 'Generar')
     if not count:
         return
     created = await run.io_bound(core.materialize_suite_variants, suite, count)
-    ui.notify(f'{len(created)} suite(s) generada(s)', type='positive')
+    ui.notify(f'{len(created)} flujo(s) generado(s)', type='positive')
     ui.navigate.reload()
 
 
@@ -123,14 +123,14 @@ def flow_summary(suite):
 
 @ui.page('/suites')
 def suites_list():
-    with frame('Suites y flujos', '/suites'):
+    with frame('Flujos', '/suites'):
         if not require_project():
             return
         pid = core.get_active_project_id()
-        ui.button('Nueva suite / flujo', icon='add', on_click=lambda: ui.navigate.to('/suites/edit')).props('color=primary')
+        ui.button('Nuevo flujo', icon='add', on_click=lambda: ui.navigate.to('/suites/edit')).props('color=primary')
         items = core.list_project_items('suites', pid)
         if not items:
-            empty_state('No hay suites. Agrupa casos en el orden en que deben ejecutarse; cada paso puede apuntar a otro ambiente/componente.')
+            empty_state('No hay flujos. Agrupa casos en el orden en que deben ejecutarse; cada paso puede apuntar a otro ambiente/componente.')
         for suite in items:
             route, enriched = flow_summary(suite)
             with ui.card().classes('w-full'):
@@ -162,7 +162,7 @@ def suites_list():
                             raise ValueError(f'No se puede eliminar: tiene {len(used)} programación(es)')
                         core.delete('suites', s['id'])
                         ui.navigate.reload()
-                    ui.button(icon='delete', on_click=lambda _, s=suite, r=remove: confirm(f'¿Eliminar la suite «{s["name"]}»?', r)).props('flat round color=negative')
+                    ui.button(icon='delete', on_click=lambda _, s=suite, r=remove: confirm(f'¿Eliminar el flujo «{s["name"]}»?', r)).props('flat round color=negative')
 
 
 TARGET_HINT = {'body': 'Ruta JSON ($.cliente.id)', 'headers': 'Nombre del header', 'query': 'Nombre del parámetro'}
@@ -176,7 +176,7 @@ def enrichment_dialog(steps, index, on_close):
     with ui.dialog() as dialog, ui.card().classes('w-[1000px] max-w-full'):
         ui.label(f'Enriquecer el request del paso «{step["alias"]}»').classes('text-lg font-semibold')
         ui.label('Agrega o modifica campos de lo que se enviará en este paso, con datos de la respuesta de pasos anteriores (incluso de otros componentes). '
-                 'No cambia el caso: solo aplica dentro de esta suite.').classes('text-sm text-gray-600')
+                 'No cambia el caso: solo aplica dentro de este flujo.').classes('text-sm text-gray-600')
 
         @ui.refreshable
         def rows():
@@ -228,7 +228,7 @@ def enrichment_dialog(steps, index, on_close):
 
         ui.separator()
         ui.label('Vista previa de lo que se enviará').classes('font-semibold')
-        ui.label('Usa la última respuesta registrada de cada paso anterior (si aún no hay, ejecuta la suite una vez). No envía nada.').classes('text-sm text-gray-500')
+        ui.label('Usa la última respuesta registrada de cada paso anterior (si aún no hay, ejecuta el flujo una vez). No envía nada.').classes('text-sm text-gray-500')
         output = ui.column().classes('w-full gap-1')
 
         def preview():
@@ -251,7 +251,7 @@ def enrichment_dialog(steps, index, on_close):
                 for line in result['problems']:
                     ui.label('✗ ' + line).classes('text-sm text-red-700')
                 if result['without_history']:
-                    ui.label('Sin datos registrados de: ' + ', '.join(result['without_history']) + '. Ejecuta la suite una vez para ver valores reales.').classes('text-sm text-amber-700')
+                    ui.label('Sin datos registrados de: ' + ', '.join(result['without_history']) + '. Ejecuta el flujo una vez para ver valores reales.').classes('text-sm text-amber-700')
         with ui.row().classes('w-full justify-between'):
             ui.button('Vista previa', icon='visibility', on_click=guard(preview)).props('outline')
 
@@ -264,13 +264,13 @@ def enrichment_dialog(steps, index, on_close):
 
 @ui.page('/suites/edit')
 def suite_edit(id: str = ''):
-    with frame('Editor de suite / flujo', '/suites'):
+    with frame('Editor de flujo', '/suites'):
         if not require_project():
             return
         pid = core.get_active_project_id()
         current = core.get('suites', id) if id else None
         if id and current is None:
-            ui.label('La suite no existe.')
+            ui.label('El flujo no existe.')
             return
         envs = core.list_project_items('environments', pid)
         cases = {c['id']: c for c in core.list_project_items('cases', pid)}
@@ -300,7 +300,7 @@ def suite_edit(id: str = ''):
                 feature = ui.select({f['id']: f['name'] for f in features}, value=(current or {}).get('feature_id'), label='Funcionalidad (opcional)', clearable=True) \
                     .props('outlined dense').classes('w-60').mark('suite-feature')
                 if not features:
-                    ui.label('Crea Funcionalidades para ligar esta suite a una capacidad de negocio.').classes('text-xs text-gray-500 self-center')
+                    ui.label('Crea Funcionalidades para ligar este flujo a una capacidad de negocio.').classes('text-xs text-gray-500 self-center')
             with ui.row().classes('w-full gap-3 items-center'):
                 on_failure = ui.select({'continue': 'Continuar tras un fallo', 'stop': 'Detener al primer fallo'}, value=(current or {}).get('on_failure', 'continue'), label='Política de fallo').props('outlined dense').classes('w-64')
                 retries = ui.number('Reintentos por caso', value=(current or {}).get('retries', 0), min=0, max=5, precision=0).props('outlined dense').classes('w-44')
@@ -319,13 +319,13 @@ def suite_edit(id: str = ''):
             la suite en curso. No toca el componente/contrato ni el encadenamiento (extracción) del caso; para
             eso sigue estando el editor completo."""
             case = core.get('cases', case_id)
-            ui.button('← Volver a la suite', on_click=back_to_suite).props('flat dense no-caps').classes('mb-1')
+            ui.button('← Volver al flujo', on_click=back_to_suite).props('flat dense no-caps').classes('mb-1')
             if case is None:
                 ui.label('El caso ya no existe.').classes('text-amber-700')
                 return
             with ui.card().classes('w-full gap-2'):
                 ui.label(f'Editando «{case["name"]}»').classes('text-lg font-semibold')
-                ui.label('Cambios rápidos, sin salir de la suite. El componente/contrato y el encadenamiento del caso se editan en Casos API.').classes('text-xs text-gray-500')
+                ui.label('Cambios rápidos, sin salir del flujo. El componente/contrato y el encadenamiento del caso se editan en Casos API.').classes('text-xs text-gray-500')
                 headers = {k: str(v) for k, v in (case.get('headers') or {}).items()}
                 query = {k: str(v) for k, v in (case.get('query') or {}).items()}
                 case_vars = {k: str(v) for k, v in (case.get('variables') or {}).items()}
@@ -345,7 +345,7 @@ def suite_edit(id: str = ''):
                         ui.label('Query params').classes('font-medium text-sm')
                         kv_editor(query, 'Parámetro', 'Valor')
                         ui.label('Variables').classes('font-medium text-sm')
-                        ui.label('{{nombre}} en headers/query/body de este caso, propias de él (además de las de la suite y del ambiente).').classes('text-xs text-gray-500')
+                        ui.label('{{nombre}} en headers/query/body de este caso, propias de él (además de las del flujo y del ambiente).').classes('text-xs text-gray-500')
                         kv_editor(case_vars, 'Nombre', 'Valor')
                         dynamic_variable_chips()
                         ui.label('Body (JSON)').classes('font-medium text-sm')
@@ -367,7 +367,7 @@ def suite_edit(id: str = ''):
                         cases[case_id] = updated   # para que la suite lo muestre actualizado al volver, sin recargar la página
                         ui.notify('Caso actualizado', type='positive')
                     ui.button('Guardar', icon='save', on_click=guard(save_case)).props('color=primary')
-                    ui.button('Volver a la suite', icon='arrow_back', on_click=back_to_suite).props('flat')
+                    ui.button('Volver al flujo', icon='arrow_back', on_click=back_to_suite).props('flat')
 
         def suite_body():
             with ui.row().classes('w-full gap-4 items-start no-wrap'):
@@ -475,9 +475,9 @@ def suite_edit(id: str = ''):
                 ui.label('Disponibles como {{nombre}} en todos los casos. Los valores extraídos por un caso se suman para los siguientes.').classes('text-gray-500 text-sm')
                 kv_editor(variables, 'Variable', 'Valor')
                 ui.separator().classes('my-1')
-                seq_start = ui.number('Consecutivo propio de esta suite (opcional)', value=(current or {}).get('seq_start'), precision=0) \
+                seq_start = ui.number('Consecutivo propio de este flujo (opcional)', value=(current or {}).get('seq_start'), precision=0) \
                     .props('outlined dense clearable').classes('w-72')
-                ui.label('Si lo completás, {{seq}} arranca en ese número y sube de a uno por paso en cada corrida de esta suite — '
+                ui.label('Si lo completás, {{seq}} arranca en ese número y sube de a uno por paso en cada corrida de este flujo — '
                           'en vez del consecutivo global de toda la app, que nunca se reinicia.').classes('text-xs text-gray-500')
 
             with ui.expansion('Sorteos (datos aleatorios que no cambian durante la conversación)', icon='casino').classes('w-full border rounded'):
@@ -514,7 +514,7 @@ def suite_edit(id: str = ''):
                 saved = core.save_suite(name.value or '', env.value, [], pid, **options)
                 if current:
                     current['updated_at'] = saved['updated_at']
-                ui.notify('Suite guardada', type='positive')
+                ui.notify('Flujo guardado', type='positive')
                 return saved
             with ui.row().classes('gap-3'):
                 ui.button('Guardar', icon='save', on_click=guard(lambda: (save(), ui.navigate.to('/suites')))).props('color=primary')

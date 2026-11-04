@@ -270,7 +270,7 @@ async def test_projects_detail_page_shows_its_resources(user: User):
     await user.should_see('Ambientes')
     await user.should_see('Local')
     await user.should_see('Casos')
-    await user.should_see('Suites')
+    await user.should_see('Flujos')
     await user.should_see('Smoke encadenado')
     await user.should_see('Programaciones')
 

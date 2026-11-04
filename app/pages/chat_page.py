@@ -256,7 +256,7 @@ def build(preset_case_id=None):
 
     # ------------------------------------------------------------ save as suite
     with ui.row().classes('items-center gap-2 w-full px-3 pb-2'):
-        suite_name = ui.input('Nombre de la suite', value='Conversación de prueba').props('outlined dense').classes('grow')
+        suite_name = ui.input('Nombre del flujo', value='Conversación de prueba').props('outlined dense').classes('grow')
         ui.button('Guardar todo lo pendiente', icon='playlist_add_check', on_click=guard(lambda: save_all_pending(suite_name.value))) \
             .props('outline dense no-caps').mark('chat-save-suite')
         ui.label('O guardá cada intercambio por separado con el botón que aparece debajo de cada respuesta.').classes('text-xs text-gray-500')
@@ -379,7 +379,7 @@ def build(preset_case_id=None):
         turn['saved'], turn['turn_number'] = True, turn_number
         persist_session()
         chat_view.refresh()
-        ui.notify(f'Turno {turn_number} guardado en la suite «{suite["name"]}» ({projects_by_id.get(project_id, "")})', type='positive')
+        ui.notify(f'Turno {turn_number} guardado en el flujo «{suite["name"]}» ({projects_by_id.get(project_id, "")})', type='positive')
 
     def save_all_pending(name):
         pending = [i for i, t in enumerate(S['messages']) if t['who'] == 'user' and not t.get('saved')]

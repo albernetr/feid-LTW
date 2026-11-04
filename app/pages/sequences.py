@@ -28,7 +28,7 @@ def sequences_page():
 
         with ui.card().classes('w-full mt-3'):
             ui.label('Consecutivo global {{seq}}').classes('text-lg font-semibold')
-            ui.label('Compartido por toda la app; nunca se reinicia solo. Cada envío que lo usa lo avanza en uno (sea en un caso suelto, una suite sin consecutivo propio, o un caso de Chat).').classes('text-sm text-gray-500')
+            ui.label('Compartido por toda la app; nunca se reinicia solo. Cada envío que lo usa lo avanza en uno (sea en un caso suelto, un flujo sin consecutivo propio, o un caso de Chat).').classes('text-sm text-gray-500')
             with ui.row().classes('items-center gap-3 mt-1'):
                 value = ui.number('Próximo valor', value=core.current_sequence() + 1, precision=0, min=0).props('outlined dense').classes('w-48') \
                     .tooltip('El siguiente envío que use {{seq}} va a recibir este número')
@@ -40,7 +40,7 @@ def sequences_page():
 
         with ui.card().classes('w-full mt-3'):
             ui.label('Consecutivos con nombre {{seq:nombre}}').classes('text-lg font-semibold')
-            ui.label('Cada nombre persiste por su cuenta y retoma donde quedó, sea en un caso suelto, dentro de una suite, o en cualquier combinación de los dos.').classes('text-sm text-gray-500')
+            ui.label('Cada nombre persiste por su cuenta y retoma donde quedó, sea en un caso suelto, dentro de un flujo, o en cualquier combinación de los dos.').classes('text-sm text-gray-500')
 
             @ui.refreshable
             def rows():

@@ -209,7 +209,7 @@ Espacio de trabajo: historial propio de peticiones sueltas (no necesita proyecto
 | **Casos API** | Casos de petición HTTP guardados. |
 | **Casos UI** | Casos de navegador con pasos y grabador. |
 | **Funcionalidades** | Capacidades de negocio que pueden cruzar varios componentes/módulos; se validan con Suites. |
-| **Suites** | Suites y flujos entre componentes. |
+| **Flujos** | Pasos encadenados entre componentes (antes llamados «Suites»). |
 | **Chat** | Conversar en vivo con un chatbot/API conversacional, turno a turno, y congelarlo como suite. |
 | **Observador** | Taps, catálogo de interfaces y cambios. |
 | **Programaciones** | Ejecuciones automáticas. |

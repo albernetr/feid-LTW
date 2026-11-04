@@ -2,7 +2,7 @@
 como {{random:nombre}} / {{random:nombre.columna}} en cualquier caso — cada aparición sortea una fila al azar del
 conjunto, de nuevo en cada envío. Se crean subiendo un .txt/.csv/.json, o a mano (columna por columna, fila por
 fila) — y, una vez creados, siempre se pueden editar acá, vinieron de un archivo o no. Para que varios campos de
-la misma conversación compartan la fila sorteada (la misma persona en todo el flujo), una Suite declara un
+la misma conversación compartan la fila sorteada (la misma persona en todo el flujo), un Flujo declara un
 «Sorteo» con este conjunto (ver /suites/edit) en vez de referenciarlo directo como {{random:...}}."""
 import random
 from nicegui import ui

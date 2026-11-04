@@ -88,7 +88,7 @@ def build(preset_case_id=None, prefill=None):
         return {**projects_by_id, NEW: '➕ Crear proyecto nuevo…'}
 
     def refresh_suites(*_):
-        options = {'': 'No agregar a una suite existente'}
+        options = {'': 'No agregar a un flujo existente'}
         if W['dest_project'].value and W['dest_project'].value != NEW:
             options.update({s['id']: s['name'] for s in core.list_project_items('suites', W['dest_project'].value)})
         W['dest_suite'].set_options(options, value='')
@@ -189,7 +189,7 @@ def build(preset_case_id=None, prefill=None):
         saved = core.save('cases', {**definition, 'project_id': project_id, 'environment_id': env_doc['id']})
         note = ''
         if W['dest_suite'].value:
-            note = f' y agregado a la suite «{core.add_cases_to_suite(W["dest_suite"].value, [saved["id"]])["name"]}»'
+            note = f' y agregado al flujo «{core.add_cases_to_suite(W["dest_suite"].value, [saved["id"]])["name"]}»'
         d['source'] = {'type': 'case', 'id': saved['id'], 'updated_at': saved['updated_at']}
         refresh_suites()
         for name in ('source_view', 'saved_view'):
@@ -276,7 +276,7 @@ def build(preset_case_id=None, prefill=None):
                         return
                     suites = core.list_project_items('suites', pid)
                     all_cases = core.list_project_items('cases', pid)
-                    ui.label('Suites y flujos').classes('text-xs text-gray-500 uppercase')
+                    ui.label('Flujos').classes('text-xs text-gray-500 uppercase')
                     for suite in suites:
                         with ui.row().classes('items-center w-full no-wrap gap-1'):
                             ui.icon('playlist_play', color='primary', size='sm')
@@ -534,7 +534,7 @@ def build(preset_case_id=None, prefill=None):
                     ui.label('Usa {{nombre}} en URL, headers, query o body. {{secret:NOMBRE}} toma el valor del almacén seguro.').classes('text-xs text-gray-500')
                     W['vars_view'] = kv_rows(lambda: d['variables'], 'Variable', 'Valor', lambda: W['chips_view'].refresh())
                     ui.separator()
-                    ui.label('Extraer de la respuesta (para encadenar en una suite)').classes('font-medium text-sm')
+                    ui.label('Extraer de la respuesta (para encadenar en un flujo)').classes('font-medium text-sm')
 
                     @ui.refreshable
                     def extract_view():
@@ -602,7 +602,7 @@ def build(preset_case_id=None, prefill=None):
                         W['response_view'].refresh()
                     ui.button('Ejecutar lote', icon='play_arrow', on_click=guard(run_batch)).props('color=positive dense no-caps')
                     ui.separator()
-                    suite_name = ui.input('Nombre de la suite', value='Regresión (lote)').props('outlined dense').classes('w-full')
+                    suite_name = ui.input('Nombre del flujo', value='Regresión (lote)').props('outlined dense').classes('w-full')
                     batch_mode = ui.select({k: v for k, v in MODES.items() if k != 'panel'}, value='exact').props('outlined dense options-dense').classes('w-full')
                     batch_ignore = ui.input('Ignorar campos (JSONPath, coma)').props('outlined dense').classes('w-full')
 
@@ -627,9 +627,9 @@ def build(preset_case_id=None, prefill=None):
                             suite = core.save_suite((suite_name.value or 'Lote').strip(), env_doc['id'], [c['id'] for c in cases], project_id)
                         refresh_suites()
                         W['saved_view'].refresh()
-                        ui.notify(f'{len(cases)} casos guardados en la suite «{suite["name"]}» ({projects_by_id[project_id]})', type='positive')
-                    ui.button('Guardar lote como suite', icon='playlist_add_check', on_click=guard(save_batch)).props('outline dense no-caps')
-                    ui.label('Se guarda en el proyecto y suite elegidos en la pestaña «Guardar».').classes('text-xs text-gray-500')
+                        ui.notify(f'{len(cases)} casos guardados en el flujo «{suite["name"]}» ({projects_by_id[project_id]})', type='positive')
+                    ui.button('Guardar lote como flujo', icon='playlist_add_check', on_click=guard(save_batch)).props('outline dense no-caps')
+                    ui.label('Se guarda en el proyecto y flujo elegidos en la pestaña «Guardar».').classes('text-xs text-gray-500')
                 with ui.tab_panel('Guardar').classes('p-3 gap-2'):
                     ui.label('Guardar como caso de prueba').classes('font-medium')
                     ui.label('Nada se guarda hasta que lo decidas.').classes('text-xs text-gray-500')
@@ -643,7 +643,7 @@ def build(preset_case_id=None, prefill=None):
                                                   on_change=refresh_suites).props('outlined dense options-dense').classes('w-full')
                     W['new_project'] = ui.input('Nombre del proyecto nuevo').props('outlined dense').classes('w-full')
                     W['new_project'].bind_visibility_from(W['dest_project'], 'value', lambda v: v == NEW)
-                    W['dest_suite'] = ui.select({'': 'No agregar a una suite existente'}, value='', label='Agregar a una suite existente').props('outlined dense options-dense').classes('w-full')
+                    W['dest_suite'] = ui.select({'': 'No agregar a un flujo existente'}, value='', label='Agregar a un flujo existente').props('outlined dense options-dense').classes('w-full')
                     refresh_suites()
                     W['update_existing'] = ui.switch('Actualizar el caso guardado (en vez de crear otro)', value=True).props('dense')
                     W['update_existing'].bind_visibility_from(d, 'source', lambda s: bool(s) and s.get('type') == 'case')

@@ -1012,7 +1012,7 @@ def module_detail(id: str = '', tab: str = '', subtab: str = ''):
                                 ui.icon('flag', color='primary')
                                 ui.label(f'Funcionalidades que dependen de este componente ({len(dependent_features)})').classes('font-semibold')
                             if not dependent_features:
-                                ui.label('Ninguna todavía: ninguna Suite con un caso de este componente está ligada a una Funcionalidad.').classes('text-sm text-gray-400')
+                                ui.label('Ninguna todavía: ningún Flujo con un caso de este componente está ligado a una Funcionalidad.').classes('text-sm text-gray-400')
                             else:
                                 ui.label('Si este componente se cae, estas funcionalidades de negocio quedan afectadas.').classes('text-xs text-gray-500')
                                 for f in dependent_features:

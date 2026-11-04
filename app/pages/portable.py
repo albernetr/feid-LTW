@@ -18,11 +18,11 @@ def portable():
         with ui.card().classes('w-full'):
             ui.label('Exportar').classes('text-lg font-semibold')
             ui.label('Los secretos, variables sensibles y headers de autorización nunca se exportan. Las programaciones viajan desactivadas.').classes('text-sm text-gray-500')
-            scope = ui.select({'workspace': 'Todo el workspace', 'project': 'Solo el proyecto activo', 'suites': 'Suites seleccionadas', 'cases': 'Casos seleccionados'},
+            scope = ui.select({'workspace': 'Todo el workspace', 'project': 'Solo el proyecto activo', 'suites': 'Flujos seleccionados', 'cases': 'Casos seleccionados'},
                               value='project' if pid else 'workspace', label='Qué exportar').props('outlined dense').classes('w-72')
             suites = {s['id']: s['name'] for s in core.list_project_items('suites', pid)}
             cases = {c['id']: c['name'] for c in core.list_project_items('cases', pid)}
-            pick_suites = ui.select(suites, multiple=True, label='Suites', value=[]).props('outlined dense use-chips').classes('w-full')
+            pick_suites = ui.select(suites, multiple=True, label='Flujos', value=[]).props('outlined dense use-chips').classes('w-full')
             pick_suites.bind_visibility_from(scope, 'value', lambda v: v == 'suites')
             pick_cases = ui.select(cases, multiple=True, label='Casos', value=[]).props('outlined dense use-chips').classes('w-full')
             pick_cases.bind_visibility_from(scope, 'value', lambda v: v == 'cases')
@@ -37,7 +37,7 @@ def portable():
                     core.export_workspace(target, project_id=pid)
                 elif scope.value == 'suites':
                     if not pick_suites.value:
-                        raise ValueError('Elige al menos una suite')
+                        raise ValueError('Elige al menos un flujo')
                     core.export_workspace(target, suite_ids=pick_suites.value)
                 elif scope.value == 'cases':
                     if not pick_cases.value:
@@ -72,7 +72,7 @@ def portable():
                 preview_box.clear()
                 with preview_box:
                     ui.label(f'Vista previa ({preview["scope"]}) — estrategia: {strategy.value}').classes('font-semibold')
-                    labels = {'projects': 'Proyectos', 'modules': 'Componentes', 'environments': 'Ambientes', 'cases': 'Casos', 'suites': 'Suites', 'schedules': 'Programaciones'}
+                    labels = {'projects': 'Proyectos', 'modules': 'Componentes', 'environments': 'Ambientes', 'cases': 'Casos', 'suites': 'Flujos', 'schedules': 'Programaciones'}
                     for table, counts in preview['summary'].items():
                         if counts['total']:
                             ui.label(f'{labels[table]}: {counts["total"]} ({counts["new"]} nuevos, {counts["existing"]} existentes)')
@@ -102,7 +102,7 @@ def portable():
 
         with ui.card().classes('w-full border-2 border-red-300'):
             ui.label('Zona de peligro').classes('text-lg font-semibold text-red-700')
-            ui.label('Borra permanentemente TODO el workspace: proyectos, componentes, ambientes, casos, suites, '
+            ui.label('Borra permanentemente TODO el workspace: proyectos, componentes, ambientes, casos, flujos, '
                       'programaciones e historial. No se puede deshacer; exporta antes si quieres conservar algo. '
                       'Los secretos guardados en el Administrador de credenciales no se tocan.').classes('text-sm text-gray-600')
             keep_evidence = ui.checkbox('Conservar evidencias (capturas y trazas)', value=False)

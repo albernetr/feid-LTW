@@ -17,11 +17,11 @@ def schedules():
 
         suites = core.list_project_items('suites', pid)
         if not suites:
-            ui.label('Crea una suite primero.').classes('text-amber-700')
+            ui.label('Crea un flujo primero.').classes('text-amber-700')
         else:
             with ui.card().classes('w-full'):
                 ui.label('Nueva programación').classes('text-lg font-semibold')
-                suite = ui.select({s['id']: s['name'] for s in suites}, value=suites[0]['id'], label='Suite').props('outlined dense').classes('w-72')
+                suite = ui.select({s['id']: s['name'] for s in suites}, value=suites[0]['id'], label='Flujo').props('outlined dense').classes('w-72')
                 frequency = ui.select(automation.FREQUENCIES, value='daily', label='Frecuencia').props('outlined dense').classes('w-60')
                 with ui.row().classes('gap-3 items-center'):
                     at = ui.input('Hora (HH:MM)', value='02:00').props('outlined dense').classes('w-36')
@@ -52,7 +52,7 @@ def schedules():
             with ui.card().classes('w-full'):
                 with ui.row().classes('items-center gap-3 w-full no-wrap'):
                     with ui.column().classes('gap-0 grow'):
-                        ui.label(f'{suite_item["name"] if suite_item else "suite eliminada"} · {automation.describe_schedule(item)}').classes('font-semibold')
+                        ui.label(f'{suite_item["name"] if suite_item else "flujo eliminado"} · {automation.describe_schedule(item)}').classes('font-semibold')
                         ui.label(f'Próxima: {fmt_time(item.get("next_run_at")) if item.get("enabled") else "—"} · Última: {fmt_time(item.get("last_trigger_at"))}'
                                  f'{" · " + item["last_outcome"] if item.get("last_outcome") else ""}').classes('text-sm text-gray-500')
                     ui.badge('Activa' if item.get('enabled') else 'Pausada', color='positive' if item.get('enabled') else 'grey')
@@ -68,7 +68,7 @@ def schedules():
                     async def now(s=item):
                         target = core.get('suites', s['suite_id'])
                         if target is None:
-                            raise ValueError('La suite ya no existe')
+                            raise ValueError('El flujo ya no existe')
                         show_run(await run.io_bound(automation.execute_suite, target))
                     ui.button(icon='play_arrow', on_click=guard(now)).props('flat round dense color=positive').tooltip('Ejecutar ahora')
 

@@ -140,7 +140,7 @@ def ui_cases_page(id: str = '', name: str = '', url: str = ''):
                                 def remove(c=case):
                                     used = [s for s in core.list_items('suites') if c['id'] in s.get('case_ids', [])]
                                     if used:
-                                        raise ValueError(f'No se puede eliminar: está en {len(used)} suite(s)')
+                                        raise ValueError(f'No se puede eliminar: está en {len(used)} flujo(s)')
                                     core.delete('cases', c['id'])
                                     if d.get('id') == c['id']:
                                         load_draft(new_draft())
@@ -192,7 +192,7 @@ def ui_cases_page(id: str = '', name: str = '', url: str = ''):
                 ui.separator().classes('my-2')
                 with ui.scroll_area().classes('w-full grow').style('min-height:0'):
                     with ui.column().classes('w-full gap-2 px-3 pb-3'):
-                        ui.label('Pasos. Cada uno se ejecuta en orden. Los valores admiten {{variables}} del ambiente o de la suite.').classes('text-gray-500 text-sm')
+                        ui.label('Pasos. Cada uno se ejecuta en orden. Los valores admiten {{variables}} del ambiente o del flujo.').classes('text-gray-500 text-sm')
 
                         @ui.refreshable
                         def step_rows():
@@ -309,7 +309,7 @@ def ui_cases_page(id: str = '', name: str = '', url: str = ''):
                         def remove():
                             used = [s for s in core.list_items('suites') if d['id'] in s.get('case_ids', [])]
                             if used:
-                                raise ValueError(f'No se puede eliminar: está en {len(used)} suite(s)')
+                                raise ValueError(f'No se puede eliminar: está en {len(used)} flujo(s)')
                             core.delete('cases', d['id'])
                             load_draft(new_draft())
                             ui.notify('Caso UI eliminado', type='warning')

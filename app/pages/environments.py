@@ -18,7 +18,7 @@ def _delete_environment(env_id, env_name, on_done):
                     step_count += 1
         if affected:
             detail = f' ({step_count} paso(s) con ambiente propio)' if step_count else ''
-            ui.notify(f'No se puede eliminar: lo usan {len(affected)} suite(s){detail}', type='negative', multi_line=True)
+            ui.notify(f'No se puede eliminar: lo usan {len(affected)} flujo(s){detail}', type='negative', multi_line=True)
             return
         core.delete('environments', env_id)
         ui.notify('Ambiente eliminado', type='positive')

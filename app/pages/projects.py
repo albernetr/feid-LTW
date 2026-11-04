@@ -3,7 +3,7 @@ from .. import core, automation
 from .common import frame, guard, confirm, empty_state, fmt_time
 
 RESOURCE_LABELS = (('module_groups', 'módulos'), ('modules', 'componentes'), ('environments', 'ambientes'), ('cases', 'casos'),
-                    ('features', 'funcionalidades'), ('suites', 'suites'), ('schedules', 'programaciones'), ('taps', 'taps'))
+                    ('features', 'funcionalidades'), ('suites', 'flujos'), ('schedules', 'programaciones'), ('taps', 'taps'))
 
 
 def _request_delete(project, on_done):
@@ -26,7 +26,7 @@ def _offer_cascade_delete(project, message, on_done):
     with ui.dialog() as dialog, ui.card():
         ui.label('Eliminar el proyecto con todo su contenido').classes('font-semibold text-red-700')
         ui.label(message).classes('text-sm text-gray-700')
-        ui.label(f'Esto borra TODO lo del proyecto (módulos, componentes, ambientes, casos, funcionalidades, suites, '
+        ui.label(f'Esto borra TODO lo del proyecto (módulos, componentes, ambientes, casos, funcionalidades, flujos, '
                  f'programaciones, taps e historial de ejecuciones) y no se puede deshacer. Escribe «{project["name"]}» para confirmar.').classes('text-sm text-gray-600')
         phrase = ui.input('Nombre del proyecto').props('outlined dense').mark('project-cascade-phrase')
         with ui.row().classes('justify-end w-full gap-2'):
@@ -281,7 +281,7 @@ def project_edit(id: str = ''):
                             lambda c: f'{c["name"]} · {"UI" if c.get("type") == "ui" else c.get("method", "API")}')
             _resource_card(current, 'flag', 'pink', 'Funcionalidades', 'features', '/features',
                             lambda f: f'{f["name"]}' + (f' · {f["external_ref"]}' if f.get('external_ref') else ''))
-            _resource_card(current, 'playlist_play', 'deep-orange', 'Suites', 'suites', '/suites',
+            _resource_card(current, 'playlist_play', 'deep-orange', 'Flujos', 'suites', '/suites',
                             lambda s: f'{s["name"]} · {len(core.suite_steps(s))} paso(s)')
             _resource_card(current, 'schedule', 'purple', 'Programaciones', 'schedules', '/schedules',
                             lambda s: automation.describe_schedule(s))

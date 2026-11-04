@@ -41,7 +41,7 @@ def home():
         ui.button('Abrir el Espacio de trabajo (probar peticiones, lotes, conectividad y navegador)', icon='space_dashboard', on_click=lambda: ui.navigate.to('/workspace')).props('outline color=primary')
         with ui.row().classes('gap-3 flex-wrap'):
             for label, key, route in (('Componentes', 'modules', '/modules'), ('Ambientes', 'environments', '/environments'),
-                                      ('Casos', 'cases', '/cases'), ('Suites', 'suites', '/suites'), ('Programaciones', 'schedules', '/schedules')):
+                                      ('Casos', 'cases', '/cases'), ('Flujos', 'suites', '/suites'), ('Programaciones', 'schedules', '/schedules')):
                 with ui.card().classes('w-40 cursor-pointer').on('click', lambda _, r=route: ui.navigate.to(r)):
                     ui.label(str(counts[key])).classes('text-3xl font-bold text-primary')
                     ui.label(label).classes('text-gray-600')

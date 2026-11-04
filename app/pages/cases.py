@@ -82,7 +82,7 @@ def cases_list():
                         def remove(c=case):
                             used = [s for s in core.list_items('suites') if c['id'] in s.get('case_ids', [])]
                             if used:
-                                raise ValueError(f'No se puede eliminar: está en {len(used)} suite(s)')
+                                raise ValueError(f'No se puede eliminar: está en {len(used)} flujo(s)')
                             core.delete('cases', c['id'])
                             ui.navigate.reload()
                         ui.button(icon='delete', on_click=lambda _, c=case, r=remove: confirm(f'¿Eliminar el caso «{c["name"]}»?', r)).props('flat round color=negative').tooltip('Eliminar')
@@ -195,7 +195,7 @@ def case_edit(id: str = '', module: str = '', op: int = -1):
                         ui.notify('Aserción de contrato agregada', type='positive')
                     ui.button('Agregar validación del contrato', icon='verified', on_click=guard(add_contract)).props('outline').tooltip('Valida la respuesta contra el JSON Schema del OpenAPI')
             with ui.tab_panel(tab_chain):
-                ui.label('Extrae valores de la respuesta para usarlos como {{variable}} en los casos siguientes de una suite.').classes('text-gray-500 text-sm')
+                ui.label('Extrae valores de la respuesta para usarlos como {{variable}} en los casos siguientes de un flujo.').classes('text-gray-500 text-sm')
 
                 @ui.refreshable
                 def extract_rows():

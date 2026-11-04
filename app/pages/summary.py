@@ -46,9 +46,9 @@ def summary_page():
                 ui.label('Verde: pasaron · Rojo: fallaron').classes('text-xs text-gray-500')
 
             with ui.card().classes('w-full'):
-                ui.label('Flujos (suites)').classes('font-semibold')
+                ui.label('Flujos').classes('font-semibold')
                 if not report['suites']:
-                    ui.label('Aún no hay suites. Los flujos agrupan casos y son lo primero que conviene vigilar.').classes('text-sm text-gray-500')
+                    ui.label('Aún no hay flujos. Agrupan casos y son lo primero que conviene vigilar.').classes('text-sm text-gray-500')
                 for s in report['suites']:
                     with ui.row().classes('items-center gap-3 w-full'):
                         ui.badge(reporting.STATUS_ES.get(s['status'], 'Sin ejecutar'), color={'passed': 'positive', 'failed': 'negative', 'error': 'warning'}.get(s['status'], 'grey')).classes('w-20 justify-center')

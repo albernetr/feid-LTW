@@ -9,12 +9,12 @@ def features_list():
         if not require_project():
             return
         pid = core.get_active_project_id()
-        ui.label('Capacidades de negocio que puede cruzar varios componentes/módulos. Cada una se valida con una o más Suites/flujos.').classes('text-sm text-gray-500')
+        ui.label('Capacidades de negocio que puede cruzar varios componentes/módulos. Cada una se valida con uno o más Flujos.').classes('text-sm text-gray-500')
         ui.button('Nueva funcionalidad', icon='add', on_click=lambda: ui.navigate.to('/features/edit')).props('color=primary')
 
         items = core.list_project_items('features', pid)
         if not items:
-            empty_state('Este proyecto no tiene funcionalidades. Crea una (p. ej. «Checkout») y liga las Suites que la validan.')
+            empty_state('Este proyecto no tiene funcionalidades. Crea una (p. ej. «Checkout») y liga los Flujos que la validan.')
             return
 
         columns = [
@@ -29,7 +29,7 @@ def features_list():
             for f in items:
                 health = core.feature_health(f['id'])
                 result.append({'id': f['id'], 'name': f['name'], 'external_ref': f.get('external_ref', '') or '—',
-                               'health': f'{health["passing"]}/{health["total"]}' if health['total'] else 'sin suites',
+                               'health': f'{health["passing"]}/{health["total"]}' if health['total'] else 'sin flujos',
                                'has_data': health['total'] > 0, 'all_pass': health['total'] and health['passing'] == health['total']})
             return result
 
@@ -63,7 +63,7 @@ def features_list():
                 ui.navigate.reload()
             confirm(f'¿Eliminar la funcionalidad «{row["name"]}»?', attempt)
         table.on('deleteFeature', on_delete)
-        ui.label('Haz clic en una fila para ver sus suites y su salud; elimina directamente con el icono (solo si no tiene suites ligadas).').classes('text-sm text-gray-500')
+        ui.label('Haz clic en una fila para ver sus flujos y su salud; elimina directamente con el icono (solo si no tiene flujos ligados).').classes('text-sm text-gray-500')
 
 
 @ui.page('/features/edit')
@@ -115,11 +115,11 @@ def feature_detail(id: str = ''):
         with ui.card().classes('w-full'):
             with ui.row().classes('items-center gap-2'):
                 ui.icon('playlist_play', color='primary')
-                ui.label(f'Suites que la validan ({health["total"]})').classes('font-semibold')
+                ui.label(f'Flujos que la validan ({health["total"]})').classes('font-semibold')
                 if health['total']:
                     ui.badge(f'{health["passing"]}/{health["total"]} pasan', color='positive' if health['passing'] == health['total'] else 'negative')
             if not health['rows']:
-                ui.label('Ninguna todavía. Liga una Suite desde su propio editor.').classes('text-sm text-gray-400')
+                ui.label('Ninguno todavía. Liga un Flujo desde su propio editor.').classes('text-sm text-gray-400')
             else:
                 for row in health['rows']:
                     suite, last = row['suite'], row['last_run']
