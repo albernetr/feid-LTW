@@ -71,6 +71,27 @@ def test_render_evidence_html_contains_steps_and_status(world):
     assert 'crear' in html_out and 'Pasó' in html_out and '<!doctype html>' in html_out
 
 
+def test_render_evidence_markdown_contains_steps_and_status(world):
+    case = world['api_case']('crear', 'POST', '/api/items', [{'type': 'status', 'expected': 201}],
+                             headers={'Authorization': 'Bearer tok-abc123'}, body={'name': 'x'})
+    run = core.execute_api(case, world['env'])
+    data = evidence_report.build_report_data(run)
+    md_out = evidence_report.render_evidence_markdown(data)
+    assert md_out.startswith('# crear') and '## crear — Pasó' in md_out and '```json' in md_out
+
+
+def test_render_evidence_markdown_nests_substeps_as_deeper_headings(world):
+    flow_case = world['api_case']('paso del flujo', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    flow = core.save_suite('mini flujo', world['env']['id'], [flow_case['id']], world['pid'])
+    loose_case = world['api_case']('caso suelto', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    group = core.save_suite_group('mi suite', world['pid'], [{'type': 'flow', 'id': flow['id']}, {'type': 'case', 'id': loose_case['id']}],
+                                  environment_id=world['env']['id'])
+    result = automation.execute_suite_group(group)
+    data = evidence_report.build_report_data(result)
+    md_out = evidence_report.render_evidence_markdown(data)
+    assert '## mini flujo' in md_out and '### paso del flujo' in md_out and '## caso suelto' in md_out
+
+
 def test_render_evidence_docx_is_a_valid_document(world):
     case = world['api_case']('crear', 'POST', '/api/items', [{'type': 'status', 'expected': 201}],
                              headers={'Authorization': 'Bearer tok-abc123'}, body={'name': 'x'})

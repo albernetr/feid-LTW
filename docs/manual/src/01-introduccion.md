@@ -225,6 +225,8 @@ Espacio de trabajo: historial propio de peticiones sueltas (no necesita proyecto
 
 ![Menú expandido al pasar el ratón en el Espacio de trabajo](img/27-menu-expandido.png)
 
+- **Menú agrupado y desplegable.** En las pantallas con el menú completo, las opciones se agrupan en secciones (**Proyecto**, **Pruebas**, **Automatización**, **Resultados**) que se despliegan y repliegan con un clic, igual que cualquier sección plegable del resto de la app. Al abrir una pantalla, su sección aparece ya desplegada; las demás quedan como las dejaste la última vez (se recuerda por navegador).
+
 - **Mensajes.** Las confirmaciones aparecen abajo en verde; los errores, en rojo, con una explicación de qué corregir. Las acciones destructivas (eliminar, purgar) piden confirmación.
 - **Pestañas animadas.** Al cambiar de pestaña el contenido se desliza un instante; si una captura o lectura parece «cortada», espera medio segundo.
 

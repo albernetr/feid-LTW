@@ -4,7 +4,7 @@ import json
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from nicegui import ui, run
+from nicegui import app, ui, run
 from .. import core, automation, evidence_report, integrations
 
 NAV = [
@@ -15,6 +15,14 @@ NAV = [
     ('Modelos de IA', '/models', 'smart_toy'), ('Variables y secuencias', '/sequences', 'numbers'), ('Conjuntos de datos', '/datasets', 'dataset'),
     ('Integraciones', '/integrations', 'extension'),
     ('Historial', '/runs', 'history'), ('Importar / Exportar', '/portable', 'swap_vert'),
+]
+# Agrupa el menú (ya son ~20 opciones) en secciones desplegables/replegables — NAV sigue siendo la lista plana
+# y autoritativa (test_manual.py la recorre tal cual); esto solo decide cómo se presenta en el drawer.
+NAV_GROUPS = [
+    ('Proyecto', 'folder_open', ('/projects', '/module-groups', '/modules', '/environments')),
+    ('Pruebas', 'science', ('/cases', '/ui-cases', '/features', '/suites', '/suite-groups', '/chat')),
+    ('Automatización', 'smart_toy', ('/observer', '/schedules', '/models', '/sequences', '/datasets', '/integrations')),
+    ('Resultados', 'history', ('/runs', '/portable')),
 ]
 STATUS_COLOR = {'passed': 'positive', 'failed': 'negative', 'error': 'warning', 'cancelled': 'grey', 'skipped': 'grey'}
 STATUS_LABEL = {'passed': 'Pasó', 'failed': 'Falló', 'error': 'Error', 'cancelled': 'Cancelada', 'skipped': 'Omitido'}
@@ -75,12 +83,39 @@ def frame(title, current, wide=False):
                     .props('flat dense color=warning no-caps').tooltip('Habilita alguno en Proyectos para poder seleccionarlo')
         else:
             ui.button('Crear primer proyecto', icon='add', on_click=lambda: ui.navigate.to('/projects')).props('color=primary dense')
+    def nav_button(label, route, icon, extra=''):
+        selected = route == current
+        ui.button(label, icon=icon, on_click=lambda r=route: ui.navigate.to(r)) \
+            .props(f'flat align=left no-caps {"color=primary" if selected else "color=grey-8"}') \
+            .classes('w-full' + extra + (' bg-blue-50' if selected else ''))
     with drawer:
-        for label, route, icon in NAV:
-            selected = route == current
-            ui.button(label, icon=icon, on_click=lambda r=route: ui.navigate.to(r)) \
-                .props(f'flat align=left no-caps {"color=primary" if selected else "color=grey-8"}') \
-                .classes('w-full' + (' bg-blue-50' if selected else ''))
+        if wide:
+            for label, route, icon in NAV:
+                nav_button(label, route, icon)
+        else:
+            grouped_routes = {route for _, _, routes in NAV_GROUPS for route in routes}
+            for label, route, icon in NAV:
+                if route not in grouped_routes:
+                    nav_button(label, route, icon)
+            try:
+                layout = app.storage.browser
+            except Exception:
+                layout = {}
+            for name, group_icon, routes in NAV_GROUPS:
+                items = [item for item in NAV if item[1] in routes]
+                has_current = any(route == current for _, route, _ in items)
+                key = f'nav_group_{name}'
+                stored = layout.get(key) if hasattr(layout, 'get') else None
+                with ui.expansion(name, icon=group_icon, value=has_current if stored is None else bool(stored)) \
+                        .props('dense').classes('w-full') as section:
+                    def remember(e, k=key):
+                        try:
+                            layout[k] = e.value
+                        except Exception:
+                            pass
+                    section.on_value_change(remember)
+                    for label, route, icon in items:
+                        nav_button(label, route, icon, ' pl-2')
     if wide:
         with ui.column().classes('w-full gap-0 p-0'):
             yield
@@ -209,7 +244,7 @@ def agent_brief(run_id):
     dialog.open()
 
 
-CONTENT_TYPES = {'html': 'text/html', 'pdf': 'application/pdf',
+CONTENT_TYPES = {'html': 'text/html', 'pdf': 'application/pdf', 'md': 'text/markdown',
                  'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}
 
 
@@ -227,6 +262,8 @@ async def _render_evidence(data, kind):
             return target.read_bytes(), CONTENT_TYPES['pdf']
     if kind == 'docx':
         return await run.io_bound(evidence_report.render_evidence_docx, data), CONTENT_TYPES['docx']
+    if kind == 'md':
+        return evidence_report.render_evidence_markdown(data).encode('utf-8'), CONTENT_TYPES['md']
     return evidence_report.render_evidence_html(data).encode('utf-8'), CONTENT_TYPES['html']
 
 
@@ -248,7 +285,7 @@ def _send_to_ticket_dialog(run_doc):
         integ = ui.select({i['id']: f'{i["name"]} ({core.INTEGRATION_PLATFORMS.get(i["platform"], i["platform"])})' for i in items},
                           value=items[0]['id'], label='Integración').props('outlined dense').classes('w-full')
         ticket = ui.input('Ticket (Jira, p. ej. PROJ-123) o work item (Azure DevOps)').props('outlined dense').classes('w-full')
-        kind = ui.select({'pdf': 'PDF', 'html': 'HTML', 'docx': 'Word'}, value='pdf', label='Formato').props('outlined dense').classes('w-full')
+        kind = ui.select({'pdf': 'PDF', 'html': 'HTML', 'docx': 'Word', 'md': 'Markdown'}, value='pdf', label='Formato').props('outlined dense').classes('w-full')
 
         async def send():
             ticket_value = (ticket.value or '').strip()
@@ -343,6 +380,7 @@ def show_run(run):
                 ui.button('HTML', icon='download', on_click=guard(lambda: _download_evidence(run, 'html'))).props('flat dense no-caps')
                 ui.button('PDF', icon='picture_as_pdf', on_click=guard(lambda: _download_evidence(run, 'pdf'))).props('flat dense no-caps')
                 ui.button('Word', icon='description', on_click=guard(lambda: _download_evidence(run, 'docx'))).props('flat dense no-caps')
+                ui.button('Markdown', icon='code', on_click=guard(lambda: _download_evidence(run, 'md'))).props('flat dense no-caps')
                 ui.button('Enviar a Jira/Azure DevOps', icon='send', on_click=guard(lambda: _send_to_ticket_dialog(run))).props('flat dense no-caps')
         with ui.row().classes('justify-end w-full'):
             ui.button('Cerrar', on_click=dialog.close).props('flat')

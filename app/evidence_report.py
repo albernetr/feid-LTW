@@ -142,6 +142,45 @@ def render_evidence_pdf(html_text, destination):
     return reporting.render_pdf(html_text, destination)
 
 
+# --------------------------------------------------------------------------- Markdown
+
+def _step_markdown(step, level=2):
+    status = STATUS_ES.get(step['status'], step['status'] or '')
+    lines = [f'{"#" * min(level, 6)} {step.get("name", "")} — {status}', '']
+    if step.get('duration_ms') is not None:
+        lines.append(f'*{step["duration_ms"]} ms*')
+    if step.get('error'):
+        lines.append(f'> Error: {step["error"]}')
+    if 'request' in step:
+        req = step['request']
+        line = f'`{req.get("method") or ""} {req.get("url") or ""}`' + (f' · HTTP {step["http_status"]}' if step.get('http_status') else '')
+        lines.append(line)
+        if req.get('body') is not None:
+            body_text = req['body'] if isinstance(req['body'], str) else json.dumps(req['body'], indent=2, ensure_ascii=False)
+            lines += ['', 'Body enviado:', '```json', body_text, '```']
+        if step.get('response', {}).get('body'):
+            lines += ['', 'Respuesta:', '```json', step['response']['body'][:4000], '```']
+        lines.append('')
+        for a in step.get('assertions', []):
+            lines.append(('- ✓ ' if a['passed'] else '- ✗ ') + a['label'] + ('' if a['passed'] else f' → {str(a.get("actual"))[:300]}'))
+    for u in step.get('ui_steps', []):
+        lines.append(('- ✓ ' if u['passed'] else '- ✗ ') + u['label'])
+    lines.append('')
+    for sub in step.get('substeps', []):
+        lines += _step_markdown(sub, level + 1)
+    return lines
+
+
+def render_evidence_markdown(data):
+    status = STATUS_ES.get(data['status'], data['status'] or '')
+    s = data['summary']
+    lines = [f'# {data["title"]}', '', f'Estado: **{status}** · Generado: {data["generated_at"]}', '',
+             f'{s["passed"]} de {s["total"]} pasos pasaron ({s["failed"]} fallaron, {s["skipped"]} omitidos)', '']
+    for step in data['steps']:
+        lines += _step_markdown(step)
+    return '\n'.join(lines) + '\n'
+
+
 # --------------------------------------------------------------------------- Word
 
 def _write_step_docx(doc, step, level=2):

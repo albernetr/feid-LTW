@@ -3,6 +3,7 @@ import json
 import pytest
 from nicegui.testing import User
 from app import core
+from app.pages.common import NAV, NAV_GROUPS
 
 ROUTES = ['/', '/resumen', '/projects', '/projects/edit', '/workspace', '/lab', '/observer', '/observer/interface', '/modules', '/modules/edit', '/environments', '/environments/edit', '/cases', '/cases/edit', '/ui-cases',
           '/suites', '/schedules', '/runs', '/portable']
@@ -12,6 +13,24 @@ async def test_every_page_renders_without_a_project(user: User):
     for route in ROUTES:
         await user.open(route)
         await user.should_see('Local Test Workspace')
+
+
+def test_nav_groups_cover_every_route_exactly_once_or_leave_it_ungrouped():
+    """NAV sigue siendo la lista plana y autoritativa (test_manual.py la recorre tal cual); NAV_GROUPS solo decide
+    cómo se presenta en el drawer — nunca debe esconder una ruta ni listarla en dos grupos a la vez."""
+    all_routes = {route for _, route, _ in NAV}
+    grouped_routes = [route for _, _, routes in NAV_GROUPS for route in routes]
+    assert len(grouped_routes) == len(set(grouped_routes)), 'una ruta aparece en más de un grupo'
+    assert set(grouped_routes) <= all_routes, 'un grupo referencia una ruta que ya no existe en NAV'
+
+
+async def test_a_grouped_page_auto_expands_its_own_menu_section(user: User):
+    """Visitar una página de un grupo (p. ej. «Integraciones», dentro de «Automatización») debe mostrar esa
+    sección ya desplegada, aunque el usuario nunca la haya tocado — no debe hacer falta adivinar dónde se escondió."""
+    await user.open('/integrations')
+    await user.should_see('Automatización')   # encabezado del grupo
+    await user.should_see('Integraciones')     # ítem del menú, visible porque el grupo quedó expandido
+    await user.should_see('Inicio')            # los ítems sueltos (sin grupo) siempre están visibles
 
 
 async def test_projects_flow_and_filtering(user: User):
