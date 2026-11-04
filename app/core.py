@@ -1,9 +1,12 @@
 """Portable workspace storage, import, assertions and HTTP execution."""
 import contextlib
 import copy
+import csv
 import datetime as dt
+import io
 import json
 import os
+import random
 import re
 import shutil
 import socket
@@ -51,7 +54,7 @@ ARTIFACTS = ROOT / 'evidence'
 SECRET_SERVICE = 'local-test-workspace'
 SENSITIVE_HEADERS = ('authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization')
 SENSITIVE_NAME = re.compile(r'token|password|passwd|secret|key|authorization|cookie', re.I)
-TABLES = ('projects', 'module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules')
+TABLES = ('projects', 'module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'datasets')
 ALL_TABLES = TABLES + ('settings', 'runs', 'taps', 'interfaces', 'lab_history', 'llm_profiles', 'sequences')
 UUID_RE = re.compile(r'^[0-9a-fA-F-]{8,64}$')
 
@@ -319,7 +322,7 @@ def delete_project(project_id):
         set_active_project(None)
 
 
-CASCADE_TABLES = ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps')
+CASCADE_TABLES = ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps', 'datasets')
 
 
 def delete_project_cascade(project_id):
@@ -541,9 +544,10 @@ def save_suite(name, environment_id, case_ids, project_id=None, **options):
             raise ValueError('Funcionalidad inexistente')
         if project_id is not None and feature.get('project_id') != project_id:
             raise ValueError('La funcionalidad no pertenece al proyecto activo')
+    draws = _validated_draws(options.get('draws') or [], project_id)
     item = {'name': name.strip(), 'environment_id': environment_id, 'case_ids': list(case_ids),
             'on_failure': on_failure, 'retries': retries, 'retry_delay_s': delay, 'variables': variables,
-            'seq_start': seq_start, 'feature_id': feature_id}
+            'seq_start': seq_start, 'feature_id': feature_id, 'draws': draws}
     if steps is not None:
         item['steps'] = _validated_steps(steps, environment, project_id)
     if options.get('id'):
@@ -576,6 +580,54 @@ def _validated_steps(steps, default_environment, project_id):
         taken.append(alias)
         clean.append({'case_id': step['case_id'], 'alias': alias, 'environment_id': env_id, 'enrich': copy.deepcopy(step.get('enrich') or [])})
     return clean
+
+
+def _validated_draws(draws, project_id):
+    """Sorteos de la suite: una fila al azar de un conjunto de datos, elegida UNA vez por corrida y compartida por
+    todos los pasos como {{draw:alias.columna}} — para que, por ejemplo, el nombre y el RFC de «la misma persona»
+    no cambien de un paso al otro dentro de la misma conversación. Distinto de {{random:conjunto.columna}}, que
+    sortea de nuevo en cada request."""
+    clean, taken = [], []
+    for index, draw in enumerate(draws, 1):
+        alias = (draw.get('alias') or '').strip()
+        if not ALIAS_RE.fullmatch(alias):
+            raise ValueError(f'Sorteo {index}: el nombre «{alias}» no es válido (letras, números, _ y -; máx. 41)')
+        if alias in taken:
+            raise ValueError(f'Sorteo {index}: el nombre «{alias}» está repetido')
+        dataset_name = (draw.get('dataset') or '').strip()
+        if not dataset_name:
+            raise ValueError(f'Sorteo {index} («{alias}»): elige un conjunto de datos')
+        if not [d for d in list_project_items('datasets', project_id) if d['name'].strip().lower() == dataset_name.lower()]:
+            raise ValueError(f'Sorteo {index} («{alias}»): el conjunto de datos «{dataset_name}» no existe en este proyecto')
+        taken.append(alias)
+        clean.append({'alias': alias, 'dataset': dataset_name})
+    return clean
+
+
+def materialize_suite_variants(suite, count):
+    """Crea `count` copias de la suite con sus Sorteos ya resueltos a valores fijos (en vez de volver a sortear en
+    cada corrida) — un lote de conversaciones ya armadas, cada una revisable y re-ejecutable como cualquier otra
+    suite. No toca un {{random:conjunto.columna}} suelto dentro de un caso: eso sigue sorteando en cada envío,
+    venga o no de una suite materializada así (es un valor independiente por diseño, no ligado a esta suite)."""
+    if count < 1:
+        raise ValueError('La cantidad debe ser al menos 1')
+    base_name = (suite.get('name') or 'Suite').strip()
+    steps = suite_steps(suite)
+    created = []
+    for index in range(1, count + 1):
+        frozen = dict(suite.get('variables') or {})
+        for draw in suite.get('draws') or []:
+            row = dataset_sample(draw['dataset'], suite.get('project_id'))
+            if row is None:
+                raise ValueError(f'El conjunto de datos «{draw["dataset"]}» del sorteo «{draw["alias"]}» no tiene filas')
+            for column, value in row.items():
+                frozen[f'draw:{draw["alias"]}.{column}'] = value
+        created.append(save_suite(f'{base_name} #{index}', suite['environment_id'], [], suite.get('project_id'),
+                                   on_failure=suite.get('on_failure', 'continue'), retries=suite.get('retries', 0),
+                                   retry_delay_s=suite.get('retry_delay_s', 0), variables=frozen,
+                                   seq_start=suite.get('seq_start'), feature_id=suite.get('feature_id'),
+                                   steps=copy.deepcopy(steps), draws=[]))
+    return created
 
 
 # --------------------------------------------------------------------------- OpenAPI
@@ -1325,6 +1377,81 @@ def dynamic_variables():
     stamp = dt.datetime.now(dt.timezone.utc)
     return {'now_date': stamp.strftime('%Y-%m-%d'), 'now_time': stamp.strftime('%H:%M:%S'), 'now_iso': stamp.isoformat(),
             'now_epoch': str(int(stamp.timestamp())), 'uuid': uid(), 'seq': str(next_sequence())}
+
+
+# --------------------------------------------------------------------------- datasets ({{random:nombre.columna}})
+
+MAX_DATASET_ROWS = 20_000
+MAX_DATASET_BYTES = 10_000_000
+
+
+def parse_dataset_file(filename, content_bytes):
+    """(columnas, filas) desde un .txt/.csv/.json subido. .txt: un valor por línea -> una sola columna «valor».
+    .csv: primera fila son los encabezados. .json: una lista de objetos (sus claves son las columnas) o una lista
+    de valores sueltos -> una sola columna «valor». Nunca interpreta tipos: todo queda como texto."""
+    if len(content_bytes) > MAX_DATASET_BYTES:
+        raise ValueError(f'El archivo supera el máximo de {MAX_DATASET_BYTES // 1_000_000} MB.')
+    try:
+        text = content_bytes.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        raise ValueError('El archivo debe estar en texto UTF-8.')
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    if ext == 'json':
+        try:
+            data = json.loads(text)
+        except ValueError as exc:
+            raise ValueError(f'El JSON no es válido: {exc}')
+        if not isinstance(data, list) or not data:
+            raise ValueError('El JSON debe ser una lista no vacía de objetos o de valores.')
+        if isinstance(data[0], dict):
+            columns = sorted({k for row in data for k in row if isinstance(row, dict)})
+            if not columns:
+                raise ValueError('Los objetos de la lista no tienen campos.')
+            rows = [{c: str(row.get(c, '')) for c in columns} for row in data if isinstance(row, dict)]
+        else:
+            columns, rows = ['valor'], [{'valor': str(v)} for v in data]
+    elif ext == 'csv':
+        parsed = list(csv.reader(io.StringIO(text)))
+        parsed = [row for row in parsed if row]
+        if not parsed:
+            raise ValueError('El CSV está vacío.')
+        columns = [c.strip() for c in parsed[0]]
+        if not any(columns):
+            raise ValueError('La primera fila del CSV debe traer los nombres de columna.')
+        rows = [{columns[i]: (row[i].strip() if i < len(row) else '') for i in range(len(columns))} for row in parsed[1:]]
+    else:   # .txt u otra extensión de texto: un valor por línea
+        values = [line.strip() for line in text.splitlines() if line.strip()]
+        columns, rows = ['valor'], [{'valor': v} for v in values]
+    if not rows:
+        raise ValueError('El archivo no tiene filas de datos (más allá del encabezado, si aplica).')
+    if len(rows) > MAX_DATASET_ROWS:
+        raise ValueError(f'El archivo supera el máximo de {MAX_DATASET_ROWS} filas.')
+    return columns, rows
+
+
+def save_dataset(name, project_id, columns, rows, id=None):
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('El nombre del conjunto de datos es obligatorio')
+    if not columns or not rows:
+        raise ValueError('El conjunto de datos necesita al menos una columna y una fila')
+    others = [d for d in list_project_items('datasets', project_id) if d['name'].strip().lower() == name.lower() and d['id'] != id]
+    if others:
+        raise ValueError(f'Ya existe un conjunto de datos llamado «{name}» en este proyecto')
+    item = {'name': name, 'project_id': project_id, 'columns': list(columns), 'rows': rows}
+    if id:
+        item['id'] = id
+    return save('datasets', item)
+
+
+def dataset_sample(name, project_id):
+    """Una fila al azar del conjunto de datos con ese nombre en el proyecto, o None si no existe. Cuando el mismo
+    nombre se reutiliza en varios proyectos, cada proyecto tiene el suyo (igual que un ambiente o un caso)."""
+    name = (name or '').strip()
+    candidates = [d for d in list_project_items('datasets', project_id) if d['name'].strip().lower() == name.lower()]
+    if not candidates or not candidates[0].get('rows'):
+        return None
+    return random.choice(candidates[0]['rows'])
 
 
 def substitute(value, variables, secrets_used=None):
@@ -2328,6 +2455,22 @@ def execute_api(case, environment, variables=None, persist=True, context=None, e
         for name in find_unresolved(*seq_sources):
             if name.startswith('seq:'):
                 variables.setdefault(name, str(next_named_sequence(name[4:].strip())))   # resolved once per request, like {{seq}}
+            elif name.startswith('random:'):
+                # {{random:conjunto}} o {{random:conjunto.columna}}: una fila al azar de ese conjunto, resuelta una
+                # sola vez por request (como {{seq}}) — si aparece dos veces en el mismo request, las dos veces dan
+                # el mismo valor, pero cada request nuevo vuelve a sortear. Sin fila (conjunto inexistente o vacío)
+                # o sin esa columna, queda sin resolver: el chequeo de "Variables sin resolver" de más abajo lo
+                # reporta igual que cualquier otra variable faltante, con el mismo nombre exacto para ubicarlo.
+                dataset_name, _, column = name[len('random:'):].strip().partition('.')
+                row = dataset_sample(dataset_name, case.get('project_id') or environment.get('project_id'))
+                if row is None:
+                    continue
+                column = column.strip()
+                if column:
+                    if column in row:
+                        variables.setdefault(name, row[column])
+                elif len(row) == 1:
+                    variables.setdefault(name, next(iter(row.values())))
         base = substitute(environment.get('base_url', ''), variables, secrets_used).rstrip('/')
         path = substitute(case.get('path', ''), variables, secrets_used)
         headers = substitute(case.get('headers', {}), variables, secrets_used)

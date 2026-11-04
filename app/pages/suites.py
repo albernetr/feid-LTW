@@ -1,3 +1,4 @@
+import asyncio
 import json
 from nicegui import ui, run
 from .. import core, automation
@@ -27,6 +28,79 @@ async def run_suite(suite):
         dialog.close()
     show_run(result)
     return result
+
+
+def _ask_count(title, hint, run_label):
+    """Diálogo chico: pide una cantidad N y devuelve una promesa que resuelve con ese N (o None si cancelan)."""
+    result = asyncio.get_running_loop().create_future()
+    with ui.dialog() as dialog, ui.card().classes('w-80'):
+        ui.label(title).classes('text-lg font-semibold')
+        if hint:
+            ui.label(hint).classes('text-sm text-gray-500')
+        count = ui.number('Cantidad', value=10, min=1, max=500, precision=0).props('outlined dense autofocus').classes('w-full')
+        with ui.row().classes('w-full justify-end gap-2'):
+            def cancel():
+                dialog.close()
+                if not result.done():
+                    result.set_result(None)
+            def confirm_count():
+                dialog.close()
+                if not result.done():
+                    result.set_result(int(count.value or 0))
+            ui.button('Cancelar', on_click=cancel).props('flat')
+            ui.button(run_label, icon='play_arrow', on_click=confirm_count).props('color=primary')
+    dialog.open()
+    return result
+
+
+async def run_suite_many(suite):
+    count = await _ask_count(f'Ejecutar «{suite["name"]}» varias veces', 'Cada corrida vuelve a sortear sus Sorteos y sus {{random:…}} de forma independiente. Queda registrada en el Historial, no se guarda nada nuevo.', 'Ejecutar')
+    if not count:
+        return
+    token = automation.new_cancel_token()
+    progress = {'done': 0, 'passed': 0}
+    with ui.dialog().props('persistent') as dialog, ui.card().classes('w-96'):
+        ui.label(f'Ejecutando «{suite["name"]}» × {count}').classes('text-lg font-semibold')
+        ui.linear_progress(show_value=False).props('indeterminate')
+        status = ui.label('Iniciando…').classes('text-gray-600 text-sm')
+
+        def cancel():
+            token.set()
+            status.set_text('Cancelando tras la corrida en curso…')
+        ui.button('Cancelar', icon='stop', on_click=cancel).props('outline color=negative')
+    dialog.open()
+
+    def on_run(index, result):
+        progress['done'] = index
+        if result['status'] == 'passed':
+            progress['passed'] += 1
+    timer = ui.timer(0.5, lambda: status.set_text(f'{progress["done"]} de {count} corridas · {progress["passed"]} pasaron'))
+    try:
+        summary = await run.io_bound(automation.execute_suite_many, suite, count, token, on_run)
+    finally:
+        timer.cancel()
+        dialog.close()
+    with ui.dialog() as result_dialog, ui.card().classes('w-[520px] max-w-full'):
+        ok = summary['passed'] == summary['completed'] and summary['completed'] == summary['total']
+        ui.label(f'{summary["passed"]} de {summary["completed"]} pasaron' + (f' (se canceló tras {summary["completed"]} de {summary["total"]})' if summary['completed'] < summary['total'] else '')) \
+            .classes('text-lg font-semibold ' + ('text-positive' if ok else 'text-negative'))
+        with ui.column().classes('w-full gap-1').style('max-height:300px;overflow:auto'):
+            for index, run_doc in enumerate(summary['runs'], 1):
+                with ui.row().classes('items-center gap-2'):
+                    status_badge(run_doc['status'])
+                    ui.label(f'Corrida {index}').classes('text-sm')
+                    ui.button('Ver', on_click=lambda _, r=run_doc: show_run(r)).props('flat dense size=sm')
+        ui.button('Cerrar', on_click=result_dialog.close).props('color=primary')
+    result_dialog.open()
+
+
+async def generate_suite_variants(suite):
+    count = await _ask_count(f'Generar copias de «{suite["name"]}»', 'Crea N suites nuevas, cada una con sus Sorteos ya resueltos a valores fijos — quedan como flujos propios, editables y re-ejecutables.', 'Generar')
+    if not count:
+        return
+    created = await run.io_bound(core.materialize_suite_variants, suite, count)
+    ui.notify(f'{len(created)} suite(s) generada(s)', type='positive')
+    ui.navigate.reload()
 
 
 def feature_name(suite):
@@ -71,6 +145,8 @@ def suites_list():
                         ui.label(f'{len(suite["case_ids"])} casos · {route} · {policy} · {suite.get("retries", 0)} reintento(s)'
                                  + (f' · {enriched} paso(s) enriquecido(s)' if enriched else '')).classes('text-sm text-gray-500')
                     ui.button(icon='play_arrow', on_click=guard(lambda s=suite: run_suite(s))).props('flat round color=positive').tooltip('Ejecutar')
+                    ui.button(icon='repeat', on_click=guard(lambda s=suite: run_suite_many(s))).props('flat round color=positive').tooltip('Ejecutar N veces (datos aleatorios distintos en cada una)')
+                    ui.button(icon='dynamic_feed', on_click=guard(lambda s=suite: generate_suite_variants(s))).props('flat round').tooltip('Generar N copias con sus Sorteos ya resueltos')
                     ui.button(icon='edit', on_click=lambda _, i=suite['id']: ui.navigate.to(f'/suites/edit?id={i}')).props('flat round').tooltip('Editar')
 
                     def duplicate(s=suite):
@@ -204,6 +280,8 @@ def suite_edit(id: str = ''):
         steps = [dict(s, enrich=[dict(op, source=dict(op.get('source') or {})) for op in s.get('enrich') or []]) for s in core.suite_steps(current)] if current else []
         steps = [s for s in steps if s['case_id'] in cases]
         variables = dict((current or {}).get('variables', {}))
+        draws = [dict(d) for d in (current or {}).get('draws', [])]
+        datasets = core.list_project_items('datasets', pid)
         view = {'mode': 'suite', 'case_id': None}   # 'suite' | 'case' — qué se muestra debajo de la tarjeta de datos de la suite
 
         def edit_case(cid):
@@ -402,9 +480,35 @@ def suite_edit(id: str = ''):
                 ui.label('Si lo completás, {{seq}} arranca en ese número y sube de a uno por paso en cada corrida de esta suite — '
                           'en vez del consecutivo global de toda la app, que nunca se reinicia.').classes('text-xs text-gray-500')
 
+            with ui.expansion('Sorteos (datos aleatorios que no cambian durante la conversación)', icon='casino').classes('w-full border rounded'):
+                ui.label('Elige una fila al azar de un conjunto de datos (Conjuntos de datos, en el menú) UNA vez por corrida, y la comparte entre '
+                          'todos los pasos — por ejemplo, para que el nombre y el RFC de «la misma persona» no cambien de un paso al otro. '
+                          'Usala como {{draw:alias.columna}}.').classes('text-gray-500 text-sm')
+                if not datasets:
+                    ui.label('No hay conjuntos de datos en este proyecto todavía. Subí uno en «Conjuntos de datos».').classes('text-amber-700 text-sm')
+                else:
+                    @ui.refreshable
+                    def draw_rows():
+                        for draw in draws:
+                            with ui.row().classes('w-full items-center gap-2 no-wrap'):
+                                ui.input('Nombre del sorteo', value=draw['alias']).props('outlined dense').classes('w-48') \
+                                    .on_value_change(lambda e, d=draw: d.__setitem__('alias', (e.value or '').strip()))
+                                ui.select({d['name']: f'{d["name"]} ({len(d["columns"])} col., {len(d["rows"])} filas)' for d in datasets},
+                                          value=draw.get('dataset'), label='Conjunto de datos').props('outlined dense').classes('grow') \
+                                    .on_value_change(lambda e, d=draw: d.__setitem__('dataset', e.value))
+                                chosen_dataset = next((d for d in datasets if d['name'] == draw.get('dataset')), None)
+                                if chosen_dataset:
+                                    ui.label(', '.join(f'{{{{draw:{draw["alias"] or "alias"}.{c}}}}}' for c in chosen_dataset['columns'][:3])) \
+                                        .classes('text-xs font-mono text-gray-500')
+                                ui.button(icon='delete', on_click=lambda _, d=draw: (draws.remove(d), draw_rows.refresh())).props('flat round dense color=negative')
+                    draw_rows()
+                    ui.button('Agregar sorteo', icon='add', on_click=lambda: (draws.append({'alias': f'dato{len(draws) + 1}', 'dataset': datasets[0]['name']}), draw_rows.refresh())) \
+                        .props('flat dense color=primary')
+
             def save():
                 options = dict(id=(current or {}).get('id'), on_failure=on_failure.value, retries=int(retries.value or 0), retry_delay_s=float(delay.value or 0),
-                               variables={k: v for k, v in variables.items() if k.strip()}, seq_start=seq_start.value, steps=steps, feature_id=feature.value)
+                               variables={k: v for k, v in variables.items() if k.strip()}, seq_start=seq_start.value, steps=steps, feature_id=feature.value,
+                               draws=draws)
                 if current:
                     options['expected_updated_at'] = current.get('updated_at')       # refuse to overwrite someone else's changes
                 saved = core.save_suite(name.value or '', env.value, [], pid, **options)

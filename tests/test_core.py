@@ -505,3 +505,39 @@ def test_reset_workspace_can_keep_evidence():
     core.reset_workspace(remove_evidence=False)
     assert core.list_items('projects')==[]
     assert shot.exists()
+
+
+def test_parse_dataset_file_txt_csv_json():
+    columns, rows = core.parse_dataset_file('nombres.txt', b'Ana\nBeto\n\nCaro\n')
+    assert columns == ['valor']
+    assert rows == [{'valor': 'Ana'}, {'valor': 'Beto'}, {'valor': 'Caro'}]
+
+    columns, rows = core.parse_dataset_file('leads.csv', b'nombre,rfc\nAna,AAA\nBeto,BBB\n')
+    assert columns == ['nombre', 'rfc']
+    assert rows == [{'nombre': 'Ana', 'rfc': 'AAA'}, {'nombre': 'Beto', 'rfc': 'BBB'}]
+
+    columns, rows = core.parse_dataset_file('leads.json', json.dumps([{'nombre': 'Ana', 'rfc': 'AAA'}, {'nombre': 'Beto', 'rfc': 'BBB'}]).encode())
+    assert columns == ['nombre', 'rfc']
+    assert rows == [{'nombre': 'Ana', 'rfc': 'AAA'}, {'nombre': 'Beto', 'rfc': 'BBB'}]
+
+    columns, rows = core.parse_dataset_file('valores.json', json.dumps(['x', 'y', 'z']).encode())
+    assert columns == ['valor']
+    assert rows == [{'valor': 'x'}, {'valor': 'y'}, {'valor': 'z'}]
+
+    with pytest.raises(ValueError):
+        core.parse_dataset_file('vacio.txt', b'   \n\n')
+    with pytest.raises(ValueError):
+        core.parse_dataset_file('malo.json', b'{not json')
+
+
+def test_save_dataset_and_sample():
+    project = core.create_project('Datos')
+    core.save_dataset('leads', project['id'], ['nombre', 'rfc'], [{'nombre': 'Ana', 'rfc': 'AAA'}, {'nombre': 'Beto', 'rfc': 'BBB'}])
+    for _ in range(10):
+        row = core.dataset_sample('leads', project['id'])
+        assert row in [{'nombre': 'Ana', 'rfc': 'AAA'}, {'nombre': 'Beto', 'rfc': 'BBB'}]
+    assert core.dataset_sample('no existe', project['id']) is None
+    with pytest.raises(ValueError):   # el mismo nombre no se puede repetir en el mismo proyecto
+        core.save_dataset('leads', project['id'], ['x'], [{'x': '1'}])
+    other = core.create_project('Otro')
+    assert core.dataset_sample('leads', other['id']) is None   # un conjunto es propio de su proyecto, como un ambiente o un caso

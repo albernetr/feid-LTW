@@ -181,7 +181,7 @@ def test_portability_end_to_end(world, tmp_path):
     preview = core.preview_import(path, 'merge')
     assert preview['summary']['suites']['new'] == 1 and core.list_items('suites') == []
     counts = core.import_workspace(path, 'merge')
-    assert counts == {'projects': 1, 'module_groups': 0, 'modules': 0, 'environments': 1, 'cases': 1, 'features': 0, 'suites': 1, 'schedules': 1}
+    assert counts == {'projects': 1, 'module_groups': 0, 'modules': 0, 'environments': 1, 'cases': 1, 'features': 0, 'suites': 1, 'schedules': 1, 'datasets': 0}
     assert core.list_items('schedules')[0]['enabled'] is False
     imported_suite = core.list_items('suites')[0]
     assert core.get('cases', imported_suite['case_ids'][0])
@@ -272,3 +272,72 @@ def test_first_and_nth_locators_avoid_strict_mode_violations(world):
     assert automation.execute_ui(case, world['env'])['status'] == 'passed'
     spec = recorder.import_codegen('page.get_by_role("link", name="a").nth(2).click()\npage.get_by_text("z").first.click()')
     assert [s['locator'] for s in spec['steps']] == [{'by': 'role', 'role': 'link', 'name': 'a', 'nth': 2}, {'by': 'text', 'value': 'z', 'first': True}]
+
+
+def test_random_variable_picks_from_an_uploaded_dataset(world):
+    """{{random:conjunto.columna}} sortea una fila del conjunto subido en cada envío. Si el conjunto no existe,
+    el nombre exacto queda sin resolver — el mismo mecanismo (y el mismo mensaje) que cualquier otra variable
+    faltante, sin un camino de error aparte que mantener."""
+    core.save_dataset('leads', world['pid'], ['nombre', 'rfc'], [{'nombre': 'Ana', 'rfc': 'AAA'}, {'nombre': 'Beto', 'rfc': 'BBB'}, {'nombre': 'Caro', 'rfc': 'CCC'}])
+    case = world['api_case']('crear con random', 'POST', '/api/items', [{'type': 'status', 'expected': 201}],
+                             headers={'Authorization': 'Bearer tok-abc123'}, body={'name': '{{random:leads.nombre}}'})
+    result = core.execute_api(case, world['env'])
+    assert result['status'] == 'passed', result
+    assert result['request']['body']['name'] in ('Ana', 'Beto', 'Caro')
+
+    missing = world['api_case']('conjunto inexistente', 'POST', '/api/items', [{'type': 'status', 'expected': 201}],
+                                headers={'Authorization': 'Bearer tok-abc123'}, body={'name': '{{random:no_existe}}'})
+    outcome = core.execute_api(missing, world['env'])
+    assert outcome['status'] == 'error' and 'Variables sin resolver' in outcome['error']
+
+
+def test_suite_draw_keeps_the_same_row_across_all_steps(world):
+    """Un Sorteo se resuelve UNA vez por corrida y lo comparten todos los pasos — a diferencia de {{random:...}}
+    suelto, que sortea de nuevo en cada request — así el nombre y el RFC de "la misma persona" no se desalinean
+    entre el paso 1 y el paso 2 de una misma conversación."""
+    core.save_dataset('leads', world['pid'], ['nombre', 'rfc'], [{'nombre': 'Ana', 'rfc': 'AAA'}, {'nombre': 'Beto', 'rfc': 'BBB'}])
+    step1 = world['api_case']('paso1', 'POST', '/api/items', [{'type': 'status', 'expected': 201}],
+                              headers={'Authorization': 'Bearer tok-abc123'}, body={'name': 'n={{draw:lead.nombre}}'})
+    step2 = world['api_case']('paso2', 'POST', '/api/items', [{'type': 'status', 'expected': 201}],
+                              headers={'Authorization': 'Bearer tok-abc123'}, body={'name': 'r={{draw:lead.rfc}}'})
+    suite = core.save_suite('con sorteo', world['env']['id'], [step1['id'], step2['id']], world['pid'],
+                            draws=[{'alias': 'lead', 'dataset': 'leads'}])
+    result = automation.execute_suite(suite)
+    assert result['status'] == 'passed', result
+    run1 = core.get('runs', result['case_runs'][0]['run_id'])
+    run2 = core.get('runs', result['case_runs'][1]['run_id'])
+    nombre, rfc = run1['request']['body']['name'][2:], run2['request']['body']['name'][2:]
+    assert rfc == {'Ana': 'AAA', 'Beto': 'BBB'}[nombre]   # el paso 2 usó la misma fila que el paso 1, no una nueva
+
+
+def test_materialize_suite_variants_freezes_the_draw(world):
+    """Generar N copias congela el sorteo a un valor fijo por copia (no vuelve a sortear en cada corrida de ESA
+    copia) — a diferencia de correr la misma suite N veces, que vuelve a sortear en cada una."""
+    core.save_dataset('leads', world['pid'], ['nombre'], [{'nombre': 'Ana'}, {'nombre': 'Beto'}, {'nombre': 'Caro'}])
+    case = world['api_case']('paso', 'POST', '/api/items', [{'type': 'status', 'expected': 201}],
+                             headers={'Authorization': 'Bearer tok-abc123'}, body={'name': '{{draw:lead.nombre}}'})
+    suite = core.save_suite('plantilla', world['env']['id'], [case['id']], world['pid'], draws=[{'alias': 'lead', 'dataset': 'leads'}])
+    created = core.materialize_suite_variants(suite, 3)
+    assert len(created) == 3
+    assert all(copy_suite['draws'] == [] for copy_suite in created)   # el sorteo ya no está: quedó convertido en variable fija
+    for copy_suite in created:
+        value = copy_suite['variables']['draw:lead.nombre']
+        assert value in ('Ana', 'Beto', 'Caro')
+        first = automation.execute_suite(copy_suite)
+        second = automation.execute_suite(copy_suite)
+        name1 = core.get('runs', first['case_runs'][0]['run_id'])['request']['body']['name']
+        name2 = core.get('runs', second['case_runs'][0]['run_id'])['request']['body']['name']
+        assert name1 == name2 == value   # frozen: las dos corridas de la MISMA copia dan siempre el mismo valor
+
+
+def test_execute_suite_many_draws_independently_each_run(world):
+    """«Ejecutar N veces» no deja nada materializado: cada corrida vuelve a sortear por su cuenta."""
+    core.save_dataset('leads', world['pid'], ['nombre'], [{'nombre': n} for n in ('A', 'B', 'C', 'D', 'E')])
+    case = world['api_case']('paso', 'POST', '/api/items', [{'type': 'status', 'expected': 201}],
+                             headers={'Authorization': 'Bearer tok-abc123'}, body={'name': '{{random:leads.nombre}}'})
+    suite = core.save_suite('bulk', world['env']['id'], [case['id']], world['pid'])
+    summary = automation.execute_suite_many(suite, 5)
+    assert summary['total'] == summary['completed'] == 5
+    assert summary['passed'] == 5
+    names = {core.get('runs', r['case_runs'][0]['run_id'])['request']['body']['name'] for r in summary['runs']}
+    assert len(names) > 1   # con 5 opciones y 5 corridas, prácticamente seguro que no todas coincidan

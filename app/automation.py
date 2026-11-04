@@ -334,6 +334,13 @@ def execute_suite(suite, cancel=None, on_progress=None):
     retries = int(suite.get('retries', 0))
     delay = float(suite.get('retry_delay_s', 0))
     shared = dict(suite.get('variables') or {})
+    for draw in suite.get('draws') or []:
+        # Un sorteo se resuelve UNA vez por corrida (no por paso, como {{seq}} sí hace): la misma fila de datos
+        # (ej. nombre+RFC+situación laboral de "la misma persona") vale para todos los pasos de esta conversación.
+        row = core.dataset_sample(draw['dataset'], suite.get('project_id'))
+        if row:
+            for column, value in row.items():
+                shared.setdefault(f'draw:{draw["alias"]}.{column}', value)
     seq = suite.get('seq_start')   # own {{seq}} for this run, shadowing the app-wide one (None: use the global counter)
     summary = {'id': core.uid(), 'type': 'suite', 'suite_id': suite['id'], 'suite_name': suite.get('name', ''),
                'project_id': suite.get('project_id'), 'started_at': core.now(), 'case_runs': [],
@@ -392,6 +399,26 @@ def execute_suite(suite, cancel=None, on_progress=None):
     summary['finished_at'] = core.now()
     logs.event('suite.finished', suite=summary['suite_name'], status=summary['status'], cases=len(statuses))
     return core.save('runs', summary)
+
+
+def execute_suite_many(suite, count, cancel=None, on_run=None):
+    """Corre la misma suite `count` veces seguidas (ej. N conversaciones con datos distintos). Cada corrida vuelve
+    a sortear sus Sorteos y sus {{random:...}} sueltos de forma independiente — no es lo mismo que materializar N
+    copias (`core.materialize_suite_variants`): acá no queda nada guardado más que las N corridas en el Historial,
+    útil para una pasada rápida sin dejar N suites nuevas dando vueltas. on_run(index, result) se llama después de
+    cada corrida, para progreso en vivo."""
+    if count < 1:
+        raise ValueError('La cantidad debe ser al menos 1')
+    runs = []
+    for index in range(1, count + 1):
+        if cancel is not None and cancel.is_set():
+            break
+        result = execute_suite(suite, cancel=cancel)
+        runs.append(result)
+        if on_run:
+            on_run(index, result)
+    passed = sum(1 for r in runs if r['status'] == 'passed')
+    return {'total': count, 'completed': len(runs), 'passed': passed, 'failed': len(runs) - passed, 'runs': runs}
 
 
 # --------------------------------------------------------------------------- schedules
