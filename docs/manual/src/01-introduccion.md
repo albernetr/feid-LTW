@@ -31,7 +31,7 @@ Las recetas paso a paso para cada perfil están en el [capítulo 16](#16-recetas
 - No es una herramienta de **pruebas de carga** ni de rendimiento intensivo (mide tiempos de respuesta de una llamada, no soporta miles de usuarios).
 - No analiza ni lee tu **código fuente**; trabaja con lo que el servicio responde.
 - No reemplaza a un servidor de integración continua: puede ejecutarse por línea de comandos y producir JUnit, pero no orquesta pipelines.
-- No es multiusuario con inicio de sesión: es local; lo único que se comparte es la **base de datos** (ver [capítulo 15](#15-trabajo-en-equipo-y-base-de-datos-compartida)).
+- No es un servicio alojado ni multiusuario en el sentido de una app en la nube: cada instalación es **local**, en un equipo. Sí tiene **inicio de sesión** (correo/contraseña o el usuario de Windows de la sesión) para que, cuando varias personas comparten la **base de datos** (ver [capítulo 15](#15-trabajo-en-equipo-y-base-de-datos-compartida)), quede registrado quién creó y quién ejecutó cada cosa.
 
 ## 1.4 Qué tan maduro está cada parte
 
@@ -104,9 +104,15 @@ Convenciones: los nombres de botones, pestañas y campos aparecen en **negrita**
 | Ejecutar la batería de pruebas de la herramienta | **`scripts\test.bat`** |
 | Generar el ejecutable | **`scripts\build_exe.bat`** (opcional; ver [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)) |
 
-La aplicación escucha **solo en tu equipo** (`127.0.0.1`). No la expongas a otras redes: no tiene inicio de sesión.
+La aplicación escucha **solo en tu equipo** (`127.0.0.1`). No la expongas a otras redes: el inicio de sesión con usuario de Windows confía en que quien abre el navegador es quien tiene la sesión de Windows abierta en **esa misma máquina** — expuesta en red, cualquiera podría entrar con cualquier identidad.
 
-## 2.4 Dónde se guardan los datos
+## 2.4 Primer inicio de sesión
+
+La primera vez que abres la aplicación (o cada vez que la base de datos no tiene ninguna cuenta todavía) ves una pantalla para **crear la primera cuenta**: nombre, apellidos, correo, y **o** una contraseña **o** usar directamente tu usuario de Windows (detectado solo, sin pedir su contraseña). Entrar con usuario de Windows es confiar en la sesión del sistema operativo, no una validación real contra Windows — pensado para el caso normal: cada quien abre LTW en su propio equipo.
+
+Con una cuenta ya creada, la pantalla de **Entrar** ofrece **Correo y contraseña**, **Usuario de Windows** (si es la primera vez con ese usuario, pide completar nombre/apellidos/correo una sola vez) y **Crear cuenta nueva**. El nombre con el que entraste aparece arriba a la derecha; desde ahí, **Gestionar usuarios** lista las cuentas (para eliminar una, salvo que sea la última) y **Cerrar sesión** vuelve a la pantalla de login.
+
+## 2.5 Dónde se guardan los datos
 
 Por defecto, **dentro de la carpeta del paquete**, en `data\`:
 
@@ -122,7 +128,7 @@ Mover o copiar la carpeta del paquete mueve también todo tu trabajo. Los **secr
 
 > **Si la carpeta del paquete es de solo lectura** (por ejemplo, `Program Files`), LTW usa tu perfil de usuario automáticamente.
 
-## 2.5 Variables de entorno opcionales
+## 2.6 Variables de entorno opcionales
 
 | Variable | Para qué sirve | Por defecto |
 |---|---|---|
@@ -130,11 +136,13 @@ Mover o copiar la carpeta del paquete mueve también todo tu trabajo. Los **secr
 | `TEST_WORKSPACE_HOME` | Carpeta de datos alternativa (por ejemplo, una carpeta compartida) | `<paquete>\data` |
 | `LTW_AGENT_TOKEN` | Token fijo para la API local de agentes | se genera uno y se guarda |
 | `LTW_LLM_API_KEY` | Clave del asistente con modelo de lenguaje (alternativa al almacén de credenciales) | ninguna |
-| `LTW_STORAGE_SECRET` | Secreto de sesión del navegador (solo recuerda posiciones de paneles) | valor local |
+| `LTW_STORAGE_SECRET` | Secreto de sesión del navegador (quién inició sesión, posiciones de paneles) | valor local |
+| `LTW_BACKEND` | `azure_sql` para usar Azure SQL en vez de SQLite (ver [15.4](#15-trabajo-en-equipo-y-base-de-datos-compartida)) | `sqlite` |
+| `LTW_AZURE_SQL_SERVER` / `_DATABASE` / `_USER` / `_PASSWORD` / `_PORT` | Conexión a Azure SQL (solo si `LTW_BACKEND=azure_sql`) | — / 1433 |
 
 Ejemplo para usar otro puerto: `set LTW_PORT=8090` y luego `python run.py`.
 
-## 2.6 Actualizar y desinstalar
+## 2.7 Actualizar y desinstalar
 
 - **Actualizar:** descomprime la nueva versión en otra carpeta y copia tu carpeta `data\` encima de la nueva (o apunta `TEST_WORKSPACE_HOME` a la carpeta de datos antigua).
 - **Desinstalar:** cierra la aplicación y borra la carpeta. Los secretos guardados quedan en el Administrador de credenciales (servicio `local-test-workspace`); bórralos desde ahí o desde la pantalla **Ambientes → Secretos**.

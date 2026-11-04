@@ -5,7 +5,7 @@ instead of to a request body."""
 import datetime as dt
 from nicegui import ui, run
 from .. import core, automation, recorder
-from .common import frame, guard, confirm, empty_state, require_project, show_run, fmt_time, status_badge
+from .common import frame, guard, confirm, empty_state, require_project, show_run, fmt_time, status_badge, protected_page, current_user_id
 from .widgets import method_badge
 
 LOCATOR_LABELS = {'label': 'Etiqueta (label)', 'text': 'Texto', 'role': 'Rol ARIA', 'testid': 'data-testid', 'placeholder': 'Placeholder'}
@@ -41,7 +41,7 @@ def draft_from_case(case):
             'steps': _clean_steps(case.get('steps')), 'updated_at': case.get('updated_at')}
 
 
-@ui.page('/ui-cases')
+@protected_page('/ui-cases')
 def ui_cases_page(id: str = '', name: str = '', url: str = ''):
     with frame('Casos UI (Playwright)', '/ui-cases', wide=True):
         if not require_project():
@@ -271,6 +271,9 @@ def ui_cases_page(id: str = '', name: str = '', url: str = ''):
                             .on_value_change(lambda e: d.__setitem__('env_id', e.value))
                         W['timeout_input'] = ui.number('Timeout por paso (ms)', value=d['timeout_ms'], min=500, max=120000).props('outlined dense').classes('w-full') \
                             .on_value_change(lambda e: d.__setitem__('timeout_ms', e.value))
+                        _creator = core.get('cases', d['id']) if d['id'] else None
+                        if _creator and _creator.get('created_by'):
+                            ui.label(f'Creado por: {core.user_display_name(_creator["created_by"])}').classes('text-xs text-gray-500')
 
                         def build():
                             if not (d['name'] or '').strip():
@@ -278,7 +281,9 @@ def ui_cases_page(id: str = '', name: str = '', url: str = ''):
                             problems = automation.validate_steps(d['steps'])
                             if problems:
                                 raise ValueError('\n'.join(problems))
-                            item = {'name': d['name'].strip(), 'type': 'ui', 'project_id': pid, 'timeout_ms': int(d['timeout_ms'] or 10000), 'steps': d['steps']}
+                            existing = core.get('cases', d['id']) if d['id'] else None
+                            item = {'name': d['name'].strip(), 'type': 'ui', 'project_id': pid, 'timeout_ms': int(d['timeout_ms'] or 10000), 'steps': d['steps'],
+                                    'created_by': (existing or {}).get('created_by') or current_user_id()}
                             if d['id']:
                                 item['id'] = d['id']
                             return item
@@ -300,7 +305,7 @@ def ui_cases_page(id: str = '', name: str = '', url: str = ''):
                                 ui.spinner(size='lg'); ui.label('Ejecutando en Chromium…')
                             busy.open()
                             try:
-                                result = await run.io_bound(automation.execute_ui, saved, env)
+                                result = await run.io_bound(automation.execute_ui, saved, env, meta={'executed_by': current_user_id()})
                             finally:
                                 busy.close()
                             refresh_all()

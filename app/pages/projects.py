@@ -1,6 +1,6 @@
 from nicegui import ui
 from .. import core, automation
-from .common import frame, guard, confirm, empty_state, fmt_time
+from .common import frame, guard, confirm, empty_state, fmt_time, protected_page
 
 RESOURCE_LABELS = (('module_groups', 'módulos'), ('modules', 'componentes'), ('environments', 'ambientes'), ('cases', 'casos'),
                     ('features', 'funcionalidades'), ('suites', 'flujos'), ('schedules', 'programaciones'), ('taps', 'taps'))
@@ -47,7 +47,7 @@ def _offer_cascade_delete(project, message, on_done):
     dialog.open()
 
 
-@ui.page('/projects')
+@protected_page('/projects')
 def projects_list():
     with frame('Proyectos', '/projects'):
         active_id = core.get_active_project_id()
@@ -200,7 +200,7 @@ def _resource_card(project, icon, color, title, table_name, route, render_item):
             ui.label(f'y {len(entries) - 5} más…').classes('text-xs text-gray-400')
 
 
-@ui.page('/projects/edit')
+@protected_page('/projects/edit')
 def project_edit(id: str = ''):
     with frame('Proyecto' if id else 'Nuevo proyecto', '/projects'):
         ui.link('← Volver a Proyectos', '/projects').classes('text-sm')

@@ -3,15 +3,30 @@
                   python run.py --run spec.json   -> agent protocol (see AGENTS.md; --validate / --schema too)
                   python run.py --status-report reporte.html [--project N] [--days 14]   -> executive status report
                   python run.py --explore --project N --module N [--environment N] [--save]   -> auto-discover & run read-only cases
-                  python run.py --reset-workspace --yes [--keep-evidence]   -> wipe the database (irreversible, "start from zero")"""
+                  python run.py --reset-workspace --yes [--keep-evidence]   -> wipe the database (irreversible, "start from zero")
+                  python run.py --check-storage   -> which backend is active (SQLite/Azure SQL) and whether it connects"""
 import sys
 
 AGENT_FLAGS = ('--run', '--validate', '--schema')
 REPORT_FLAG = '--status-report'
 EXPLORE_FLAG = '--explore'
 RESET_FLAG = '--reset-workspace'
+CHECK_STORAGE_FLAG = '--check-storage'
 
 if __name__ in {'__main__', '__mp_main__'}:
+    if CHECK_STORAGE_FLAG in sys.argv:                           # which backend is active, and whether it connects: no web server
+        from app import azure_sql_backend
+        if not azure_sql_backend.enabled():
+            print('Backend: SQLite (local). LTW_BACKEND no está en "azure_sql".')
+            sys.exit(0)
+        print('Backend: Azure SQL. Probando conexión…')
+        try:
+            azure_sql_backend.test_connection()
+        except Exception as exc:
+            print(f'No se pudo conectar: {exc}', file=sys.stderr)
+            sys.exit(1)
+        print('Conexión correcta.')
+        sys.exit(0)
     if REPORT_FLAG in sys.argv:                                 # executive status report from the shared workspace: file out, exit code 0 healthy / 1 attention
         from app.reporting import cli as report_cli
         sys.exit(report_cli(sys.argv[1:]))

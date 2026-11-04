@@ -1,9 +1,9 @@
 from nicegui import ui
 from .. import core
-from .common import frame, guard, confirm, empty_state, require_project, status_badge, fmt_time
+from .common import frame, guard, confirm, empty_state, require_project, status_badge, fmt_time, protected_page
 
 
-@ui.page('/features')
+@protected_page('/features')
 def features_list():
     with frame('Funcionalidades', '/features'):
         if not require_project():
@@ -66,7 +66,7 @@ def features_list():
         ui.label('Haz clic en una fila para ver sus flujos y su salud; elimina directamente con el icono (solo si no tiene flujos ligados).').classes('text-sm text-gray-500')
 
 
-@ui.page('/features/edit')
+@protected_page('/features/edit')
 def feature_detail(id: str = ''):
     with frame('Funcionalidad' if id else 'Nueva funcionalidad', '/features'):
         if not require_project():

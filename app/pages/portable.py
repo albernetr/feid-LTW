@@ -3,12 +3,12 @@ import time
 from pathlib import Path
 from nicegui import ui
 from .. import core, logs
-from .common import frame, guard, read_upload
+from .common import frame, guard, read_upload, protected_page
 
 MAX_ZIP = 50_000_000
 
 
-@ui.page('/portable')
+@protected_page('/portable')
 def portable():
     with frame('Importar y exportar', '/portable'):
         pid = core.get_active_project_id()

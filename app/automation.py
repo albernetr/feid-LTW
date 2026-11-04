@@ -192,13 +192,14 @@ def discover_views(base_url, start_path=None, max_pages=15, timeout_ms=8000, on_
         return {'ok': False, 'detail': str(exc), 'views': []}
 
 
-def execute_ui(case, environment, variables=None):
-    """Execute declarative UI steps; browser is isolated per case. Keeps screenshot (always) and trace (on failure)."""
+def execute_ui(case, environment, variables=None, meta=None):
+    """Execute declarative UI steps; browser is isolated per case. Keeps screenshot (always) and trace (on failure).
+    `meta` (e.g. {'suite_id':, 'alias':, 'executed_by':}) is mixed straight into the run, same as core.execute_api."""
     variables = {**environment.get('variables', {}), **(variables or {})}
     secrets_used = set()
     run = {'id': core.uid(), 'case_id': case['id'], 'case_name': case.get('name', ''), 'type': 'ui',
            'project_id': case.get('project_id'), 'case_snapshot': case, 'environment_id': environment['id'],
-           'started_at': core.now(), 'steps': []}
+           'started_at': core.now(), 'steps': [], **(meta or {})}
     browser = None
     try:
         steps = core.substitute(case.get('steps', []), variables, secrets_used)
@@ -309,7 +310,7 @@ def new_cancel_token():
 
 def _run_case(case, environment, variables, context=None, enrich=None, meta=None):
     if case.get('type') == 'ui':
-        return execute_ui(case, environment, variables)
+        return execute_ui(case, environment, variables, meta=meta)
     return core.execute_api(case, environment, variables, context=context, enrich=enrich, meta=meta)
 
 
@@ -325,13 +326,15 @@ def _response_context(result):
     return {'http_status': result.get('http_status'), 'headers': response.get('headers', {}), 'body': body}
 
 
-def execute_suite(suite, cancel=None, on_progress=None, only_aliases=None):
+def execute_suite(suite, cancel=None, on_progress=None, only_aliases=None, executed_by=None):
     """Runs cases in order with shared variables, retries, failure policy and cooperative cancel. With
     `only_aliases` (a set/list of step aliases), every OTHER step is skipped instead of run — no request sent, no
     {{seq}}/Sorteo consumed — but its last recorded response (core.history_context, the same source the
     enrichment preview already uses) still feeds the context, so a later selected step can still enrich from it.
     Useful for a partial retest (re-run just the step that failed, or a couple of them) without repeating the
-    whole flow; leaving `only_aliases` as None runs every step, exactly like before."""
+    whole flow; leaving `only_aliases` as None runs every step, exactly like before. `executed_by` (a users.id,
+    or one of core.AUTH_SENTINELS for a run with no browser session) is stamped on the suite run and on every
+    step's own run."""
     environment = core.get('environments', suite['environment_id'])
     if environment is None:
         raise ValueError('Ambiente inexistente')
@@ -349,7 +352,7 @@ def execute_suite(suite, cancel=None, on_progress=None, only_aliases=None):
     seq = suite.get('seq_start')   # own {{seq}} for this run, shadowing the app-wide one (None: use the global counter)
     summary = {'id': core.uid(), 'type': 'suite', 'suite_id': suite['id'], 'suite_name': suite.get('name', ''),
                'project_id': suite.get('project_id'), 'started_at': core.now(), 'case_runs': [],
-               'policy': {'on_failure': on_failure, 'retries': retries}}
+               'policy': {'on_failure': on_failure, 'retries': retries}, 'executed_by': executed_by}
     halt = None  # None | 'stopped' | 'cancelled'
     context = {}  # alias -> response of that step; lets a later step (maybe in another module) use it
     for step in core.suite_steps(suite):
@@ -382,7 +385,8 @@ def execute_suite(suite, cancel=None, on_progress=None, only_aliases=None):
         while True:
             attempts += 1
             result = _run_case(case, step_env, shared, context, step.get('enrich'),
-                               {'suite_id': suite['id'], 'suite_name': suite.get('name', ''), 'alias': alias, 'step_index': len(summary['case_runs']) + 1})
+                               {'suite_id': suite['id'], 'suite_name': suite.get('name', ''), 'alias': alias, 'step_index': len(summary['case_runs']) + 1,
+                                'executed_by': executed_by})
             if result['status'] == 'passed' or attempts > int(case.get('retries', retries)):
                 break
             if cancel is not None:
@@ -417,13 +421,15 @@ def execute_suite(suite, cancel=None, on_progress=None, only_aliases=None):
     return core.save('runs', summary)
 
 
-def execute_suite_group(group, cancel=None, on_progress=None):
+def execute_suite_group(group, cancel=None, on_progress=None, executed_by=None):
     """Corre todos los miembros de una Suite (grupo) en el orden declarado: cada Flujo vía execute_suite (con su
     propio motor completo: Sorteos, variables, encadenamiento), cada Caso suelto como un único envío contra el
-    ambiente del grupo. Agrega todo en un solo run tipo 'suite_group', consultable igual que uno de Flujo."""
+    ambiente del grupo. Agrega todo en un solo run tipo 'suite_group', consultable igual que uno de Flujo.
+    `executed_by` se estampa en el run combinado y se propaga a cada miembro (y, si un Flujo miembro tiene a su
+    vez varios pasos, a cada uno de esos pasos)."""
     environment = core.get('environments', group.get('environment_id')) if group.get('environment_id') else None
     summary = {'id': core.uid(), 'type': 'suite_group', 'group_id': group['id'], 'group_name': group.get('name', ''),
-               'project_id': group.get('project_id'), 'started_at': core.now(), 'item_runs': []}
+               'project_id': group.get('project_id'), 'started_at': core.now(), 'item_runs': [], 'executed_by': executed_by}
     halt = None
     for member in core.suite_group_members(group):
         if halt is None and cancel is not None and cancel.is_set():
@@ -436,7 +442,7 @@ def execute_suite_group(group, cancel=None, on_progress=None):
             if flow is None:
                 entry = {'type': 'flow', 'id': member['id'], 'status': 'error', 'error': 'Flujo inexistente'}
             else:
-                result = execute_suite(flow, cancel, on_progress)
+                result = execute_suite(flow, cancel, on_progress, executed_by=executed_by)
                 entry = {'type': 'flow', 'id': member['id'], 'name': flow.get('name', ''), 'run_id': result['id'], 'status': result['status']}
         else:
             case = core.get('cases', member['id'])
@@ -444,7 +450,7 @@ def execute_suite_group(group, cancel=None, on_progress=None):
                 reason = 'Caso inexistente' if case is None else 'Esta suite no tiene ambiente para casos sueltos'
                 entry = {'type': 'case', 'id': member['id'], 'status': 'error', 'error': reason}
             else:
-                result = _run_case(case, environment, {}, None, None, {'suite_group_id': group['id']})
+                result = _run_case(case, environment, {}, None, None, {'suite_group_id': group['id'], 'executed_by': executed_by})
                 entry = {'type': 'case', 'id': member['id'], 'name': case.get('name', ''), 'run_id': result['id'], 'status': result['status']}
         summary['item_runs'].append(entry)
         if on_progress:
@@ -461,7 +467,7 @@ def execute_suite_group(group, cancel=None, on_progress=None):
     return core.save('runs', summary)
 
 
-def execute_suite_many(suite, count, cancel=None, on_run=None):
+def execute_suite_many(suite, count, cancel=None, on_run=None, executed_by=None):
     """Corre la misma suite `count` veces seguidas (ej. N conversaciones con datos distintos). Cada corrida vuelve
     a sortear sus Sorteos y sus {{random:...}} sueltos de forma independiente — no es lo mismo que materializar N
     copias (`core.materialize_suite_variants`): acá no queda nada guardado más que las N corridas en el Historial,
@@ -473,7 +479,7 @@ def execute_suite_many(suite, count, cancel=None, on_run=None):
     for index in range(1, count + 1):
         if cancel is not None and cancel.is_set():
             break
-        result = execute_suite(suite, cancel=cancel)
+        result = execute_suite(suite, cancel=cancel, executed_by=executed_by)
         runs.append(result)
         if on_run:
             on_run(index, result)
@@ -481,7 +487,7 @@ def execute_suite_many(suite, count, cancel=None, on_run=None):
     return {'total': count, 'completed': len(runs), 'passed': passed, 'failed': len(runs) - passed, 'runs': runs}
 
 
-def execute_suites(suite_ids, cancel=None, on_run=None):
+def execute_suites(suite_ids, cancel=None, on_run=None, executed_by=None):
     """Corre cada Flujo de `suite_ids`, en ese orden, una sola vez cada uno. «Ejecutar todos los Flujos» pasa la
     lista completa del proyecto; «Ejecutar seleccionados» pasa solo los marcados — mismo mecanismo, misma función,
     nunca «todos» hardcodeado aparte. on_run(index, result) se llama después de cada corrida, para progreso en vivo."""
@@ -492,7 +498,7 @@ def execute_suites(suite_ids, cancel=None, on_run=None):
         suite = core.get('suites', suite_id)
         if suite is None:
             continue
-        result = execute_suite(suite, cancel=cancel)
+        result = execute_suite(suite, cancel=cancel, executed_by=executed_by)
         runs.append(result)
         if on_run:
             on_run(index, result)
@@ -500,7 +506,7 @@ def execute_suites(suite_ids, cancel=None, on_run=None):
     return {'total': len(suite_ids), 'completed': len(runs), 'passed': passed, 'failed': len(runs) - passed, 'runs': runs}
 
 
-def execute_suite_groups(group_ids, cancel=None, on_run=None):
+def execute_suite_groups(group_ids, cancel=None, on_run=None, executed_by=None):
     """Igual que execute_suites, pero para Suites (grupos) — «Ejecutar todas las Suites» / «seleccionadas»."""
     runs = []
     for index, group_id in enumerate(group_ids, 1):
@@ -509,7 +515,7 @@ def execute_suite_groups(group_ids, cancel=None, on_run=None):
         group = core.get('suite_groups', group_id)
         if group is None:
             continue
-        result = execute_suite_group(group, cancel=cancel)
+        result = execute_suite_group(group, cancel=cancel, executed_by=executed_by)
         runs.append(result)
         if on_run:
             on_run(index, result)
@@ -626,7 +632,7 @@ def dispatch_due(now_utc=None, grace_seconds=120):
         suite = core.get('suites', schedule['suite_id'])
         if suite and should_run and not project_disabled:
             try:
-                completed.append(execute_suite(suite))
+                completed.append(execute_suite(suite, executed_by='scheduler'))
             except Exception as exc:
                 logs.event('schedule.error', schedule=schedule['id'], error=str(exc))
     return completed

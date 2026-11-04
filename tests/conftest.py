@@ -1,6 +1,8 @@
 import keyring
 import keyring.backend
 import pytest
+from nicegui import app as nicegui_app
+from nicegui.testing import User
 from app import core
 
 
@@ -41,6 +43,26 @@ def sample_app():
 
 
 pytest_plugins = ['nicegui.testing.user_plugin']
+
+
+def pytest_configure(config):
+    config.addinivalue_line('markers', 'no_auto_login: skip the automatic test-account login (used by '
+                             'tests/test_auth_pages.py, which tests the login flow itself from a logged-out state)')
+
+
+@pytest.fixture
+async def user(user: User, request: pytest.FixtureRequest) -> User:
+    """Toda pantalla requiere sesión (common.protected_page) — para que las pruebas existentes (que abren una
+    ruta directamente) no tengan que loguearse una por una, este fixture sobreescribe el `user` de NiceGUI
+    (mismo nombre: pytest resuelve el parámetro `user` al fixture original del plugin) y loguea una cuenta de
+    prueba apenas se abre la primera página. @pytest.mark.no_auto_login lo salta (tests/test_auth_pages.py)."""
+    if request.node.get_closest_marker('no_auto_login'):
+        return user
+    test_account = core.create_user('Test', 'User', 'test@ltw.local', 'password', password='test-password-123')
+    await user.open('/login')
+    with user:
+        nicegui_app.storage.user['user_id'] = test_account['id']
+    return user
 
 
 @pytest.fixture

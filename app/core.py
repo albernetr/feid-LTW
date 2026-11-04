@@ -3,11 +3,14 @@ import contextlib
 import copy
 import csv
 import datetime as dt
+import hashlib
+import hmac
 import io
 import json
 import os
 import random
 import re
+import secrets as secrets_module
 import shutil
 import socket
 import sqlite3
@@ -21,6 +24,7 @@ from urllib.parse import urlparse, urljoin
 import httpx
 import truststore
 import yaml
+from . import azure_sql_backend
 
 VERSION = '1.0.0'
 LEGACY_ROOT = Path.home() / '.local_test_workspace'
@@ -55,7 +59,7 @@ SECRET_SERVICE = 'local-test-workspace'
 SENSITIVE_HEADERS = ('authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization')
 SENSITIVE_NAME = re.compile(r'token|password|passwd|secret|key|authorization|cookie', re.I)
 TABLES = ('projects', 'module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'datasets', 'suite_groups', 'integrations')
-ALL_TABLES = TABLES + ('settings', 'runs', 'taps', 'interfaces', 'lab_history', 'llm_profiles', 'sequences')
+ALL_TABLES = TABLES + ('settings', 'runs', 'taps', 'interfaces', 'lab_history', 'llm_profiles', 'sequences', 'users')
 UUID_RE = re.compile(r'^[0-9a-fA-F-]{8,64}$')
 
 
@@ -117,8 +121,11 @@ def _open(**kwargs):
 
 
 def initialize():
-    ROOT.mkdir(parents=True, exist_ok=True)
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
+    if azure_sql_backend.enabled():
+        azure_sql_backend.initialize(ALL_TABLES)
+        return
+    ROOT.mkdir(parents=True, exist_ok=True)
     with _open() as con:
         con.execute('PRAGMA journal_mode=' + ('DELETE' if on_network_drive(DB) else 'WAL'))
         for table in ALL_TABLES:
@@ -128,6 +135,9 @@ def initialize():
 def reset_workspace(remove_evidence=True):
     """Wipes the current workspace (database and, by default, evidence/): irreversible, meant for
     "start from zero". Secrets in the OS credential manager are untouched; they are not tied to this database."""
+    if azure_sql_backend.enabled():
+        raise ValueError('Reiniciar el workspace no está disponible con el backend Azure SQL: '
+                          'borra las tablas a mano en el servidor si realmente quieres empezar de cero.')
     for suffix in ('', '-wal', '-shm', '-journal'):
         path = Path(str(DB) + suffix)
         if path.exists():
@@ -144,6 +154,8 @@ def reset_workspace(remove_evidence=True):
 
 def list_items(table):
     initialize()
+    if azure_sql_backend.enabled():
+        return [json.loads(payload) for payload in azure_sql_backend.list_items(table)]
     with _open() as con:
         return [json.loads(row[0]) for row in con.execute(f'SELECT payload FROM {table} ORDER BY rowid DESC')]
 
@@ -158,6 +170,9 @@ def list_project_items(table, project_id):
 
 def get(table, identifier):
     initialize()
+    if azure_sql_backend.enabled():
+        payload = azure_sql_backend.get(table, identifier)
+        return json.loads(payload) if payload else None
     with _open() as con:
         row = con.execute(f'SELECT payload FROM {table} WHERE id=?', (identifier,)).fetchone()
     return json.loads(row[0]) if row else None
@@ -177,6 +192,9 @@ def save(table, item, expected_updated_at=_UNSET):
                 raise ConflictError('Otra persona modificó este registro mientras lo editabas. Recarga la página y vuelve a aplicar tus cambios.')
             return save_in(con, table, item)
     item['updated_at'] = now()
+    if azure_sql_backend.enabled():
+        azure_sql_backend.save(table, item['id'], json.dumps(item, ensure_ascii=False))
+        return item
     with _open() as con:
         con.execute(f'INSERT OR REPLACE INTO {table} VALUES (?,?)', (item['id'], json.dumps(item, ensure_ascii=False)))
     return item
@@ -184,14 +202,30 @@ def save(table, item, expected_updated_at=_UNSET):
 
 def delete(table, identifier):
     initialize()
+    if azure_sql_backend.enabled():
+        azure_sql_backend.delete(table, identifier)
+        return
     with _open() as con:
         con.execute(f'DELETE FROM {table} WHERE id=?', (identifier,))
 
 
 @contextlib.contextmanager
 def transaction():
-    """Single SQLite transaction; any exception rolls everything back."""
+    """Single transaction (SQLite or Azure SQL); any exception rolls everything back. Yields something that
+    supports `.execute(sql, params).fetchone()/.fetchall()` either way — see azure_sql_backend.TransactionCursor
+    for what makes that true on the Azure SQL side (it translates SQLite's `?` placeholders on the fly)."""
     initialize()
+    if azure_sql_backend.enabled():
+        con = azure_sql_backend.connect_for_transaction()
+        try:
+            yield azure_sql_backend.TransactionCursor(con)
+            con.commit()
+        except BaseException:
+            con.rollback()
+            raise
+        finally:
+            con.close()
+        return
     con = sqlite3.connect(DB, timeout=30, isolation_level=None)
     try:
         con.execute('BEGIN IMMEDIATE')
@@ -208,7 +242,11 @@ def save_in(con, table, item):
     item = copy.deepcopy(item)
     item.setdefault('id', uid())
     item['updated_at'] = now()
-    con.execute(f'INSERT OR REPLACE INTO {table} VALUES (?,?)', (item['id'], json.dumps(item, ensure_ascii=False)))
+    payload = json.dumps(item, ensure_ascii=False)
+    if azure_sql_backend.enabled():
+        con.upsert(table, item['id'], payload)
+    else:
+        con.execute(f'INSERT OR REPLACE INTO {table} VALUES (?,?)', (item['id'], payload))
     return item
 
 
@@ -498,7 +536,9 @@ def save_suite(name, environment_id, case_ids, project_id=None, **options):
     options: id, on_failure ('continue'|'stop'), retries, retry_delay_s, variables, feature_id (qué capacidad de
              negocio valida este flujo; opcional),
              steps (list of {case_id, alias, environment_id, enrich}: a flow across modules; replaces case_ids),
-             expected_updated_at (refuse the write if someone else saved the suite meanwhile).
+             created_by (id de `users` que lo creó; quien llama decide si preservarlo en una edición o asignarlo
+             recién, igual que ya hace con `id`), expected_updated_at (refuse the write if someone else saved
+             the suite meanwhile).
     """
     steps = options.get('steps')
     if steps is not None:
@@ -548,7 +588,7 @@ def save_suite(name, environment_id, case_ids, project_id=None, **options):
     draws = _validated_draws(options.get('draws') or [], project_id)
     item = {'name': name.strip(), 'environment_id': environment_id, 'case_ids': list(case_ids),
             'on_failure': on_failure, 'retries': retries, 'retry_delay_s': delay, 'variables': variables,
-            'seq_start': seq_start, 'feature_id': feature_id, 'draws': draws}
+            'seq_start': seq_start, 'feature_id': feature_id, 'draws': draws, 'created_by': options.get('created_by')}
     if steps is not None:
         item['steps'] = _validated_steps(steps, environment, project_id)
     if options.get('id'):
@@ -665,7 +705,8 @@ def save_suite_group(name, project_id, members, **options):
             raise ValueError('El ambiente no pertenece al proyecto activo')
     elif any(m['type'] == 'case' for m in clean):
         raise ValueError('Elige un ambiente: lo necesitan los casos sueltos del grupo')
-    item = {'name': name.strip(), 'members': clean, 'on_failure': on_failure, 'environment_id': environment_id}
+    item = {'name': name.strip(), 'members': clean, 'on_failure': on_failure, 'environment_id': environment_id,
+            'created_by': options.get('created_by')}
     if options.get('id'):
         item['id'] = options['id']
     if project_id is not None:
@@ -1390,6 +1431,97 @@ def secret_delete(name):
     except Exception:
         pass
     set_setting('secret_names', [n for n in secret_names() if n != name])
+
+
+# --------------------------------------------------------------------------- users & auth
+
+EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+AUTH_METHODS = ('password', 'windows')
+# Corridas sin sesión de navegador (programadas, o disparadas por el CLI/API de agente) no tienen un `users.id`
+# real para `executed_by` — estos dos valores de texto cubren esos casos; user_display_name() los resuelve igual
+# que resolvería un id real.
+AUTH_SENTINELS = {'scheduler': 'Programación automática', 'agent': 'Agente (CLI / API)'}
+PBKDF2_ITERATIONS = 260_000
+
+
+def hash_password(password):
+    salt = secrets_module.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, PBKDF2_ITERATIONS)
+    return f'pbkdf2_sha256${PBKDF2_ITERATIONS}${salt.hex()}${digest.hex()}'
+
+
+def verify_password(password, stored):
+    try:
+        algo, iterations, salt_hex, hash_hex = (stored or '').split('$')
+        if algo != 'pbkdf2_sha256':
+            return False
+        digest = hashlib.pbkdf2_hmac('sha256', (password or '').encode('utf-8'), bytes.fromhex(salt_hex), int(iterations))
+        return hmac.compare_digest(digest.hex(), hash_hex)
+    except (ValueError, AttributeError):
+        return False
+
+
+def get_user_by_email(email):
+    email = (email or '').strip().lower()
+    return next((u for u in list_items('users') if (u.get('email') or '').strip().lower() == email), None)
+
+
+def get_user_by_windows_username(username):
+    username = (username or '').strip().lower()
+    return next((u for u in list_items('users') if (u.get('windows_username') or '').strip().lower() == username), None)
+
+
+def create_user(first_name, last_name, email, auth_method, password=None, windows_username=None):
+    """Una cuenta mínima: nombre, apellidos y correo, con uno de dos métodos de login — 'password' (hash
+    PBKDF2-HMAC-SHA256, sin dependencia nueva) o 'windows' (confía en el usuario del SO, sin contraseña)."""
+    first_name, last_name, email = (first_name or '').strip(), (last_name or '').strip(), (email or '').strip()
+    if not first_name or not last_name:
+        raise ValueError('Nombre y apellidos son obligatorios')
+    if not EMAIL_RE.match(email):
+        raise ValueError('Correo inválido')
+    if auth_method not in AUTH_METHODS:
+        raise ValueError('Método de autenticación inválido')
+    if get_user_by_email(email):
+        raise ValueError(f'Ya existe una cuenta con el correo «{email}»')
+    item = {'first_name': first_name, 'last_name': last_name, 'email': email, 'auth_method': auth_method, 'created_at': now()}
+    if auth_method == 'password':
+        if not password or len(password) < 8:
+            raise ValueError('La contraseña debe tener al menos 8 caracteres')
+        item['password_hash'] = hash_password(password)
+    else:
+        windows_username = (windows_username or '').strip()
+        if not windows_username:
+            raise ValueError('Falta el usuario de Windows')
+        if get_user_by_windows_username(windows_username):
+            raise ValueError(f'Ya existe una cuenta para el usuario de Windows «{windows_username}»')
+        item['windows_username'] = windows_username
+    return save('users', item)
+
+
+def authenticate_password(email, password):
+    user = get_user_by_email(email)
+    if user and user.get('auth_method') == 'password' and verify_password(password, user.get('password_hash', '')):
+        return user
+    return None
+
+
+def delete_user(user_id):
+    if len(list_items('users')) <= 1:
+        raise ValueError('No se puede eliminar el último usuario: nadie podría volver a entrar')
+    delete('users', user_id)
+
+
+def user_display_name(value):
+    """Resuelve un created_by/executed_by: un id de `users`, uno de los AUTH_SENTINELS (corrida sin sesión de
+    navegador), o vacío."""
+    if not value:
+        return '—'
+    if value in AUTH_SENTINELS:
+        return AUTH_SENTINELS[value]
+    user = get('users', value)
+    if user:
+        return f'{user.get("first_name", "")} {user.get("last_name", "")}'.strip()
+    return '(usuario eliminado)'
 
 
 # --------------------------------------------------------------------------- variables

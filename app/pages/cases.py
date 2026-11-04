@@ -1,7 +1,7 @@
 import json
 from nicegui import ui, run
 from .. import core
-from .common import frame, guard, confirm, empty_state, require_project, kv_editor, show_run, status_badge
+from .common import frame, guard, confirm, empty_state, require_project, kv_editor, show_run, status_badge, protected_page, current_user_id
 from .widgets import assertion_rows, dynamic_variable_chips
 
 HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
@@ -20,14 +20,14 @@ async def run_case(case, env_id):
         ui.label('Ejecutando…')
     busy.open()
     try:
-        result = await run.io_bound(core.execute_api, case, env)
+        result = await run.io_bound(core.execute_api, case, env, meta={'executed_by': current_user_id()})
     finally:
         busy.close()
     show_run(result)
     return result
 
 
-@ui.page('/cases')
+@protected_page('/cases')
 def cases_list():
     with frame('Casos API', '/cases'):
         if not require_project():
@@ -89,7 +89,7 @@ def cases_list():
         render()
 
 
-@ui.page('/cases/edit')
+@protected_page('/cases/edit')
 def case_edit(id: str = '', module: str = '', op: int = -1):
     with frame('Editor de caso API', '/cases'):
         if not require_project():
@@ -136,6 +136,8 @@ def case_edit(id: str = '', module: str = '', op: int = -1):
 
         with ui.card().classes('w-full'):
             name = ui.input('Nombre del caso', value=base['name']).props('outlined dense').classes('w-full')
+            if current and current.get('created_by'):
+                ui.label(f'Creado por: {core.user_display_name(current["created_by"])}').classes('text-xs text-gray-500')
             with ui.row().classes('w-full items-center gap-3'):
                 method = ui.select(HTTP_METHODS, value=base.get('method', 'GET'), label='Método').props('outlined dense').classes('w-32')
                 path = ui.input('Ruta (admite {{variables}})', value=base.get('path', '/')).props('outlined dense').classes('grow')
@@ -237,7 +239,8 @@ def case_edit(id: str = '', module: str = '', op: int = -1):
                     'path': path.value.strip(), 'timeout': timeout.value or 20, 'body': data,
                     'headers': {k: v for k, v in headers.items() if k.strip()}, 'query': {k: v for k, v in query.items() if k.strip()},
                     'variables': {k: v for k, v in variables.items() if k.strip()},
-                    'assertions': rules, 'extract': [dict(r, name=r['name'].strip()) for r in extracts], 'tags': base.get('tags', [])}
+                    'assertions': rules, 'extract': [dict(r, name=r['name'].strip()) for r in extracts], 'tags': base.get('tags', []),
+                    'created_by': (current or {}).get('created_by') or current_user_id()}
             return item
 
         ui.separator()

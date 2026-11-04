@@ -1,9 +1,9 @@
 from nicegui import run, ui
 from .. import core, llm
-from .common import frame, guard, confirm, empty_state
+from .common import frame, guard, confirm, empty_state, protected_page
 
 
-@ui.page('/models')
+@protected_page('/models')
 def models_list():
     with frame('Modelos de IA', '/models'):
         ui.label('Registra aquí cada modelo al que te puedas conectar (local o en la nube); después elígelo desde «Usar este», '
@@ -79,7 +79,7 @@ def models_list():
         ui.label('El modelo «en uso» es el que de verdad consulta la pestaña Agente del Espacio de trabajo.').classes('text-xs text-gray-500')
 
 
-@ui.page('/models/edit')
+@protected_page('/models/edit')
 def model_edit(id: str = ''):
     with frame('Modelo' if id else 'Nuevo modelo', '/models'):
         current = llm.get_profile(id) if id else None

@@ -6,14 +6,14 @@ import copy
 import json
 from nicegui import ui, run
 from .. import core, workspace as ws
-from .common import frame, guard
+from .common import frame, guard, protected_page
 from .widgets import kv_rows, dynamic_variable_chips
 
 HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 HEADER_SUGGESTIONS = (('+ Content-Type', 'Content-Type', 'application/json'), ('+ Accept', 'Accept', 'application/json'), ('+ Bearer', 'Authorization', 'Bearer {{secret:TOKEN}}'))
 
 
-@ui.page('/chat')
+@protected_page('/chat')
 def chat_route(case: str = ''):
     with frame('Chat', '/chat', wide=True):
         build(preset_case_id=case)

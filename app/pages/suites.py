@@ -2,7 +2,7 @@ import asyncio
 import json
 from nicegui import ui, run
 from .. import core, automation
-from .common import frame, guard, confirm, empty_state, require_project, kv_editor, show_run, status_badge, parse_value, show_value
+from .common import frame, guard, confirm, empty_state, require_project, kv_editor, show_run, status_badge, parse_value, show_value, protected_page, current_user_id
 from .widgets import assertion_rows, json_box, dynamic_variable_chips
 from .cases import HTTP_METHODS
 
@@ -22,7 +22,7 @@ async def run_suite(suite):
     dialog.open()
     timer = ui.timer(0.5, lambda: status.set_text(f'{len(progress)} de {len(suite["case_ids"])} casos terminados'))
     try:
-        result = await run.io_bound(automation.execute_suite, suite, token, progress.append)
+        result = await run.io_bound(automation.execute_suite, suite, token, progress.append, executed_by=current_user_id())
     finally:
         timer.cancel()
         dialog.close()
@@ -92,7 +92,7 @@ async def run_many_suites(ids, title):
             progress['passed'] += 1
     timer = ui.timer(0.5, lambda: status.set_text(f'{progress["done"]} de {len(ids)} flujo(s) terminados · {progress["passed"]} pasaron'))
     try:
-        summary = await run.io_bound(automation.execute_suites, ids, token, on_run)
+        summary = await run.io_bound(automation.execute_suites, ids, token, on_run, executed_by=current_user_id())
     finally:
         timer.cancel()
         dialog.close()
@@ -148,7 +148,7 @@ async def run_suite_partial(suite):
     dialog.open()
     timer = ui.timer(0.5, lambda: status.set_text(f'{len(progress)} de {len(core.suite_steps(suite))} paso(s) terminados'))
     try:
-        result = await run.io_bound(automation.execute_suite, suite, token, progress.append, only)
+        result = await run.io_bound(automation.execute_suite, suite, token, progress.append, only, executed_by=current_user_id())
     finally:
         timer.cancel()
         dialog.close()
@@ -179,7 +179,7 @@ async def run_suite_many(suite):
             progress['passed'] += 1
     timer = ui.timer(0.5, lambda: status.set_text(f'{progress["done"]} de {count} corridas · {progress["passed"]} pasaron'))
     try:
-        summary = await run.io_bound(automation.execute_suite_many, suite, count, token, on_run)
+        summary = await run.io_bound(automation.execute_suite_many, suite, count, token, on_run, executed_by=current_user_id())
     finally:
         timer.cancel()
         dialog.close()
@@ -213,7 +213,7 @@ def flow_summary(suite):
     return ' → '.join(names), enriched
 
 
-@ui.page('/suites')
+@protected_page('/suites')
 def suites_list():
     with frame('Flujos', '/suites'):
         if not require_project():
@@ -251,7 +251,8 @@ def suites_list():
                                 ui.badge(fname, color='pink')
                         policy = 'se detiene al primer fallo' if suite.get('on_failure') == 'stop' else 'continúa tras fallos'
                         ui.label(f'{len(suite["case_ids"])} casos · {route} · {policy} · {suite.get("retries", 0)} reintento(s)'
-                                 + (f' · {enriched} paso(s) enriquecido(s)' if enriched else '')).classes('text-sm text-gray-500')
+                                 + (f' · {enriched} paso(s) enriquecido(s)' if enriched else '')
+                                 + (f' · creado por {core.user_display_name(suite["created_by"])}' if suite.get('created_by') else '')).classes('text-sm text-gray-500')
                     ui.button(icon='play_arrow', on_click=guard(lambda s=suite: run_suite(s))).props('flat round color=positive').tooltip('Ejecutar')
                     ui.button(icon='checklist', on_click=guard(lambda s=suite: run_suite_partial(s))).props('flat round color=positive').tooltip('Ejecutar solo algunos pasos (retest parcial)')
                     ui.button(icon='repeat', on_click=guard(lambda s=suite: run_suite_many(s))).props('flat round color=positive').tooltip('Ejecutar N veces (datos aleatorios distintos en cada una)')
@@ -371,7 +372,7 @@ def enrichment_dialog(steps, index, on_close):
     dialog.open()
 
 
-@ui.page('/suites/edit')
+@protected_page('/suites/edit')
 def suite_edit(id: str = ''):
     with frame('Editor de flujo', '/suites'):
         if not require_project():
@@ -617,7 +618,7 @@ def suite_edit(id: str = ''):
             def save():
                 options = dict(id=(current or {}).get('id'), on_failure=on_failure.value, retries=int(retries.value or 0), retry_delay_s=float(delay.value or 0),
                                variables={k: v for k, v in variables.items() if k.strip()}, seq_start=seq_start.value, steps=steps, feature_id=feature.value,
-                               draws=draws)
+                               draws=draws, created_by=(current or {}).get('created_by') or current_user_id())
                 if current:
                     options['expected_updated_at'] = current.get('updated_at')       # refuse to overwrite someone else's changes
                 saved = core.save_suite(name.value or '', env.value, [], pid, **options)

@@ -4,7 +4,7 @@ solo reporte combinado — a diferencia de un Flujo, que es UNA secuencia ordena
 con lo suyo propio; lo único que comparten es el ambiente (para los Casos sueltos) y quedar en un solo reporte."""
 from nicegui import ui, run
 from .. import core, automation
-from .common import frame, guard, confirm, empty_state, require_project, show_run, status_badge
+from .common import frame, guard, confirm, empty_state, require_project, show_run, status_badge, protected_page, current_user_id
 
 
 async def run_group(group):
@@ -22,7 +22,7 @@ async def run_group(group):
     dialog.open()
     timer = ui.timer(0.5, lambda: status.set_text(f'{len(progress)} de {len(group["members"])} miembros terminados'))
     try:
-        result = await run.io_bound(automation.execute_suite_group, group, token, progress.append)
+        result = await run.io_bound(automation.execute_suite_group, group, token, progress.append, executed_by=current_user_id())
     finally:
         timer.cancel()
         dialog.close()
@@ -68,14 +68,14 @@ async def run_many_groups(ids, title):
             progress['passed'] += 1
     timer = ui.timer(0.5, lambda: status.set_text(f'{progress["done"]} de {len(ids)} suite(s) terminadas · {progress["passed"]} pasaron'))
     try:
-        summary = await run.io_bound(automation.execute_suite_groups, ids, token, on_run)
+        summary = await run.io_bound(automation.execute_suite_groups, ids, token, on_run, executed_by=current_user_id())
     finally:
         timer.cancel()
         dialog.close()
     _show_batch_result(summary, lambda index, r: r.get('group_name') or f'#{index}')
 
 
-@ui.page('/suite-groups')
+@protected_page('/suite-groups')
 def suite_groups_list():
     with frame('Suites', '/suite-groups'):
         if not require_project():
@@ -109,7 +109,8 @@ def suite_groups_list():
                         policy = 'se detiene al primer fallo' if group.get('on_failure') == 'stop' else 'continúa tras fallos'
                         flows = sum(1 for m in group['members'] if m['type'] == 'flow')
                         cases = sum(1 for m in group['members'] if m['type'] == 'case')
-                        ui.label(f'{flows} flujo(s) · {cases} caso(s) suelto(s) · {policy}').classes('text-sm text-gray-500')
+                        ui.label(f'{flows} flujo(s) · {cases} caso(s) suelto(s) · {policy}'
+                                 + (f' · creado por {core.user_display_name(group["created_by"])}' if group.get('created_by') else '')).classes('text-sm text-gray-500')
                     ui.button(icon='play_arrow', on_click=guard(lambda g=group: run_group(g))).props('flat round color=positive').tooltip('Ejecutar')
                     ui.button(icon='edit', on_click=lambda _, i=group['id']: ui.navigate.to(f'/suite-groups/edit?id={i}')).props('flat round').tooltip('Editar')
 
@@ -119,7 +120,7 @@ def suite_groups_list():
                     ui.button(icon='delete', on_click=lambda _, g=group, r=remove: confirm(f'¿Eliminar la suite «{g["name"]}»?', r)).props('flat round color=negative')
 
 
-@ui.page('/suite-groups/edit')
+@protected_page('/suite-groups/edit')
 def suite_group_edit(id: str = ''):
     with frame('Editor de suite', '/suite-groups'):
         if not require_project():
@@ -198,7 +199,8 @@ def suite_group_edit(id: str = ''):
                 chosen()
 
         def save():
-            options = dict(id=(current or {}).get('id'), on_failure=on_failure.value, environment_id=env.value)
+            options = dict(id=(current or {}).get('id'), on_failure=on_failure.value, environment_id=env.value,
+                           created_by=(current or {}).get('created_by') or current_user_id())
             if current:
                 options['expected_updated_at'] = current.get('updated_at')
             saved = core.save_suite_group(name.value or '', pid, members, **options)

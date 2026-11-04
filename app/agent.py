@@ -474,7 +474,7 @@ def run_spec(spec, project_name=None, overrides=None, only=None, ltw_command=Non
     for item in spec.get('suites', []):
         if only and not {s['case'] for s in item['steps']} & only:
             continue
-        suite_run = automation.execute_suite(suites[item['name']])
+        suite_run = automation.execute_suite(suites[item['name']], executed_by='agent')
         for entry in suite_run['case_runs']:
             if entry.get('run_id'):
                 collect(entry['run_id'], suite_run, entry.get('alias'))
@@ -488,7 +488,7 @@ def run_spec(spec, project_name=None, overrides=None, only=None, ltw_command=Non
         env = imported['environments'].get(item.get('environment') or default_env)
         if env is None:
             raise SpecError([{'path': '$.cases', 'message': f'El caso «{item["name"]}» no tiene ambiente: define environment o default_environment'}])
-        run = core.execute_api(cases[item['name']], env)
+        run = core.execute_api(cases[item['name']], env, meta={'executed_by': 'agent'})
         collect(run['id'])
     counts = {s: sum(1 for r in results if r['status'] == s) for s in ('passed', 'failed', 'error')}
     report = {'format': FORMAT_REPORT, 'generated_at': core.now(), 'tool': {'name': 'local-test-workspace', 'version': core.VERSION},

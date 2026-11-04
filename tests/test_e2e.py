@@ -420,3 +420,53 @@ def test_partial_retest_skips_steps_and_reuses_their_last_response_for_enrichmen
     assert retest['status'] == 'passed', retest
     statuses = {r['alias']: r['status'] for r in retest['case_runs']}
     assert statuses == {'login': 'skipped', 'medio': 'skipped', 'crear': 'passed'}
+
+
+def test_executed_by_is_stamped_on_the_suite_run_and_on_every_step(world):
+    """Quién ejecutó un Flujo debe quedar en el run combinado Y en el run propio de cada paso (cada uno es
+    consultable por separado desde el Historial)."""
+    user = core.create_user('Ana', 'Pérez', 'ana@acme.com', 'password', password='algomuylargo')
+    case = world['api_case']('health', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    suite = core.save_suite('s', world['env']['id'], [case['id']], world['pid'])
+    result = automation.execute_suite(suite, executed_by=user['id'])
+    assert result['executed_by'] == user['id']
+    step_run = core.get('runs', result['case_runs'][0]['run_id'])
+    assert step_run['executed_by'] == user['id']
+
+
+def test_executed_by_propagates_into_a_suite_group_and_its_nested_flow(world):
+    user = core.create_user('Ana', 'Pérez', 'ana@acme.com', 'password', password='algomuylargo')
+    flow_case = world['api_case']('paso', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    flow = core.save_suite('mini flujo', world['env']['id'], [flow_case['id']], world['pid'])
+    loose_case = world['api_case']('suelto', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    group = core.save_suite_group('g', world['pid'], [{'type': 'flow', 'id': flow['id']}, {'type': 'case', 'id': loose_case['id']}],
+                                  environment_id=world['env']['id'])
+    result = automation.execute_suite_group(group, executed_by=user['id'])
+    assert result['executed_by'] == user['id']
+    flow_run = core.get('runs', result['item_runs'][0]['run_id'])
+    assert flow_run['executed_by'] == user['id']                       # el Flujo miembro hereda el mismo executed_by
+    assert core.get('runs', flow_run['case_runs'][0]['run_id'])['executed_by'] == user['id']   # y su propio paso también
+    case_run = core.get('runs', result['item_runs'][1]['run_id'])
+    assert case_run['executed_by'] == user['id']                       # el Caso suelto miembro también
+
+
+def test_execute_suites_and_execute_suite_groups_forward_executed_by(world):
+    user = core.create_user('Ana', 'Pérez', 'ana@acme.com', 'password', password='algomuylargo')
+    case = world['api_case']('health', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    suite = core.save_suite('s', world['env']['id'], [case['id']], world['pid'])
+    batch = automation.execute_suites([suite['id']], executed_by=user['id'])
+    assert batch['runs'][0]['executed_by'] == user['id']
+    group = core.save_suite_group('g', world['pid'], [{'type': 'case', 'id': case['id']}], environment_id=world['env']['id'])
+    batch_groups = automation.execute_suite_groups([group['id']], executed_by=user['id'])
+    assert batch_groups['runs'][0]['executed_by'] == user['id']
+
+
+def test_dispatch_due_stamps_scheduled_runs_with_the_scheduler_sentinel(world):
+    case = world['api_case']('health', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    suite = core.save_suite('s', world['env']['id'], [case['id']], world['pid'])
+    schedule = automation.create_schedule(suite['id'], 'daily', '00:00', 'UTC')
+    schedule['next_run_at'] = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=1)).isoformat()
+    core.save('schedules', schedule)
+    completed = automation.dispatch_due()
+    assert len(completed) == 1 and completed[0]['executed_by'] == 'scheduler'
+    assert core.user_display_name('scheduler') == 'Programación automática'

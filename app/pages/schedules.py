@@ -1,9 +1,9 @@
 from nicegui import ui, run
 from .. import core, automation
-from .common import frame, guard, confirm, empty_state, require_project, fmt_time, show_run
+from .common import frame, guard, confirm, empty_state, require_project, fmt_time, show_run, protected_page, current_user_id
 
 
-@ui.page('/schedules')
+@protected_page('/schedules')
 def schedules():
     with frame('Programaciones', '/schedules'):
         if not require_project():
@@ -69,7 +69,7 @@ def schedules():
                         target = core.get('suites', s['suite_id'])
                         if target is None:
                             raise ValueError('El flujo ya no existe')
-                        show_run(await run.io_bound(automation.execute_suite, target))
+                        show_run(await run.io_bound(automation.execute_suite, target, executed_by=current_user_id()))
                     ui.button(icon='play_arrow', on_click=guard(now)).props('flat round dense color=positive').tooltip('Ejecutar ahora')
 
                     def remove(s=item):

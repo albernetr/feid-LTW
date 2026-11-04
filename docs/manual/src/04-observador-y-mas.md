@@ -294,3 +294,26 @@ Qué hace LTW para que sea seguro con pocas personas a la vez:
 **Qué no se comparte:** los **secretos** (están en el Administrador de credenciales de cada equipo) y las posiciones de los paneles.
 
 > **Límites.** Está pensado para **pocas personas simultáneas**, no para uso intensivo concurrente. Algunos NAS no respetan bien los bloqueos de archivos; si ves comportamientos extraños, trabajad por paquetes. El token de la API local para agentes también vive en la base: con una base compartida, quien tenga acceso a ella lo ve (puedes regenerarlo). Haz **copias de seguridad** copiando la carpeta `data\` con la aplicación cerrada.
+
+## 15.3 Cuentas: quién creó y quién ejecutó cada cosa
+
+Con una base compartida, **cada persona entra con su propia cuenta** (ver «Primer inicio de sesión» en el [capítulo 2](#2-instalación-y-puesta-en-marcha)) — correo/contraseña o su propio usuario de Windows. A partir de ahí, un Caso, un Flujo o una Suite recuerda quién lo **creó** (se muestra en el editor y, para Flujos/Suites, en la propia tarjeta de la lista), y cada corrida recuerda quién la **ejecutó** (columna «Ejecutado por» en el [Historial](#13-historial-de-ejecuciones-y-evidencias) y en el detalle de cualquier corrida). Una corrida disparada por una **Programación** automática aparece como «Programación automática»; una disparada por el CLI o la API de agente, como «Agente (CLI / API)» — ninguna de las dos tiene una sesión de navegador detrás. Las cuentas se guardan **en la base, pero no viajan** en un paquete exportado (ver «Paquetes (traspaso)», más arriba): cada base comparte su propia lista de cuentas, no se mezclan entre exportar e importar.
+
+## 15.4 Azure SQL (alternativa a la base de datos compartida en red)
+
+En vez de apuntar `TEST_WORKSPACE_HOME` a una carpeta de red (15.2), la base de datos puede vivir directamente en **Azure SQL** — una base real en la nube, sin depender de que todas las personas tengan acceso al mismo recurso de red. Mismo esquema de datos, mismas funciones de `core.py`; solo cambia dónde vive el archivo.
+
+Para activarlo, definí estas variables de entorno antes de arrancar (nunca escribas la contraseña en un archivo que se comparta o se suba a control de versiones):
+
+```bat
+set LTW_BACKEND=azure_sql
+set LTW_AZURE_SQL_SERVER=tu-servidor.database.windows.net
+set LTW_AZURE_SQL_DATABASE=tu_base
+set LTW_AZURE_SQL_USER=tu_usuario
+set LTW_AZURE_SQL_PASSWORD=tu_contraseña
+scripts\run.bat
+```
+
+`python run.py --check-storage` confirma qué backend está activo y, si es Azure SQL, prueba la conexión sin tocar ninguna tabla — útil antes de arrancar la aplicación completa. Usa **autenticación SQL** (usuario/contraseña, no Microsoft Entra ID) y el driver `python-tds` (sin instalar el driver ODBC de Microsoft). El servidor de Azure SQL debe permitir la conexión desde tu IP (**firewall** del servidor, en el Portal de Azure).
+
+**Límites:** pensado igual que la base compartida en red, para pocas personas a la vez, no para uso intensivo concurrente; `--reset-workspace` no está disponible con este backend (hay que vaciar las tablas a mano en el servidor); los secretos siguen sin viajar (están en el Administrador de credenciales de cada equipo, nunca en Azure SQL).

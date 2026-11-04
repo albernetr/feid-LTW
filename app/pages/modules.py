@@ -1,7 +1,7 @@
 from urllib.parse import quote
 from nicegui import ui, run
 from .. import core, explorer, automation, reporting
-from .common import frame, guard, confirm, empty_state, require_project, read_upload
+from .common import frame, guard, confirm, empty_state, require_project, read_upload, protected_page
 
 MAX_SPEC_BYTES = core.MAX_SPEC_BYTES
 STATUS_LABELS = core.COMPONENT_STATUS_LABELS
@@ -275,7 +275,7 @@ def _manual_operations_card(module, pid, operations=None, refreshers=None, count
             ui.button('Agregar endpoint', icon='add', on_click=guard(add_operation)).props('outline no-caps').mark('component-add-operation')
 
 
-@ui.page('/modules')
+@protected_page('/modules')
 def modules_list():
     with frame('Componentes', '/modules'):
         if not require_project():
@@ -408,7 +408,7 @@ def _register_component_form(pid):
         ui.button('Registrar componente', icon='add', on_click=guard(register)).props('color=primary').mark('component-create')
 
 
-@ui.page('/modules/edit')
+@protected_page('/modules/edit')
 def module_detail(id: str = '', tab: str = '', subtab: str = ''):
     with frame('Componente' if id else 'Registrar componente', '/modules', wide=True):
         with ui.column().classes('w-full p-4 gap-4'):

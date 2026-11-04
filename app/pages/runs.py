@@ -1,9 +1,9 @@
 from nicegui import ui
 from .. import core
-from .common import frame, guard, confirm, empty_state, fmt_time, show_run, STATUS_LABEL
+from .common import frame, guard, confirm, empty_state, fmt_time, show_run, STATUS_LABEL, protected_page
 
 
-@ui.page('/runs')
+@protected_page('/runs')
 def runs_page():
     with frame('Historial de ejecuciones', '/runs'):
         pid = core.get_active_project_id()
@@ -20,6 +20,7 @@ def runs_page():
             {'name': 'name', 'label': 'Nombre', 'field': 'name', 'align': 'left'},
             {'name': 'status', 'label': 'Estado', 'field': 'status', 'align': 'left'},
             {'name': 'detail', 'label': 'Detalle', 'field': 'detail', 'align': 'left'},
+            {'name': 'executed_by', 'label': 'Ejecutado por', 'field': 'executed_by', 'align': 'left'},
         ]
 
         def rows():
@@ -33,7 +34,8 @@ def runs_page():
                           f'{len(run.get("item_runs", []))} miembro(s)' if run['type'] == 'suite_group' else run.get('error', '')[:80])
                 type_label = {'suite': 'FLUJO', 'suite_group': 'SUITE'}.get(run['type'], run['type'].upper())
                 result.append({'id': run['id'], 'started': fmt_time(run.get('started_at')), 'type': type_label, 'name': label,
-                               'status': STATUS_LABEL.get(run['status'], run['status']), 'detail': detail})
+                               'status': STATUS_LABEL.get(run['status'], run['status']), 'detail': detail,
+                               'executed_by': core.user_display_name(run.get('executed_by'))})
             return result
         if not all_runs:
             empty_state('Todavía no hay ejecuciones.')

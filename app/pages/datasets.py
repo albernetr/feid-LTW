@@ -7,7 +7,7 @@ la misma conversación compartan la fila sorteada (la misma persona en todo el f
 import random
 from nicegui import ui
 from .. import core
-from .common import frame, guard, confirm, empty_state, require_project, read_upload
+from .common import frame, guard, confirm, empty_state, require_project, read_upload, protected_page
 
 
 def dataset_grid_editor(columns, rows):
@@ -72,7 +72,7 @@ def dataset_grid_editor(columns, rows):
     return view
 
 
-@ui.page('/datasets')
+@protected_page('/datasets')
 def datasets_page():
     with frame('Conjuntos de datos', '/datasets'):
         if not require_project():

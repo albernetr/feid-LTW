@@ -1,7 +1,7 @@
 import json
 from nicegui import run, ui
 from .. import core
-from .common import frame, guard, confirm, empty_state, require_project, kv_editor
+from .common import frame, guard, confirm, empty_state, require_project, kv_editor, protected_page
 
 AUTH_LABELS = {'none': 'Sin autenticación', 'bearer': 'Bearer', 'api_key': 'API Key'}
 
@@ -26,7 +26,7 @@ def _delete_environment(env_id, env_name, on_done):
     confirm(f'¿Eliminar el ambiente «{env_name}»?', attempt)
 
 
-@ui.page('/environments')
+@protected_page('/environments')
 def environments_list():
     with frame('Ambientes y secretos', '/environments'):
         if not require_project():
@@ -108,7 +108,7 @@ def environments_list():
                             ui.button(icon='close', on_click=lambda _, n=secret_item, r=drop: confirm(f'¿Eliminar el secreto «{n}»?', r)).props('flat round dense size=sm color=negative')
 
 
-@ui.page('/environments/edit')
+@protected_page('/environments/edit')
 def environment_edit(id: str = ''):
     with frame('Ambiente' if id else 'Nuevo ambiente', '/environments'):
         if not require_project():

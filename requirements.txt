@@ -6,4 +6,6 @@ playwright>=1.50,<2
 jsonschema>=4.20,<5
 keyring>=25,<26
 python-docx>=1.1,<2
+python-tds>=1.15,<2
+pyOpenSSL>=24,<27
 tzdata>=2024.1; platform_system == "Windows"

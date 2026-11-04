@@ -80,6 +80,21 @@ async def test_pages_render_with_data(user: User):
     await user.should_see('Lunes a viernes')
 
 
+async def test_creating_and_running_a_case_from_the_ui_stamps_created_by_and_executed_by(user: User):
+    """Smoke test de punta a punta: la cuenta con la que `user` está logueada (conftest.py la loguea sola)
+    debe quedar registrada como autora y ejecutora — no solo en core.py, sino a través de la pantalla real."""
+    seed()
+    await user.open('/cases/edit')
+    user.find('Nombre del caso').clear().type('Caso de autoría')
+    user.find('Guardar y ejecutar').click()
+    await eventually(lambda: core.list_items('users') and any(c['name'] == 'Caso de autoría' for c in core.list_items('cases')))
+    case = next(c for c in core.list_items('cases') if c['name'] == 'Caso de autoría')
+    test_account = core.get_user_by_email('test@ltw.local')
+    assert case['created_by'] == test_account['id']
+    run = next(r for r in core.list_items('runs') if r.get('case_id') == case['id'])
+    assert run['executed_by'] == test_account['id']
+
+
 async def test_openapi_upload_works_with_nicegui_3(user: User):
     from nicegui import ui
     from nicegui.elements.upload_files import SmallFileUpload

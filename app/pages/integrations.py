@@ -3,12 +3,12 @@ item, usando credenciales propias del usuario — mismo almacén que la autentic
 (core.secret_set/secret_get)."""
 from nicegui import ui, run
 from .. import core, integrations
-from .common import frame, guard, confirm, empty_state, require_project
+from .common import frame, guard, confirm, empty_state, require_project, protected_page
 
 PLATFORM_ICON = {'jira': 'bug_report', 'azdo': 'account_tree'}
 
 
-@ui.page('/integrations')
+@protected_page('/integrations')
 def integrations_list():
     with frame('Integraciones', '/integrations'):
         if not require_project():
@@ -38,7 +38,7 @@ def integrations_list():
                     ui.button(icon='delete', on_click=lambda _, i=item, r=remove: confirm(f'¿Eliminar la integración «{i["name"]}»?', r)).props('flat round color=negative')
 
 
-@ui.page('/integrations/edit')
+@protected_page('/integrations/edit')
 def integration_edit(id: str = ''):
     with frame('Integración', '/integrations'):
         if not require_project():

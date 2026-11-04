@@ -4,7 +4,7 @@ import json
 import os
 from nicegui import app, ui, run
 from .. import core, workspace as ws, agent, llm
-from .common import frame, guard, confirm, fmt_time
+from .common import frame, guard, confirm, fmt_time, protected_page
 from .suites import run_suite
 from .widgets import kv_rows, assertion_rows, method_badge, status_chip
 
@@ -42,12 +42,12 @@ def short_target(key):
         return key or '', ''
 
 
-@ui.page('/lab')
+@protected_page('/lab')
 def lab_redirect():
     ui.navigate.to('/workspace')
 
 
-@ui.page('/workspace')
+@protected_page('/workspace')
 def workspace_page(case: str = '', method: str = '', path: str = '', environment: str = '', module: str = ''):
     with frame('Espacio de trabajo', '/workspace', wide=True):
         build(preset_case_id=case, prefill=(method, path, environment, module) if not case and method else None)

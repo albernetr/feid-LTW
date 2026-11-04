@@ -2,7 +2,7 @@
 import json
 from nicegui import ui
 from .. import core, observer as obs
-from .common import frame, guard, confirm, empty_state, require_project, fmt_time
+from .common import frame, guard, confirm, empty_state, require_project, fmt_time, protected_page
 
 STATE_COLOR = {'sin línea base': 'grey', 'sin cambios': 'positive'}
 
@@ -12,7 +12,7 @@ def state_badge(doc):
     return ui.badge(state, color=STATE_COLOR.get(state, 'negative'))
 
 
-@ui.page('/observer')
+@protected_page('/observer')
 def observer_page():
     with frame('Observador de interfaces', '/observer'):
         if not require_project():
@@ -154,7 +154,7 @@ def _field_rows(section):
     return rows
 
 
-@ui.page('/observer/interface')
+@protected_page('/observer/interface')
 def interface_detail(id: str = ''):
     with frame('Interfaz observada', '/observer'):
         if not require_project():

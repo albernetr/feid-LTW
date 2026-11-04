@@ -1,9 +1,9 @@
 from nicegui import ui
 from .. import core, automation, maturity
-from .common import frame, status_badge, fmt_time, show_run
+from .common import frame, status_badge, fmt_time, show_run, protected_page
 
 
-@ui.page('/')
+@protected_page('/')
 def home():
     with frame('Inicio', '/'):
         pid = core.get_active_project_id()

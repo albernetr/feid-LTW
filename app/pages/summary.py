@@ -3,10 +3,10 @@ import tempfile
 from pathlib import Path
 from nicegui import ui, run
 from .. import core, reporting
-from .common import frame, guard, require_project, show_run
+from .common import frame, guard, require_project, show_run, protected_page
 
 
-@ui.page('/resumen')
+@protected_page('/resumen')
 def summary_page():
     with frame('Resumen ejecutivo', '/resumen'):
         if not require_project():

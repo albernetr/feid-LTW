@@ -1,9 +1,9 @@
 from nicegui import ui
 from .. import core
-from .common import frame, guard, confirm, empty_state, require_project
+from .common import frame, guard, confirm, empty_state, require_project, protected_page
 
 
-@ui.page('/module-groups')
+@protected_page('/module-groups')
 def module_groups_list():
     with frame('Módulos', '/module-groups'):
         if not require_project():
@@ -62,7 +62,7 @@ def module_groups_list():
         ui.label('Haz clic en una fila para ver sus componentes; elimina directamente con el icono (solo si no tiene componentes ligados).').classes('text-sm text-gray-500')
 
 
-@ui.page('/module-groups/edit')
+@protected_page('/module-groups/edit')
 def module_group_detail(id: str = ''):
     with frame('Módulo' if id else 'Nuevo módulo', '/module-groups'):
         if not require_project():

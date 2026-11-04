@@ -1,9 +1,11 @@
 """Shared layout and widgets for every page."""
 import datetime as dt
+import functools
 import json
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
+from fastapi.responses import RedirectResponse
 from nicegui import app, ui, run
 from .. import core, automation, evidence_report, integrations
 
@@ -48,6 +50,43 @@ MINI_CSS = '''<style>
 </style>'''
 
 
+def current_user():
+    """El usuario logueado en ESTE navegador (app.storage.user: sesión por navegador, cifrada con
+    storage_secret) — None si nadie entró todavía. Mismo try/except defensivo que ya usa app.storage.browser."""
+    try:
+        uid = app.storage.user.get('user_id')
+    except Exception:
+        uid = None
+    return core.get('users', uid) if uid else None
+
+
+def current_user_id():
+    return (current_user() or {}).get('id')
+
+
+def login(user):
+    app.storage.user['user_id'] = user['id']
+
+
+def logout():
+    app.storage.user.clear()
+    ui.navigate.to('/login')
+
+
+def protected_page(route, **kwargs):
+    """Como ui.page(route), pero redirige a /login si nadie inició sesión — toda pantalla de la app usa esto en
+    vez de ui.page directamente, así nadie puede olvidarse de proteger una ruta nueva."""
+    def decorator(func):
+        @ui.page(route, **kwargs)
+        @functools.wraps(func)
+        def wrapper(*args, **kw):
+            if not current_user():
+                return RedirectResponse('/login')
+            return func(*args, **kw)
+        return wrapper
+    return decorator
+
+
 @contextmanager
 def frame(title, current, wide=False):
     """Page skeleton: header with active-project switcher, navigation drawer and content column.
@@ -83,6 +122,13 @@ def frame(title, current, wide=False):
                     .props('flat dense color=warning no-caps').tooltip('Habilita alguno en Proyectos para poder seleccionarlo')
         else:
             ui.button('Crear primer proyecto', icon='add', on_click=lambda: ui.navigate.to('/projects')).props('color=primary dense')
+        user = current_user()
+        if user:
+            label = f'{user.get("first_name", "")} {user.get("last_name", "")}'.strip() or user.get('email', '')
+            with ui.button(label, icon='account_circle').props('flat dense no-caps color=grey-8'):
+                with ui.menu():
+                    ui.menu_item('Gestionar usuarios', on_click=lambda: ui.navigate.to('/users'))
+                    ui.menu_item('Cerrar sesión', on_click=logout)
     def nav_button(label, route, icon, extra=''):
         selected = route == current
         ui.button(label, icon=icon, on_click=lambda r=route: ui.navigate.to(r)) \
@@ -310,6 +356,8 @@ def show_run(run):
             status_badge(run.get('status'))
             ui.label(run.get('case_name') or run.get('suite_name') or run.get('group_name') or '').classes('text-lg font-semibold')
             ui.label(fmt_time(run.get('started_at'))).classes('text-gray-500 text-sm')
+        if run.get('executed_by'):
+            ui.label(f'Ejecutado por: {core.user_display_name(run["executed_by"])}').classes('text-xs text-gray-500')
         if run.get('error'):
             ui.label(run['error']).classes('text-red-700 whitespace-pre-wrap')
         if run.get('type') == 'suite':

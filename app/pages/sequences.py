@@ -4,11 +4,11 @@ ajustarlos a mano sin tener que abrir la base de datos directamente."""
 import datetime as dt
 from nicegui import ui
 from .. import core
-from .common import frame, guard, confirm
+from .common import frame, guard, confirm, protected_page
 from .widgets import DYNAMIC_VAR_HINTS
 
 
-@ui.page('/sequences')
+@protected_page('/sequences')
 def sequences_page():
     with frame('Variables y secuencias', '/sequences'):
         with ui.card().classes('w-full'):

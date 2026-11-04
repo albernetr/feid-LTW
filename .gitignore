@@ -10,6 +10,7 @@ data/
 ltwfeid/
 *.sqlite3
 *.sqlite3-*
+.nicegui/
 
 # Built artifacts: regenerate with scripts/make_release.py / scripts/build_manual.py
 dist/
