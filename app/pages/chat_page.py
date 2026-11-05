@@ -13,6 +13,25 @@ HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 HEADER_SUGGESTIONS = (('+ Content-Type', 'Content-Type', 'application/json'), ('+ Accept', 'Accept', 'application/json'), ('+ Bearer', 'Authorization', 'Bearer {{secret:TOKEN}}'))
 
 
+def parse_option_labels(raw):
+    """Opciones de respuesta rápida del bot (botones) a una lista de textos para mostrar y tocar. El nombre del
+    campo con el texto cambia de bot en bot, así que se prueba una lista de nombres comunes en orden; un string
+    suelto en la lista (sin envoltorio) se usa tal cual."""
+    if not isinstance(raw, list):
+        return []
+    labels = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            labels.append(item.strip())
+        elif isinstance(item, dict):
+            for key in ('label', 'text', 'title', 'name', 'value', 'id'):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    labels.append(value.strip())
+                    break
+    return labels
+
+
 @protected_page('/chat')
 def chat_route(case: str = ''):
     with frame('Chat', '/chat', wide=True):
@@ -155,6 +174,10 @@ def build(preset_case_id=None):
             thread_resp_path = ui.input('Ruta del id de hilo en la respuesta', value=chat.get('thread_response_path', '$.thread_id')) \
                 .props('outlined dense').classes('w-full').mark('chat-thread-resp-path')
             reply_path = ui.input('Ruta de la respuesta del bot', value=chat.get('reply_path', '$.respuesta')).props('outlined dense').classes('w-full').mark('chat-reply-path')
+            options_path = ui.input('Ruta de las opciones de respuesta (opcional)', value=chat.get('options_path', '')) \
+                .props('outlined dense').classes('w-full').mark('chat-options-path') \
+                .tooltip('Si el bot manda botones de respuesta rápida, poné la ruta a esa lista — p. ej. $.conversation.replies[0].options. '
+                         'Vacío si el bot no los manda.')
 
             def activate():
                 """Guarda la configuración (headers, variables, body base y mapeo) como una plantilla reutilizable —
@@ -166,6 +189,7 @@ def build(preset_case_id=None):
                 if not (d.get('name') or '').strip():
                     raise ValueError('Ponele un nombre a este chat arriba (donde dice «Nombre de este chat») para guardar la plantilla')
                 d['chat'] = {name: field.value.strip() for name, field in fields.items()}
+                d['chat']['options_path'] = (options_path.value or '').strip()
                 project_id = resolve_project()
                 base, env = ws.build_case(d)
                 env_doc = persistent_env(project_id, env)
@@ -238,6 +262,18 @@ def build(preset_case_id=None):
                     ui.chat_message(turn['text'], sent=False, name='Bot', stamp=(f'HTTP {turn["status"]}' if turn.get('status') else None))
                     if turn.get('thread_warning'):
                         ui.label(f'⚠ {turn["thread_warning"]}').classes('text-xs text-amber-700 pl-1')
+                    if turn.get('options'):
+                        with ui.row().classes('items-center gap-1 pl-1 flex-wrap'):
+                            for opt_index, option_label in enumerate(turn['options']):
+                                # guard() envuelve el handler en (*args, **kwargs): NiceGUI inspecciona esa firma
+                                # (no la del lambda de adentro) para decidir si lo llama con el evento de clic o sin
+                                # nada, y *args no cuenta como "espera argumentos" — lo llama sin ninguno. Por eso
+                                # el lambda no puede tener un parámetro posicional obligatorio (p. ej. `_`): si lo
+                                # tuviera, la llamada sin argumentos lo rompe y el clic se pierde en silencio (el
+                                # error queda atrapado dentro de guard(), nunca llega a mostrarse como falla).
+                                ui.button(option_label, on_click=guard(lambda o=option_label: send_chat_message(box, o))) \
+                                    .props('outline dense no-caps size=sm color=primary').mark(f'chat-option-{index}-{opt_index}') \
+                                    .tooltip('Opción de respuesta rápida del bot — tocala para mandarla como tu próximo mensaje')
                     prev = S['messages'][index - 1] if index > 0 else None
                     with ui.row().classes('items-center gap-1 pl-1 -mt-1'):
                         if prev and prev['who'] == 'user':
@@ -299,12 +335,15 @@ def build(preset_case_id=None):
         box.on('keydown.enter', lambda: send_chat_message(box))
         ui.button(icon='send', on_click=guard(lambda: send_chat_message(box))).props('dense round color=primary').classes('shrink-0').mark('chat-send')
 
-    async def send_chat_message(box):
-        text = (box.value or '').strip()
+    async def send_chat_message(box, preset_text=None):
+        """preset_text: lo manda tal cual sin tocar la caja de texto — así un botón de opción rápida (ver
+        `turn.get('options')` en chat_view) envía su texto como si lo hubieras tipeado vos."""
+        text = (preset_text if preset_text is not None else (box.value or '')).strip()
         chat = d.get('chat')
         if not text or not chat:
             return
-        box.set_value('')
+        if preset_text is None:
+            box.set_value('')
         try:
             case, env = ws.build_case(d)
         except ValueError as exc:
@@ -376,7 +415,15 @@ def build(preset_case_id=None):
             # Antes se ignoraba en silencio: el hilo se quedaba vacío turno tras turno sin ninguna pista de por qué
             # (el resto del body sale bien porque no depende de esto). Ahora queda marcado junto al turno.
             thread_warning = f'No se encontró «{chat["thread_response_path"]}» en la respuesta: el hilo no avanzó, va a salir vacío en el próximo mensaje.'
-        S['messages'].append({'who': 'bot', 'text': reply if isinstance(reply, str) else json.dumps(reply, ensure_ascii=False), 'status': status, 'thread_warning': thread_warning})
+        options = []
+        options_path = (chat.get('options_path') or '').strip()
+        if options_path:
+            try:
+                options = parse_option_labels(core.extract_path(parsed, options_path))
+            except core.PathError:
+                pass   # este turno puntual no trajo opciones en esa ruta; no es un error, el resto del turno sale bien igual
+        S['messages'].append({'who': 'bot', 'text': reply if isinstance(reply, str) else json.dumps(reply, ensure_ascii=False),
+                               'status': status, 'thread_warning': thread_warning, 'options': options})
         S['runs'][len(S['messages']) - 1] = run_doc
         chat_view.refresh()
         debug_view.refresh()

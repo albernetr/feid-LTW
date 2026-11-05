@@ -1,6 +1,16 @@
 """Chat: a standalone screen to converse live with a chatbot/conversational API, one turn at a time."""
 import asyncio
 from app import core, automation
+from app.pages.chat_page import parse_option_labels
+
+
+def test_parse_option_labels_accepts_common_shapes():
+    assert parse_option_labels([{'id': 'si', 'label': 'Sí'}, {'id': 'no', 'label': 'No'}]) == ['Sí', 'No']
+    assert parse_option_labels(['Sí', 'No']) == ['Sí', 'No']                       # strings sueltos, sin envoltorio
+    assert parse_option_labels([{'id': 'si'}, {'value': 'no'}]) == ['si', 'no']    # sin label: cae a value/id
+    assert parse_option_labels([]) == []
+    assert parse_option_labels(None) == []                                        # la ruta no apuntaba a una lista
+    assert parse_option_labels('no es una lista') == []
 
 
 async def test_chat_page_converses_live_and_saves_the_transcript_as_a_suite(user, chat_app):
@@ -269,6 +279,34 @@ async def test_chat_conversation_evidence_covers_every_selected_turn_with_its_re
 
     user.find(marker='chat-evidence-all-html').click()
     await user.should_see('Evidencia generada')
+
+
+async def test_chat_shows_quick_reply_options_as_clickable_buttons_that_send_the_choice(user, chat_app):
+    """Cuando el bot manda botones de respuesta rápida (p. ej. $.conversation.replies[0].options: [{id, label}, ...]),
+    se pintan como botones debajo de esa respuesta — tocar uno manda su texto como el próximo mensaje, igual que si
+    lo hubieras tipeado. `options_path` es opcional y configurable (no hardcodeado), porque el campo cambia de bot
+    en bot — sample_app/chat_server.py solo manda opciones en el primer turno, como un bot real."""
+    project = core.create_project('Opciones de respuesta')
+    env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                               'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                               'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}},
+                               'assertions': [],
+                               'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                        'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta',
+                                        'options_path': '$.conversation.replies[0].options'}})
+    core.set_active_project(project['id'])
+    await user.open(f'/chat?case={case["id"]}')
+    user.find(marker='chat-input').type('Hola')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¡Gracias por aceptar!', retries=30)
+
+    await user.should_see(marker='chat-option-1-0')
+    await user.should_see('Sí')
+    await user.should_see('No')
+    user.find(marker='chat-option-1-0').click()
+    await user.should_see('¿Cuál es el nombre completo', retries=30)   # el bot avanzó: recibió "Sí" como mensaje
+    assert core.get('cases', case['id'])['chat_session']['messages'][2] == {'who': 'user', 'text': 'Sí'}
 
 
 async def test_chat_page_without_a_case_asks_for_the_mapping_first(user, chat_app):

@@ -70,7 +70,9 @@ class Handler(BaseHTTPRequestHandler):
             'channel': 'WhatsApp', 'role': 'Person', 'scope': 'Unique',
             'conversation': {
                 'conversationId': conversation_id,
-                'replies': [{'text': turn['text'], 'purpose': 'closing' if closing else 'question', 'options': [], 'citations': []}],
+                'replies': [{'text': turn['text'], 'purpose': 'closing' if closing else 'question',
+                             'options': [{'id': 'si', 'label': 'Sí'}, {'id': 'no', 'label': 'No'}] if state['turn'] == 1 else [],
+                             'citations': []}],
                 'status': 'closed' if closing else 'active', 'askedField': turn['field'], 'rfcLookup': None,
                 'businessLine': data.get('campaign') or 'IP', 'businessLineReason': 'PROVIDED_AT_START',
                 'answeredFields': state['answered'], 'discardFields': [],
