@@ -2,6 +2,7 @@
 antemano como una suite. Pantalla propia (no una pestaña más del Espacio de trabajo) para que el área central sea
 la conversación: URL arriba, parámetros en un panel, petición/respuesta cruda en otro, y la barra de escribir abajo
 (fija al fondo con position:sticky, para no depender de calcular la altura exacta del encabezado)."""
+import asyncio
 import copy
 import json
 from nicegui import ui, run
@@ -42,10 +43,13 @@ def build(preset_case_id=None):
     projects_by_id = {p['id']: p['name'] for p in core.list_items('projects')}
     all_envs = [e for e in core.list_items('environments') if e.get('name')]
     d = ws.new_draft()
-    S = {'messages': [], 'thread_id': '', 'last_request': None, 'last_response': None, 'suite_id': None, 'runs': {}}
+    S = {'messages': [], 'thread_id': '', 'last_request': None, 'last_response': None, 'suite_id': None, 'runs': {}, 'replay': None}
     # S['runs']: índice de turno -> run_doc completo (petición/respuesta/aserciones), para «Ver detalle y evidencia».
     # Solo en memoria — nunca entra a persist_session(), que guarda S['messages'] tal cual: una transcripción larga
     # con el run_doc completo de cada turno (cuerpos de petición/respuesta incluidos) infla el caso guardado.
+    # S['replay']: None o un dict en curso {'index', 'total', 'mode': 'play'|'step', 'resume': asyncio.Event,
+    # 'cancelled'} mientras «Reproducir conversación» va mandando turnos ya escritos (o los de un Flujo guardado)
+    # contra el bot, uno por uno, con controles de reproducir/pausar/paso/detener — nunca se persiste.
     W = {}
 
     def resolve_project():
@@ -232,7 +236,10 @@ def build(preset_case_id=None):
 
     @ui.refreshable
     def chat_view():
-        if not S['messages']:
+        if not S['messages'] and not S['replay']:
+            # Si hay una reproducción en curso, S['messages'] arranca vacío a propósito (ver run_replay) pero la
+            # barra de control (▶ ⏸ ⏭ ⏹, más abajo) tiene que pintarse igual — si no, «paso a paso» queda
+            # esperando un clic en un control que nunca aparece.
             with ui.column().classes('w-full items-center justify-center').style('min-height:240px'):
                 ui.label('Completa el mapeo en «Parámetros» y guardalo para empezar a conversar.' if not d.get('chat')
                           else 'Escribe el primer mensaje abajo.').classes('text-sm text-gray-500')
@@ -286,6 +293,40 @@ def build(preset_case_id=None):
                         .tooltip('Ver petición/respuesta de este turno')
             if index in S['runs']:
                 panel_ref.append(turn_request_response_panel(index))
+
+        if S['replay']:
+            replay = S['replay']
+            # Botones sin guard()/async: solo tocan el dict y el Event, la corrida real vive en run_replay() (ver
+            # más abajo) corriendo aparte — así no importa que este control esté dentro del mismo refrescable que
+            # ese bucle va a volver a dibujar en cuanto el replay se despierte.
+            def replay_play(_=None, r=replay):
+                r['mode'] = 'play'
+                r['resume'].set()
+
+            def replay_pause(_=None, r=replay):
+                r['mode'] = 'step'
+
+            def replay_step(_=None, r=replay):
+                r['mode'] = 'step'
+                r['resume'].set()
+
+            def replay_stop(_=None, r=replay):
+                r['cancelled'] = True
+                r['resume'].set()
+            with ui.row().classes('items-center gap-2 w-full px-3 py-2 bg-blue-50 rounded-borders'):
+                ui.icon('smart_display', color='primary')
+                ui.label(f'Reproduciendo turno {replay["index"]} de {replay["total"]}…').classes('text-sm text-primary')
+                ui.linear_progress(value=(replay['index'] / replay['total']) if replay['total'] else 0, show_value=False) \
+                    .classes('w-32').props('color=primary')
+                ui.space()
+                ui.button(icon='play_arrow', on_click=replay_play).props('flat dense round size=sm color=primary') \
+                    .mark('chat-replay-play').tooltip('Reproducir seguido')
+                ui.button(icon='pause', on_click=replay_pause).props('flat dense round size=sm color=primary') \
+                    .mark('chat-replay-pause').tooltip('Pausar')
+                ui.button(icon='skip_next', on_click=replay_step).props('flat dense round size=sm color=primary') \
+                    .mark('chat-replay-step').tooltip('Un paso')
+                ui.button(icon='stop', on_click=replay_stop).props('flat dense round size=sm color=negative') \
+                    .mark('chat-replay-stop').tooltip('Detener acá')
 
         with ui.column().classes('w-full gap-1 px-3'):
             for index, turn in enumerate(S['messages']):
@@ -358,6 +399,10 @@ def build(preset_case_id=None):
             .props('outline dense no-caps').mark('chat-save-suite')
         ui.button('Evidencia de la conversación', icon='fact_check', on_click=guard(lambda: conversation_evidence_dialog())) \
             .props('outline dense no-caps').mark('chat-evidence-all').tooltip('Descarga un solo reporte con los turnos que elijas (petición/respuesta de cada uno)')
+        ui.button('Reproducir conversación', icon='play_circle', on_click=guard(lambda: replay_dialog())) \
+            .props('outline dense no-caps').mark('chat-replay').tooltip('Reenvía al bot lo que ya escribiste, con el hilo actual — para retomar sin tipear de nuevo')
+        ui.button('Retomar un Flujo guardado', icon='movie', on_click=guard(lambda: replay_from_suite_dialog())) \
+            .props('outline dense no-caps').mark('chat-replay-suite').tooltip('Arranca una conversación en vivo a partir de los mensajes de un Flujo ya guardado')
         ui.label('O guardá cada intercambio por separado con el botón que aparece debajo de cada respuesta.').classes('text-xs text-gray-500')
 
     # ------------------------------------------------------------ write & send bar — sticky, always reachable regardless of
@@ -404,6 +449,12 @@ def build(preset_case_id=None):
         chat_view.refresh()
         debug_view.refresh()
         run_doc = await run.io_bound(core.execute_api, {**case, 'body': body}, env, None, False)
+        if run_doc is None:
+            # run.io_bound devuelve None (no una excepción) si la llamada se canceló — documentado, no un caso
+            # exótico: puede pasar si este turno viene de un diálogo (p. ej. «Reproducir conversación») que ya
+            # se cerró. Reintentar en el mismo hilo (bloquea un instante, pero es la llamada de respaldo, no el
+            # camino normal) es más simple y correcto que dejar que el turno se pierda en silencio.
+            run_doc = core.execute_api({**case, 'body': body}, env, None, False)
         run_doc['case_name'] = f'Chat: {text[:60]}'   # para que el título de la evidencia diga algo, no quede vacío
         if run_doc.get('status') == 'failed' and not run_doc.get('assertions'):
             # core.execute_api marca «failed» cuando el caso no tiene aserciones (sin ellas, nada quedó confirmado —
@@ -547,4 +598,120 @@ def build(preset_case_id=None):
                 ui.button('Markdown', icon='code', on_click=guard(lambda: download('md'))).props('flat dense no-caps')
             with ui.row().classes('justify-end w-full pt-1'):
                 ui.button('Cerrar', on_click=dialog.close).props('flat')
+        dialog.open()
+
+    async def run_replay(texts, start_playing, new_thread):
+        """Manda, en orden, cada texto de `texts` como si lo hubieras tipeado vos. new_thread=True arranca con el
+        hilo vacío (una conversación que el bot no conoce — la forma habitual de «reproducir», para que el bot
+        la reconstruya de cero); False reusa el hilo actual (el que esté en «Hilo:»), para re-verificar los mismos
+        turnos SOBRE la conversación que ya tenía el bot. Reemplaza lo mostrado: bajo un hilo nuevo las respuestas
+        viejas ya no son ciertas, así que no tiene sentido dejarlas al lado. start_playing=False arranca pausado
+        (paso a paso); los controles (▶ ⏸ ⏭ ⏹) que aparecen mientras tanto permiten cambiar de modo o detener en
+        cualquier momento, como en un reproductor."""
+        if not texts:
+            ui.notify('No hay turnos para reproducir', type='warning')
+            return
+        S.update(messages=[], runs={}, thread_id='' if new_thread else S['thread_id'])
+        W['thread_label'].refresh()
+        persist_session()
+        replay = {'index': 0, 'total': len(texts), 'mode': 'play' if start_playing else 'step',
+                  'resume': asyncio.Event(), 'cancelled': False}
+        S['replay'] = replay
+        chat_view.refresh()
+        for i, text in enumerate(texts):
+            replay['index'] = i + 1
+            chat_view.refresh()
+            if replay['mode'] != 'play':
+                replay['resume'].clear()
+                await replay['resume'].wait()
+            if replay['cancelled']:
+                break
+            try:
+                await send_chat_message(box, text)
+            except Exception as exc:
+                ui.notify(f'No se pudo reproducir el turno {i + 1}: {exc}', type='negative', multi_line=True)
+                break
+            if replay['cancelled']:
+                break
+            if replay['mode'] == 'play' and i + 1 < len(texts):
+                await asyncio.sleep(0.6)   # ritmo visible, como ir adelantando un cassette, no instantáneo
+        S['replay'] = None
+        chat_view.refresh()
+
+    def replay_dialog():
+        """«Reproducir conversación»: reenvía al bot, en orden, los turnos que ya escribiste (sin volver a
+        tipearlos) — útil cuando el hilo quedó viejo/vencido del lado del bot, o para retomar desde un punto
+        anterior y seguir distinto a partir de ahí."""
+        user_turns = [(i, t['text']) for i, t in enumerate(S['messages']) if t['who'] == 'user']
+        if not user_turns:
+            ui.notify('Todavía no escribiste ningún mensaje para reproducir', type='info')
+            return
+        with ui.dialog() as dialog, ui.card().classes('w-[480px] max-w-full'):
+            ui.label('Reproducir conversación').classes('text-lg font-semibold')
+            ui.label('Vuelve a mandar, en orden, lo que ya escribiste (sin tipearlo de nuevo) — reemplaza lo que '
+                      'haya de acá para adelante.').classes('text-sm text-gray-600')
+            options = {i: f'Turno {n + 1}: {text[:40]}' for n, (i, text) in enumerate(user_turns)}
+            upto = ui.select(options, value=user_turns[-1][0], label='Reproducir hasta') \
+                .props('outlined dense options-dense').classes('w-full').mark('chat-replay-upto')
+            new_thread = ui.checkbox('Usar un hilo nuevo (el bot arranca de cero)', value=True).mark('chat-replay-newthread')
+            step_mode = ui.checkbox('Empezar pausado (paso a paso)', value=True).mark('chat-replay-stepmode')
+
+            async def start():
+                chosen = upto.value
+                texts = [text for i, text in user_turns if i <= chosen]
+                start_playing, use_new_thread = not step_mode.value, new_thread.value
+                dialog.close()
+                await run_replay(texts, start_playing, use_new_thread)
+            with ui.row().classes('justify-end gap-2 w-full pt-2'):
+                ui.button('Cancelar', on_click=dialog.close).props('flat')
+                ui.button('Reproducir', icon='play_circle', on_click=guard(start)).props('color=primary no-caps').mark('chat-replay-confirm')
+        dialog.open()
+
+    def _extract_texts_from_suite(suite_doc):
+        message_path = (d.get('chat') or {}).get('message_path')
+        if not message_path:
+            return []
+        texts = []
+        for step in core.suite_steps(suite_doc):
+            case = core.get('cases', step['case_id'])
+            if not case:
+                continue
+            try:
+                value = core.extract_path(case.get('body') or {}, message_path)
+            except core.PathError:
+                continue
+            if isinstance(value, str) and value:
+                texts.append(value)
+        return texts
+
+    def replay_from_suite_dialog():
+        """Retomar un Flujo ya guardado (del proyecto activo) como punto de partida de una conversación en vivo
+        — reconstruye sus turnos mandándolos de verdad, sin tener que volver a tipear cada uno."""
+        project_id = core.get_active_project_id()
+        suites = core.list_project_items('suites', project_id) if project_id else []
+        if not suites:
+            ui.notify('No hay Flujos guardados en el proyecto activo', type='info')
+            return
+        with ui.dialog() as dialog, ui.card().classes('w-[480px] max-w-full'):
+            ui.label('Retomar un Flujo guardado').classes('text-lg font-semibold')
+            ui.label('Reproduce en vivo, en orden, los mensajes de ese Flujo — reemplaza la conversación actual.') \
+                .classes('text-sm text-gray-600')
+            picker = ui.select({s['id']: s['name'] for s in suites}, label='Flujo') \
+                .props('outlined dense options-dense').classes('w-full').mark('chat-replay-suite-picker')
+            new_thread = ui.checkbox('Usar un hilo nuevo (el bot arranca de cero)', value=True).mark('chat-replay-suite-newthread')
+            step_mode = ui.checkbox('Empezar pausado (paso a paso)', value=True).mark('chat-replay-suite-stepmode')
+
+            async def start():
+                if not picker.value:
+                    raise ValueError('Elige un Flujo')
+                suite_doc = core.get('suites', picker.value)
+                texts = _extract_texts_from_suite(suite_doc)
+                if not texts:
+                    raise ValueError('Ese Flujo no tiene turnos compatibles con el mapeo de este chat (revisa «Ruta del mensaje saliente»)')
+                start_playing, use_new_thread = not step_mode.value, new_thread.value
+                dialog.close()
+                await run_replay(texts, start_playing, use_new_thread)
+            with ui.row().classes('justify-end gap-2 w-full pt-2'):
+                ui.button('Cancelar', on_click=dialog.close).props('flat')
+                ui.button('Reproducir', icon='play_circle', on_click=guard(start)).props('color=primary no-caps').mark('chat-replay-suite-confirm')
         dialog.open()

@@ -309,6 +309,122 @@ async def test_chat_shows_quick_reply_options_as_clickable_buttons_that_send_the
     assert core.get('cases', case['id'])['chat_session']['messages'][2] == {'who': 'user', 'text': 'Sí'}
 
 
+async def test_replay_resends_prior_turns_with_a_fresh_thread_and_replaces_them(user, chat_app):
+    """«Reproducir conversación», sin «paso a paso»: vuelve a mandar al bot lo que ya se había escrito, con un
+    hilo nuevo (el bot no lo conoce, así que arranca una conversación distinta de verdad) — y lo que se ve en
+    pantalla se reemplaza por lo que realmente llega esta vez, no queda al lado de lo viejo."""
+    project = core.create_project('Reproducir')
+    env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                               'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                               'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}},
+                               'assertions': [],
+                               'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                        'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+    core.set_active_project(project['id'])
+    await user.open(f'/chat?case={case["id"]}')
+    user.find(marker='chat-input').type('Hola')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¡Gracias por aceptar!', retries=30)
+    user.find(marker='chat-input').type('Quiero un seguro de vida')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¿Cuál es el nombre completo', retries=30)
+    old_thread = core.get('cases', case['id'])['chat_session']['thread_id']
+
+    user.find(marker='chat-replay').click()
+    await user.should_see(marker='chat-replay-stepmode', retries=30)
+    user.find(marker='chat-replay-stepmode').click()         # apaga «paso a paso»: arranca reproduciendo seguido
+    user.find(marker='chat-replay-confirm').click()
+    # El clic dispara el handler async del botón (dialog.close() + await run_replay(...)) como una tarea aparte
+    # del test — no hay nada que `await`ar acá, así que se espera a que lo persistido se estabilice en los 2
+    # turnos (el ritmo de reproducción incluye una pausa de 0.6s entre turnos).
+    # La conversación original YA tenía estos 2 mismos turnos antes de reproducir — sondear solo «¿hay 2 mensajes
+    # de usuario?» daría un falso positivo instantáneo con el estado viejo, antes de que la reproducción (que
+    # primero vacía la sesión) alcance a tocar nada. Hay que esperar a las DOS señales de que es la tanda nueva:
+    # el hilo ya cambió Y los textos vuelven a estar completos (run_replay vacía S['messages'] al arrancar).
+    stored = None
+    for _ in range(50):
+        stored = core.get('cases', case['id'])['chat_session']
+        user_texts = [t['text'] for t in stored['messages'] if t['who'] == 'user']
+        if stored['thread_id'] != old_thread and user_texts == ['Hola', 'Quiero un seguro de vida']:
+            break
+        await asyncio.sleep(0.2)
+    assert stored['thread_id'] != old_thread                 # el bot lo trató como una conversación distinta
+    user_texts = [t['text'] for t in stored['messages'] if t['who'] == 'user']
+    assert user_texts == ['Hola', 'Quiero un seguro de vida']   # se reprodujeron ambos, sin duplicarse ni perderse
+
+
+async def test_replay_step_by_step_pauses_between_turns_until_told_to_continue(user, chat_app):
+    """«Paso a paso»: arranca pausado ANTES del primer turno (como una casetera parada, no a mitad de la cinta) —
+    cada turno, incluido el primero, espera un ▶ o ⏭ antes de mandarse."""
+    project = core.create_project('Reproducir paso a paso')
+    env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                               'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                               'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}},
+                               'assertions': [],
+                               'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                        'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+    core.set_active_project(project['id'])
+    await user.open(f'/chat?case={case["id"]}')
+    user.find(marker='chat-input').type('Hola')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¡Gracias por aceptar!', retries=30)
+    user.find(marker='chat-input').type('Quiero un seguro de vida')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¿Cuál es el nombre completo', retries=30)
+
+    user.find(marker='chat-replay').click()
+    await user.should_see(marker='chat-replay-stepmode', retries=30)   # «paso a paso» queda tildado por defecto
+    user.find(marker='chat-replay-confirm').click()
+    await user.should_see(marker='chat-replay-step', retries=30)   # arrancó pausado, antes de mandar nada
+    await user.should_not_see('¡Gracias por aceptar!')             # la sesión vieja ya se vació — no quedó nada de antes
+
+    user.find(marker='chat-replay-step').click()                   # ⏭ turno 1
+    await user.should_see('¡Gracias por aceptar!', retries=30)
+    await asyncio.sleep(0.5)
+    await user.should_not_see('¿Cuál es el nombre completo')    # …pero se detuvo antes de mandar el turno 2
+    await user.should_see(marker='chat-replay-step')
+
+    user.find(marker='chat-replay-step').click()               # ⏭ turno 2
+    await user.should_see('¿Cuál es el nombre completo', retries=30)
+    await asyncio.sleep(0.3)
+    await user.should_not_see(marker='chat-replay-step')        # terminó: el control de reproducción desaparece
+
+
+async def test_replay_can_resume_from_a_saved_flow_without_retyping(user, chat_app):
+    """«Retomar un Flujo guardado»: arranca una conversación en vivo nueva a partir de los turnos de un Flujo que
+    ya se había guardado, sin tener que volver a tipear cada mensaje."""
+    project = core.create_project('Reproducir desde flujo')
+    env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                               'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                               'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}},
+                               'assertions': [],
+                               'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                        'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+    core.set_active_project(project['id'])
+    await user.open(f'/chat?case={case["id"]}')
+    user.find(marker='chat-input').type('Hola')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¡Gracias por aceptar!', retries=30)
+    user.find(marker='chat-save-suite').click()
+    await asyncio.sleep(0.5)
+    suite = core.list_project_items('suites', project['id'])[0]
+
+    user.find(marker='chat-replay-suite').click()
+    await user.should_see(marker='chat-replay-suite-picker', retries=30)
+    user.find(marker='chat-replay-suite-picker').click()
+    await user.should_see(suite['name'])
+    user.find(target=suite['name'], marker='chat-replay-suite-picker').click()
+    user.find(marker='chat-replay-suite-stepmode').click()     # apaga «paso a paso»
+    user.find(marker='chat-replay-suite-confirm').click()
+    await user.should_see('¡Gracias por aceptar!', retries=40)
+    await asyncio.sleep(0.3)
+    stored = core.get('cases', case['id'])['chat_session']
+    assert [t['text'] for t in stored['messages'] if t['who'] == 'user'] == ['Hola']
+
+
 async def test_chat_page_without_a_case_asks_for_the_mapping_first(user, chat_app):
     """A fresh chat (no saved case) needs the four paths confirmed before it will send anything — typing and
     pressing Enter beforehand is a no-op, not a request against an unconfigured mapping."""
