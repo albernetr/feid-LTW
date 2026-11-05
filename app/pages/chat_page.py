@@ -237,11 +237,14 @@ def build(preset_case_id=None):
                 ui.label('Completa el mapeo en «Parámetros» y guardalo para empezar a conversar.' if not d.get('chat')
                           else 'Escribe el primer mensaje abajo.').classes('text-sm text-gray-500')
             return
-        def turn_request_response(index):
-            """Mismo panel colapsable que «Petición / Respuesta (último turno)» de más abajo, pero para ESTE turno
-            puntual — para no tener que abrir «Ver detalle y evidencia» solo para mirar el JSON enviado/recibido."""
+        def turn_request_response_panel(index):
+            """Contenedor oculto por defecto con el JSON enviado/recibido de ESTE turno puntual — lo revela un
+            ícono compacto (ver turn_actions_row), no una barra de acordeón de ancho completo: esa barra, casi
+            vacía mientras está colapsada, fue reportada en vivo como «demasiado espacio perdido»."""
             run_doc = S['runs'][index]
-            with ui.expansion('Petición / Respuesta', icon='code').classes('w-full pl-1').mark(f'chat-reqres-{index}'):
+            panel = ui.column().classes('w-full gap-0 pl-1 pt-1')
+            panel.visible = False
+            with panel:
                 sent = (run_doc.get('request') or {}).get('body')
                 if sent is not None:
                     ui.label('Enviado').classes('text-xs font-semibold text-gray-500')
@@ -253,6 +256,36 @@ def build(preset_case_id=None):
                     ui.code(resp_body, language='json').classes('w-full').style('max-height:160px;overflow:auto')
                 if not sent and not resp_body:
                     ui.label(run_doc.get('error') or 'Sin datos de petición/respuesta para este turno.').classes('text-xs text-gray-500')
+            return panel
+
+        def turn_actions_row(index, save_callback=None, saved_turn_number=None):
+            """Fila compacta de íconos con leyenda (tooltip) al lado derecho, pegada al turno — reemplaza los
+            botones con texto completo (cada uno ocupaba una fila entera) y la barra de acordeón de petición/
+            respuesta por un ícono que la revela. «Guardar»/«Ver detalle»/«código» son del MISMO turno (una sola
+            llamada HTTP: lo que se mandó + lo que llegó), así que van juntos, a la altura del turno, no cada uno
+            en su propia fila. save_callback=None y saved_turn_number=None: no hay nada que guardar (p. ej. un
+            error de conexión sin turno de usuario previo)."""
+            panel_ref = []
+            with ui.row().classes('items-center justify-end gap-0 w-full -mt-1'):
+                if saved_turn_number is not None:
+                    ui.icon('check_circle', size='xs', color='positive').classes('q-pa-xs') \
+                        .tooltip(f'Guardado como «Turno {saved_turn_number}»')
+                elif save_callback is not None:
+                    ui.button(icon='bookmark_add', on_click=save_callback) \
+                        .props('flat dense round size=sm color=primary').mark(f'chat-save-turn-{index - 1}') \
+                        .tooltip('Guardar este intercambio como caso')
+                if index in S['runs']:
+                    ui.button(icon='fact_check', on_click=lambda _, r=S['runs'][index]: show_run(r)) \
+                        .props('flat dense round size=sm color=grey-8').mark(f'chat-evidence-{index}') \
+                        .tooltip('Ver detalle y evidencia')
+
+                    def toggle_panel(_=None, ref=panel_ref):
+                        ref[0].visible = not ref[0].visible
+                    ui.button(icon='code', on_click=toggle_panel) \
+                        .props('flat dense round size=sm color=grey-8').mark(f'chat-reqres-{index}') \
+                        .tooltip('Ver petición/respuesta de este turno')
+            if index in S['runs']:
+                panel_ref.append(turn_request_response_panel(index))
 
         with ui.column().classes('w-full gap-1 px-3'):
             for index, turn in enumerate(S['messages']):
@@ -281,33 +314,26 @@ def build(preset_case_id=None):
                                     .mark(f'chat-option-{index}-{opt_index}') \
                                     .tooltip('Opción de respuesta rápida del bot — tocala para mandarla como tu próximo mensaje')
                     prev = S['messages'][index - 1] if index > 0 else None
-                    with ui.row().classes('items-center gap-1 pl-1 -mt-1'):
-                        if prev and prev['who'] == 'user':
-                            if prev.get('saved'):
-                                ui.label(f'✓ Guardado como «Turno {prev["turn_number"]}»').classes('text-xs text-positive')
-                            else:
-                                def save_this_turn(_=None, i=index - 1):
-                                    # Sin async: un botón creado dentro de este bucle (anidado en el refrescable del chat) con un
-                                    # on_click envuelto en guard() (que lo programa como tarea en segundo plano) perdía el clic en
-                                    # cuanto save_turn_as_case refrescaba chat_view a mitad de camino — reproducido de forma
-                                    # consistente. Resuelto a mano, igual que guard(), pero ejecutando en el mismo tick del clic.
-                                    try:
-                                        save_turn_as_case(i)
-                                    except Exception as exc:
-                                        ui.notify(str(exc) or type(exc).__name__, type='negative', multi_line=True)
-                                ui.button('Guardar este intercambio como caso', icon='bookmark_add', on_click=save_this_turn) \
-                                    .props('flat dense size=sm no-caps color=primary').mark(f'chat-save-turn-{index - 1}')
-                        if index in S['runs']:
-                            ui.button('Ver detalle y evidencia', icon='fact_check', on_click=lambda _, r=S['runs'][index]: show_run(r)) \
-                                .props('flat dense size=sm no-caps color=grey-8').mark(f'chat-evidence-{index}')
-                    if index in S['runs']:
-                        turn_request_response(index)
+                    save_callback = None
+                    saved_turn_number = None
+                    if prev and prev['who'] == 'user':
+                        if prev.get('saved'):
+                            saved_turn_number = prev['turn_number']
+                        else:
+                            def save_this_turn(_=None, i=index - 1):
+                                # Sin async: un botón creado dentro de este bucle (anidado en el refrescable del chat) con un
+                                # on_click envuelto en guard() (que lo programa como tarea en segundo plano) perdía el clic en
+                                # cuanto save_turn_as_case refrescaba chat_view a mitad de camino — reproducido de forma
+                                # consistente. Resuelto a mano, igual que guard(), pero ejecutando en el mismo tick del clic.
+                                try:
+                                    save_turn_as_case(i)
+                                except Exception as exc:
+                                    ui.notify(str(exc) or type(exc).__name__, type='negative', multi_line=True)
+                            save_callback = save_this_turn
+                    turn_actions_row(index, save_callback, saved_turn_number)
                 else:
                     ui.label(turn['text']).classes('text-xs text-red-700')
-                    if index in S['runs']:
-                        ui.button('Ver detalle y evidencia', icon='fact_check', on_click=lambda _, r=S['runs'][index]: show_run(r)) \
-                            .props('flat dense size=sm no-caps color=grey-8').classes('pl-1').mark(f'chat-evidence-{index}')
-                        turn_request_response(index)
+                    turn_actions_row(index)
     W['chat_view'] = chat_view
     chat_view()
 

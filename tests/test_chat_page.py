@@ -120,7 +120,7 @@ async def test_chat_page_saves_one_turn_at_a_time(user, chat_app):
     await asyncio.sleep(0.5)
     suites = core.list_project_items('suites', project['id'])
     assert len(suites) == 1 and len(core.suite_steps(suites[0])) == 1
-    await user.should_see('✓ Guardado como «Turno 1»')                 # the per-turn button is gone once it's saved
+    await user.should_not_see(marker='chat-save-turn-0')                # the per-turn button is gone once it's saved
 
     user.find(marker='chat-input').type('Quiero un seguro de vida')
     user.find(marker='chat-input').trigger('keydown.enter')
