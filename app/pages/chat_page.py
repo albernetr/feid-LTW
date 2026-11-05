@@ -263,7 +263,9 @@ def build(preset_case_id=None):
                     if turn.get('thread_warning'):
                         ui.label(f'⚠ {turn["thread_warning"]}').classes('text-xs text-amber-700 pl-1')
                     if turn.get('options'):
-                        with ui.row().classes('items-center gap-1 pl-1 flex-wrap'):
+                        with ui.row().classes('items-center gap-2 pl-1 pt-1 pb-1 flex-wrap'):
+                            ui.icon('touch_app', size='xs').classes('text-primary')
+                            ui.label('Opciones del bot:').classes('text-xs font-medium text-gray-600')
                             for opt_index, option_label in enumerate(turn['options']):
                                 # guard() envuelve el handler en (*args, **kwargs): NiceGUI inspecciona esa firma
                                 # (no la del lambda de adentro) para decidir si lo llama con el evento de clic o sin
@@ -271,8 +273,12 @@ def build(preset_case_id=None):
                                 # el lambda no puede tener un parámetro posicional obligatorio (p. ej. `_`): si lo
                                 # tuviera, la llamada sin argumentos lo rompe y el clic se pierde en silencio (el
                                 # error queda atrapado dentro de guard(), nunca llega a mostrarse como falla).
+                                # unelevated+rounded (botón lleno, no outline chico): los "outline dense size=sm"
+                                # que se usan para el resto de las acciones del turno (Guardar/Ver detalle) casi no
+                                # se distinguían de estos — reportado en vivo como «casi no se notan».
                                 ui.button(option_label, on_click=guard(lambda o=option_label: send_chat_message(box, o))) \
-                                    .props('outline dense no-caps size=sm color=primary').mark(f'chat-option-{index}-{opt_index}') \
+                                    .props('unelevated rounded no-caps color=primary').classes('px-4 text-sm') \
+                                    .mark(f'chat-option-{index}-{opt_index}') \
                                     .tooltip('Opción de respuesta rápida del bot — tocala para mandarla como tu próximo mensaje')
                     prev = S['messages'][index - 1] if index > 0 else None
                     with ui.row().classes('items-center gap-1 pl-1 -mt-1'):
