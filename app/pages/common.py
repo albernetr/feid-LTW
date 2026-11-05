@@ -137,33 +137,31 @@ def frame(title, current, wide=False):
             .props(f'flat align=left no-caps {"color=primary" if selected else "color=grey-8"}') \
             .classes('w-full' + extra + (' bg-blue-50' if selected else ''))
     with drawer:
-        if wide:
-            for label, route, icon in NAV:
+        # Mismo menú agrupado para todas las pantallas, sean «wide» (mini, colapsable) o no — antes una pantalla
+        # wide mostraba las ~20 opciones sueltas sin agrupar, distinto del resto de la app (ver menú lateral).
+        grouped_routes = {route for _, _, routes in NAV_GROUPS for route in routes}
+        for label, route, icon in NAV:
+            if route not in grouped_routes:
                 nav_button(label, route, icon)
-        else:
-            grouped_routes = {route for _, _, routes in NAV_GROUPS for route in routes}
-            for label, route, icon in NAV:
-                if route not in grouped_routes:
-                    nav_button(label, route, icon)
-            try:
-                layout = app.storage.browser
-            except Exception:
-                layout = {}
-            for name, group_icon, routes in NAV_GROUPS:
-                items = [item for item in NAV if item[1] in routes]
-                has_current = any(route == current for _, route, _ in items)
-                key = f'nav_group_{name}'
-                stored = layout.get(key) if hasattr(layout, 'get') else None
-                with ui.expansion(name, icon=group_icon, value=has_current if stored is None else bool(stored)) \
-                        .props('dense').classes('w-full') as section:
-                    def remember(e, k=key):
-                        try:
-                            layout[k] = e.value
-                        except Exception:
-                            pass
-                    section.on_value_change(remember)
-                    for label, route, icon in items:
-                        nav_button(label, route, icon, ' pl-2')
+        try:
+            layout = app.storage.browser
+        except Exception:
+            layout = {}
+        for name, group_icon, routes in NAV_GROUPS:
+            items = [item for item in NAV if item[1] in routes]
+            has_current = any(route == current for _, route, _ in items)
+            key = f'nav_group_{name}'
+            stored = layout.get(key) if hasattr(layout, 'get') else None
+            with ui.expansion(name, icon=group_icon, value=has_current if stored is None else bool(stored)) \
+                    .props('dense').classes('w-full') as section:
+                def remember(e, k=key):
+                    try:
+                        layout[k] = e.value
+                    except Exception:
+                        pass
+                section.on_value_change(remember)
+                for label, route, icon in items:
+                    nav_button(label, route, icon, ' pl-2')
     if wide:
         with ui.column().classes('w-full gap-0 p-0'):
             yield

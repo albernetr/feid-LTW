@@ -256,7 +256,7 @@ LTW **no incluye ningún modelo ni llama a uno por su cuenta**. Si quieres ayuda
 | «Ejecuta el lote completo … antes de guardarlo» | Faltan resultados del lote o hubo errores de conexión. | Pulsa **Ejecutar lote** y revisa que todas las filas tengan respuesta. |
 | Tap: «No se pudo abrir el puerto…» | El puerto está ocupado. | Elige otro **Puerto local**. |
 | El Observador no muestra nada | No hay tráfico por el tap ni ejecuciones aprendidas. | Inicia el tap y genera tráfico, o pulsa **Aprender del historial**. |
-| El menú lateral solo muestra iconos | Es el modo compacto del Espacio de trabajo. | Pasa el ratón para expandirlo, o usa ☰. |
+| El menú lateral solo muestra iconos | Es el modo compacto de las pantallas de trabajo (Espacio de trabajo, Chat, Casos UI, Componentes). | Pasa el ratón para expandirlo, o usa ☰. |
 | No aparece el botón Grabar/Navegador | Faltan Chromium o permisos. | Instala Chromium (ver arriba) y reinicia. |
 | Al compilar el ejecutable, PyInstaller se queja del paquete `pathlib` | Un paquete obsoleto del mismo nombre en tu Python. | Compila en un entorno virtual limpio (ver KNOWN_LIMITATIONS.md). |
 
