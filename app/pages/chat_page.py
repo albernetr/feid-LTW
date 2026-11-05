@@ -74,6 +74,19 @@ def build(preset_case_id=None):
             return
         core.save('cases', {**existing, 'chat_session': {'thread_id': S['thread_id'], 'messages': S['messages'], 'suite_id': S['suite_id']}})
 
+    def sync_url():
+        """Refleja el caso activo en la URL del navegador (sin recargar la página — `history.replaceState`, no
+        `ui.navigate.to`). Si no se hace esto, la URL se queda en «/chat» pelado mientras toda la conversación
+        vive solo en memoria del lado del servidor: si el socket se cae más de los 3s que NiceGUI espera por
+        defecto para reconectar (típico cuando la pestaña queda inactiva un rato — no al estar escribiendo, que
+        mantiene tráfico), el navegador reconecta pero el servidor ya no reconoce a ese cliente y fuerza una
+        recarga completa — y esa recarga cae en «/chat» sin caso, como si fuera la primera vez, aunque la
+        conversación sigue intacta en la base. Con la URL sincronizada, esa recarga (forzada o un F5 cualquiera)
+        vuelve a pasar por `preset_case_id` y restaura todo tal como quedó."""
+        source = d.get('source') or {}
+        case_id = source.get('id') if source.get('type') == 'case' else None
+        ui.navigate.history.replace(f'/chat?case={case_id}' if case_id else '/chat')
+
     def load_case(case_doc, resume=True):
         """resume=False carga la configuración (headers/body/variables/mapeo) pero arranca una conversación en
         blanco — así una plantilla sirve para empezar muchas conversaciones nuevas sin heredar la anterior."""
@@ -89,6 +102,7 @@ def build(preset_case_id=None):
         S.update(messages=list(session.get('messages') or []), thread_id=session.get('thread_id') or '',
                  suite_id=session.get('suite_id'), last_request=None, last_response=None)
         refresh_all()
+        sync_url()
         if not env_id:
             ui.notify('Elige el ambiente donde quieres conversar', type='info')
 
@@ -101,6 +115,7 @@ def build(preset_case_id=None):
         d.update(ws.new_draft())
         S.update(messages=[], thread_id='', last_request=None, last_response=None, suite_id=None)
         refresh_all()
+        sync_url()
 
     def refresh_all():
         for name in ('params_view', 'chat_view', 'debug_view', 'case_picker', 'template_picker', 'thread_label'):
@@ -206,6 +221,7 @@ def build(preset_case_id=None):
                     item['chat_session'] = existing.get('chat_session')
                 saved = core.save('cases', item)
                 d['source'] = {'type': 'case', 'id': saved['id'], 'updated_at': saved.get('updated_at')}
+                sync_url()
                 ui.notify(f'Plantilla «{saved["name"]}» guardada: la vas a encontrar en «Plantilla» la próxima vez', type='positive')
                 W['params_view'].refresh()
                 W['template_picker'].refresh()
