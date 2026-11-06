@@ -35,6 +35,8 @@ async def test_chat_page_converses_live_and_saves_the_transcript_as_a_suite(user
     user.find(marker='chat-input').type('Quiero un seguro de vida')
     user.find(marker='chat-send').click()
     await user.should_see('¿Cuál es el nombre completo', retries=30)
+    user.find(marker='chat-actions-toggle').click()                    # despliega las acciones de la conversación (ocultas detrás de «+»)
+    await user.should_see(marker='chat-save-suite', retries=30)
     user.find(marker='chat-save-suite').click()
     await asyncio.sleep(1)                                             # guard()'s wrapper runs as a background task too, and now saves two turns in a loop
     suites = core.list_project_items('suites', project['id'])
@@ -272,6 +274,8 @@ async def test_chat_conversation_evidence_covers_every_selected_turn_with_its_re
     user.find(marker='chat-input').trigger('keydown.enter')
     await user.should_see('¿Cuál es el nombre completo', retries=30)
 
+    user.find(marker='chat-actions-toggle').click()                    # despliega las acciones de la conversación (ocultas detrás de «+»)
+    await user.should_see(marker='chat-evidence-all', retries=30)
     user.find(marker='chat-evidence-all').click()
     await user.should_see('Evidencia de la conversación')
     await user.should_see(marker='chat-evidence-all-cb-1')          # turno 0: usuario, turno 1: respuesta del bot
@@ -331,6 +335,8 @@ async def test_replay_resends_prior_turns_with_a_fresh_thread_and_replaces_them(
     await user.should_see('¿Cuál es el nombre completo', retries=30)
     old_thread = core.get('cases', case['id'])['chat_session']['thread_id']
 
+    user.find(marker='chat-actions-toggle').click()          # despliega las acciones de la conversación (ocultas detrás de «+»)
+    await user.should_see(marker='chat-replay', retries=30)
     user.find(marker='chat-replay').click()
     await user.should_see(marker='chat-replay-stepmode', retries=30)
     user.find(marker='chat-replay-stepmode').click()         # apaga «paso a paso»: arranca reproduciendo seguido
@@ -374,6 +380,8 @@ async def test_replay_step_by_step_pauses_between_turns_until_told_to_continue(u
     user.find(marker='chat-input').trigger('keydown.enter')
     await user.should_see('¿Cuál es el nombre completo', retries=30)
 
+    user.find(marker='chat-actions-toggle').click()          # despliega las acciones de la conversación (ocultas detrás de «+»)
+    await user.should_see(marker='chat-replay', retries=30)
     user.find(marker='chat-replay').click()
     await user.should_see(marker='chat-replay-stepmode', retries=30)   # «paso a paso» queda tildado por defecto
     user.find(marker='chat-replay-confirm').click()
@@ -392,6 +400,45 @@ async def test_replay_step_by_step_pauses_between_turns_until_told_to_continue(u
     await user.should_not_see(marker='chat-replay-step')        # terminó: el control de reproducción desaparece
 
 
+async def test_replay_skip_moves_on_without_resending_the_recorded_text(user, chat_app):
+    """«Saltar» (⏩): cuando ya respondiste ese paso vos mismo, a mano, con un texto distinto del grabado — no
+    hay que dejar que la reproducción repita la pregunta grabada; tiene que saltarla y seguir con la próxima."""
+    project = core.create_project('Reproducir con salto')
+    env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                               'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                               'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}},
+                               'assertions': [],
+                               'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                        'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+    core.set_active_project(project['id'])
+    await user.open(f'/chat?case={case["id"]}')
+    user.find(marker='chat-input').type('Hola')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¡Gracias por aceptar!', retries=30)
+    user.find(marker='chat-input').type('Quiero un seguro de vida')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¿Cuál es el nombre completo', retries=30)
+
+    user.find(marker='chat-actions-toggle').click()
+    await user.should_see(marker='chat-replay', retries=30)
+    user.find(marker='chat-replay').click()
+    await user.should_see(marker='chat-replay-stepmode', retries=30)
+    user.find(marker='chat-replay-confirm').click()
+    await user.should_see(marker='chat-replay-skip', retries=30)   # pausado antes del turno 1 ("Hola")
+
+    user.find(marker='chat-replay-skip').click()                   # salta "Hola" sin reenviarlo
+    await asyncio.sleep(0.3)
+    await user.should_not_see('¡Gracias por aceptar!')             # no se mandó: ninguna respuesta del bot todavía
+    await user.should_see(marker='chat-replay-step')                # sigue pausado, ahora antes del turno 2
+
+    user.find(marker='chat-replay-step').click()                    # este sí se manda ("Quiero un seguro de vida")
+    await asyncio.sleep(0.5)
+    stored = core.get('cases', case['id'])['chat_session']
+    user_texts = [t['text'] for t in stored['messages'] if t['who'] == 'user']
+    assert user_texts == ['Quiero un seguro de vida']   # "Hola" nunca se reenvió — saltado de verdad, no solo oculto
+
+
 async def test_replay_can_resume_from_a_saved_flow_without_retyping(user, chat_app):
     """«Retomar un Flujo guardado»: arranca una conversación en vivo nueva a partir de los turnos de un Flujo que
     ya se había guardado, sin tener que volver a tipear cada mensaje."""
@@ -408,6 +455,8 @@ async def test_replay_can_resume_from_a_saved_flow_without_retyping(user, chat_a
     user.find(marker='chat-input').type('Hola')
     user.find(marker='chat-input').trigger('keydown.enter')
     await user.should_see('¡Gracias por aceptar!', retries=30)
+    user.find(marker='chat-actions-toggle').click()          # despliega las acciones de la conversación (ocultas detrás de «+»)
+    await user.should_see(marker='chat-save-suite', retries=30)
     user.find(marker='chat-save-suite').click()
     await asyncio.sleep(0.5)
     suite = core.list_project_items('suites', project['id'])[0]

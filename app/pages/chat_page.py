@@ -230,6 +230,57 @@ def build(preset_case_id=None):
     W['params_view'] = params_view
     params_view()
 
+    # ------------------------------------------------------------ conversation-level actions (no de un turno
+    # puntual): guardar lo pendiente como Flujo, evidencia conjunta, reproducir. Se repiten arriba (junto al
+    # hilo) y abajo (pegadas a la barra de escribir) — antes vivían en una sola fila a mitad de pantalla, que se
+    # perdía de vista apenas la conversación crecía; reportado en vivo («quiero las acciones arriba y abajo, al
+    # nivel de la barra de envío»). Detrás de un «+» para no ocupar espacio cuando no se están usando.
+    ui_state = {'actions_expanded': False}
+
+    def toggle_actions():
+        ui_state['actions_expanded'] = not ui_state['actions_expanded']
+        W['top_actions'].refresh()
+        W['bottom_actions'].refresh()
+
+    def conversation_action_buttons(suffix=''):
+        ui.button(icon='playlist_add_check', on_click=guard(lambda: save_all_pending(suite_name.value))) \
+            .props('flat dense round size=sm color=primary').mark(f'chat-save-suite{suffix}') \
+            .tooltip('Guardar todo lo pendiente como Flujo')
+        ui.button(icon='fact_check', on_click=guard(lambda: conversation_evidence_dialog())) \
+            .props('flat dense round size=sm color=grey-8').mark(f'chat-evidence-all{suffix}') \
+            .tooltip('Evidencia de la conversación (todos los turnos)')
+        ui.button(icon='play_circle', on_click=guard(lambda: replay_dialog())) \
+            .props('flat dense round size=sm color=grey-8').mark(f'chat-replay{suffix}') \
+            .tooltip('Reproducir conversación')
+        ui.button(icon='movie', on_click=guard(lambda: replay_from_suite_dialog())) \
+            .props('flat dense round size=sm color=grey-8').mark(f'chat-replay-suite{suffix}') \
+            .tooltip('Retomar un Flujo guardado')
+
+    @ui.refreshable
+    def top_actions():
+        with ui.row().classes('items-center gap-1 no-wrap'):
+            # Sin guard(): un toggle simple (mismo patrón que `toggle_panel` en turn_actions_row) no necesita
+            # programarse como tarea en segundo plano — eso solo demoraba el refresh un tick, invisible a simple
+            # vista pero suficiente para que un clic inmediatamente siguiente en un test no encontrara nada.
+            ui.button(icon='close' if ui_state['actions_expanded'] else 'add', on_click=toggle_actions) \
+                .props('flat dense round size=sm color=grey-8').mark('chat-actions-toggle') \
+                .tooltip('Ocultar acciones de la conversación' if ui_state['actions_expanded']
+                         else 'Más acciones de la conversación (guardar, evidencia, reproducir)')
+            if ui_state['actions_expanded']:
+                conversation_action_buttons()
+    W['top_actions'] = top_actions
+
+    @ui.refreshable
+    def bottom_actions():
+        with ui.row().classes('items-center gap-1 no-wrap'):
+            ui.button(icon='close' if ui_state['actions_expanded'] else 'add', on_click=toggle_actions) \
+                .props('flat dense round size=sm color=grey-8').mark('chat-actions-toggle-bottom') \
+                .tooltip('Ocultar acciones de la conversación' if ui_state['actions_expanded']
+                         else 'Más acciones de la conversación (guardar, evidencia, reproducir)')
+            if ui_state['actions_expanded']:
+                conversation_action_buttons('-bottom')
+    W['bottom_actions'] = bottom_actions
+
     # ------------------------------------------------------------ conversation
     with ui.row().classes('items-center gap-2 w-full px-3 pt-1 no-wrap'):
         ui.label('Hilo:').classes('text-xs text-gray-500')
@@ -249,6 +300,10 @@ def build(preset_case_id=None):
             refresh_all()
         ui.button('Reiniciar conversación', icon='restart_alt', on_click=guard(reset_conversation)) \
             .props('flat dense size=sm no-caps').tooltip('Borra los mensajes y el hilo; conserva la configuración')
+    with ui.row().classes('items-center gap-2 w-full px-3 pb-1 no-wrap'):
+        suite_name = ui.input('Nombre del flujo', value='Conversación de prueba').props('outlined dense').classes('w-56')
+        top_actions()
+        ui.label('Guardá cada intercambio por separado con el botón que aparece debajo de cada respuesta.').classes('text-xs text-gray-500')
 
     @ui.refreshable
     def chat_view():
@@ -326,6 +381,13 @@ def build(preset_case_id=None):
                 r['mode'] = 'step'
                 r['resume'].set()
 
+            def replay_skip(_=None, r=replay):
+                # No manda el texto grabado de este paso — para cuando ya lo respondiste vos a mano (distinto de
+                # lo grabado) y querés que la reproducción siga con la PRÓXIMA pregunta, no que repita esta.
+                r['mode'] = 'step'
+                r['skip_current'] = True
+                r['resume'].set()
+
             def replay_stop(_=None, r=replay):
                 r['cancelled'] = True
                 r['resume'].set()
@@ -341,6 +403,8 @@ def build(preset_case_id=None):
                     .mark('chat-replay-pause').tooltip('Pausar')
                 ui.button(icon='skip_next', on_click=replay_step).props('flat dense round size=sm color=primary') \
                     .mark('chat-replay-step').tooltip('Un paso')
+                ui.button(icon='fast_forward', on_click=replay_skip).props('flat dense round size=sm color=warning') \
+                    .mark('chat-replay-skip').tooltip('Saltar — ya respondiste esta vos; seguir con la próxima sin reenviar esta')
                 ui.button(icon='stop', on_click=replay_stop).props('flat dense round size=sm color=negative') \
                     .mark('chat-replay-stop').tooltip('Detener acá')
 
@@ -408,25 +472,27 @@ def build(preset_case_id=None):
     W['debug_view'] = debug_view
     debug_view()
 
-    # ------------------------------------------------------------ save as suite
-    with ui.row().classes('items-center gap-2 w-full px-3 pb-2'):
-        suite_name = ui.input('Nombre del flujo', value='Conversación de prueba').props('outlined dense').classes('grow')
-        ui.button('Guardar todo lo pendiente', icon='playlist_add_check', on_click=guard(lambda: save_all_pending(suite_name.value))) \
-            .props('outline dense no-caps').mark('chat-save-suite')
-        ui.button('Evidencia de la conversación', icon='fact_check', on_click=guard(lambda: conversation_evidence_dialog())) \
-            .props('outline dense no-caps').mark('chat-evidence-all').tooltip('Descarga un solo reporte con los turnos que elijas (petición/respuesta de cada uno)')
-        ui.button('Reproducir conversación', icon='play_circle', on_click=guard(lambda: replay_dialog())) \
-            .props('outline dense no-caps').mark('chat-replay').tooltip('Reenvía al bot lo que ya escribiste, con el hilo actual — para retomar sin tipear de nuevo')
-        ui.button('Retomar un Flujo guardado', icon='movie', on_click=guard(lambda: replay_from_suite_dialog())) \
-            .props('outline dense no-caps').mark('chat-replay-suite').tooltip('Arranca una conversación en vivo a partir de los mensajes de un Flujo ya guardado')
-        ui.label('O guardá cada intercambio por separado con el botón que aparece debajo de cada respuesta.').classes('text-xs text-gray-500')
-
     # ------------------------------------------------------------ write & send bar — sticky, always reachable regardless of
-    # how tall the content above is (no hardcoded viewport-minus-header math, which broke once against the real header height)
+    # how tall the content above is (no hardcoded viewport-minus-header math, which broke once against the real header height).
+    # Las acciones de la conversación (bottom_actions) van en esta misma fila, al nivel de la barra de envío —
+    # su duplicado de arriba (top_actions) queda fuera de vista apenas se scrollea una conversación larga.
     with ui.row().classes('items-center gap-1 w-full px-3 py-2 no-wrap bg-white').style('position:sticky;bottom:0;border-top:1px solid #e5e7eb'):
+        bottom_actions()
         box = ui.input(placeholder='Escribe un mensaje…').props('outlined dense').classes('grow').mark('chat-input')
         box.on('keydown.enter', lambda: send_chat_message(box))
         ui.button(icon='send', on_click=guard(lambda: send_chat_message(box))).props('dense round color=primary').classes('shrink-0').mark('chat-send')
+
+    def scroll_to_bottom():
+        """Sigue la conversación a medida que se arman los turnos — sin esto, en una conversación larga (o al
+        reproducir paso a paso) cada mensaje nuevo o cada pausa del reproductor aparece fuera de la pantalla.
+        Envuelto en try/except: `ui.run_javascript` resuelve el slot/cliente «actual» a partir de dónde se llamó
+        — cuando quien llama es un botón de opción rápida (vive DENTRO del `chat_view` refrescable) y ese mismo
+        turno acaba de refrescar `chat_view` (unas líneas antes, en este mismo handler), ese slot ya no existe
+        y NiceGUI tira RuntimeError. No vale la pena que una falla al hacer scroll tire abajo el turno entero."""
+        try:
+            ui.run_javascript('window.scrollTo({top: document.body.scrollHeight, behavior: "smooth"})')
+        except RuntimeError:
+            pass
 
     async def send_chat_message(box, preset_text=None):
         """preset_text: lo manda tal cual sin tocar la caja de texto — así un botón de opción rápida (ver
@@ -442,6 +508,7 @@ def build(preset_case_id=None):
         except ValueError as exc:
             S['messages'].append({'who': 'error', 'text': str(exc)})
             chat_view.refresh()
+            scroll_to_bottom()
             return
         body = case['body'] if isinstance(case['body'], dict) else {}
         try:
@@ -459,11 +526,13 @@ def build(preset_case_id=None):
         except ValueError as exc:
             S['messages'] += [{'who': 'user', 'text': text}, {'who': 'error', 'text': f'No se pudo armar la petición: {exc}'}]
             chat_view.refresh()
+            scroll_to_bottom()
             return
         S['messages'].append({'who': 'user', 'text': text})
         S['last_request'] = body
         chat_view.refresh()
         debug_view.refresh()
+        scroll_to_bottom()
         run_doc = await run.io_bound(core.execute_api, {**case, 'body': body}, env, None, False)
         if run_doc is None:
             # run.io_bound devuelve None (no una excepción) si la llamada se canceló — documentado, no un caso
@@ -484,6 +553,7 @@ def build(preset_case_id=None):
             S['last_response'] = run_doc.get('error') or ''
             chat_view.refresh()
             debug_view.refresh()
+            scroll_to_bottom()
             persist_session()
             return
         S['last_request'] = (run_doc.get('request') or {}).get('body', body)   # con {{variables}} ya resueltas, lo que de verdad viajó
@@ -500,6 +570,7 @@ def build(preset_case_id=None):
             S['runs'][len(S['messages']) - 1] = run_doc
             chat_view.refresh()
             debug_view.refresh()
+            scroll_to_bottom()
             persist_session()
             return
         try:
@@ -526,6 +597,7 @@ def build(preset_case_id=None):
         S['runs'][len(S['messages']) - 1] = run_doc
         chat_view.refresh()
         debug_view.refresh()
+        scroll_to_bottom()
         persist_session()
 
     def save_turn_as_case(turn_index):
@@ -631,17 +703,23 @@ def build(preset_case_id=None):
         W['thread_label'].refresh()
         persist_session()
         replay = {'index': 0, 'total': len(texts), 'mode': 'play' if start_playing else 'step',
-                  'resume': asyncio.Event(), 'cancelled': False}
+                  'resume': asyncio.Event(), 'cancelled': False, 'skip_current': False}
         S['replay'] = replay
         chat_view.refresh()
         for i, text in enumerate(texts):
             replay['index'] = i + 1
             chat_view.refresh()
+            scroll_to_bottom()
             if replay['mode'] != 'play':
                 replay['resume'].clear()
                 await replay['resume'].wait()
             if replay['cancelled']:
                 break
+            if replay['skip_current']:
+                # El texto grabado de ESTE paso no se manda — asume que ya lo respondiste vos a mano (ver
+                # replay_skip en chat_view) y sigue con el próximo texto grabado.
+                replay['skip_current'] = False
+                continue
             try:
                 await send_chat_message(box, text)
             except Exception as exc:
