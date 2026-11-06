@@ -10,8 +10,13 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import urlparse
+import httpx
+from . import core
+
+DEFAULT_LIVE_PORT = 9222
 
 LOCATORS = {'get_by_label': 'label', 'get_by_text': 'text', 'get_by_test_id': 'testid',
             'get_by_placeholder': 'placeholder', 'get_by_role': 'role'}
@@ -247,3 +252,72 @@ def open_browser(url, timeout=900):
     failure = _navigation_failure(result)
     if failure:
         raise ValueError(failure)
+
+
+# --------------------------------------------------------------------------- live browser (CDP) for SSO/MFA that
+# ties a session to the actual browser/device, not just the cookie — replaying captured cookies into a fresh
+# headless context (ver capture_session/core.save_ui_session) can get rejected by that kind of IdP even though
+# the cookies are valid. This keeps a real, visible Chromium open (its own on-disk profile, so the login survives
+# closing/reopening it) and Casos UI connect to it live instead of starting a new context — see
+# automation.execute_ui.
+
+def _chromium_executable():
+    from .automation import _use_system_browsers
+    _use_system_browsers()
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        return p.chromium.executable_path
+
+
+def _live_profile_dir(environment_id):
+    path = core.ROOT / 'ui_browser_profiles' / environment_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def live_browser_running(port, timeout=1.0):
+    """True si hay un Chromium con depuración remota escuchando en ese puerto (endpoint CDP estándar)."""
+    try:
+        return httpx.get(f'http://127.0.0.1:{port}/json/version', timeout=timeout).status_code == 200
+    except Exception:
+        return False
+
+
+def launch_live_browser(environment_id, url, port=DEFAULT_LIVE_PORT, timeout=20):
+    """Abre un Chromium visible con un perfil propio de este ambiente (persiste en disco: la sesión sobrevive a
+    cerrar y volver a abrir esta ventana) y depuración remota habilitada. A diferencia de capture_session (que
+    exporta las cookies una sola vez), esta ventana se queda abierta — Casos UI posteriores se conectan a ella en
+    vivo en lugar de repetir la sesión en un contexto nuevo."""
+    if live_browser_running(port):
+        raise ValueError(f'Ya hay un navegador en vivo abierto en el puerto {port} — cerralo primero si querés reiniciarlo.')
+    url = _checked_url(url)
+    executable = _chromium_executable()
+    profile_dir = _live_profile_dir(environment_id)
+    popen_kwargs = {'env': _env(), 'close_fds': True}
+    if sys.platform == 'win32':
+        popen_kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP | getattr(subprocess, 'DETACHED_PROCESS', 0)
+    else:
+        popen_kwargs['start_new_session'] = True
+    subprocess.Popen([executable, f'--remote-debugging-port={port}', f'--user-data-dir={profile_dir}',
+                       '--no-first-run', '--no-default-browser-check', url], **popen_kwargs)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if live_browser_running(port):
+            return
+        time.sleep(0.3)
+    raise ValueError('El navegador no terminó de abrir a tiempo (¿el puerto ya estaba ocupado por otra cosa?).')
+
+
+def close_live_browser(port):
+    if not live_browser_running(port):
+        return
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        p.chromium.connect_over_cdp(f'http://127.0.0.1:{port}').close()
+
+
+def delete_live_profile(environment_id):
+    """Borra el perfil en disco del navegador en vivo de este ambiente (si había uno) — p. ej. al eliminar el
+    ambiente. No falla si el navegador sigue abierto (carpeta bloqueada): queda para limpiarse después."""
+    import shutil
+    shutil.rmtree(core.ROOT / 'ui_browser_profiles' / environment_id, ignore_errors=True)

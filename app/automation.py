@@ -6,7 +6,7 @@ import threading
 import time
 from urllib.parse import urljoin, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from . import core, logs
+from . import core, logs, recorder
 
 LOCATOR_KINDS = ('label', 'text', 'role', 'testid', 'placeholder')
 STEP_ACTIONS = {
@@ -201,6 +201,7 @@ def execute_ui(case, environment, variables=None, meta=None):
            'project_id': case.get('project_id'), 'case_snapshot': case, 'environment_id': environment['id'],
            'started_at': core.now(), 'steps': [], **(meta or {})}
     browser = None
+    live_mode = False
     try:
         steps = core.substitute(case.get('steps', []), variables, secrets_used)
         missing = core.find_unresolved(steps)
@@ -219,14 +220,31 @@ def execute_ui(case, environment, variables=None, meta=None):
         _use_system_browsers()
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            # Una sesión capturada a mano (ver core.save_ui_session/recorder.capture_session) deja al caso
-            # arrancar ya logueado — sin eso, un login detrás de SSO/MFA no se puede completar solo: la
-            # aprobación por push al teléfono no la puede scriptear ninguna herramienta.
-            session_state = core.get_ui_session(environment['id']) if environment.get('id') else None
-            context = browser.new_context(accept_downloads=False, storage_state=session_state)
-            context.tracing.start(screenshots=True, snapshots=True)
-            page = context.new_page()
+            live_mode = environment.get('ui_session_mode') == 'live' and bool(environment.get('id'))
+            if live_mode:
+                # Navegador real, ya logueado, que alguien dejó abierto a propósito (Ambientes → «Navegador en
+                # vivo», ver recorder.launch_live_browser) — para un proveedor de identidad que ata la sesión al
+                # navegador/dispositivo concreto, no solo a la cookie: ahí, repetir las cookies capturadas (ver
+                # el otro modo, más abajo) en un contexto nuevo puede quedar rechazado aunque sean válidas. Se
+                # abre una pestaña NUEVA en ese mismo navegador (comparte su sesión) y, al terminar, se cierra
+                # solo esa pestaña — nunca el navegador ni sus otras pestañas (ver el cierre, más abajo).
+                port = environment.get('ui_live_port') or recorder.DEFAULT_LIVE_PORT
+                try:
+                    browser = p.chromium.connect_over_cdp(f'http://127.0.0.1:{port}')
+                except Exception as exc:
+                    raise ValueError(f'No se pudo conectar al navegador en vivo (puerto {port}): abrilo primero '
+                                      f'desde Ambientes → «Navegador en vivo». ({exc})') from exc
+                context = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = context.new_page()
+            else:
+                browser = p.chromium.launch(headless=True)
+                # Una sesión capturada a mano (ver core.save_ui_session/recorder.capture_session) deja al caso
+                # arrancar ya logueado — sin eso, un login detrás de SSO/MFA no se puede completar solo: la
+                # aprobación por push al teléfono no la puede scriptear ninguna herramienta.
+                session_state = core.get_ui_session(environment['id']) if environment.get('id') else None
+                context = browser.new_context(accept_downloads=False, storage_state=session_state)
+                context.tracing.start(screenshots=True, snapshots=True)
+                page = context.new_page()
             page.set_default_timeout(int(case.get('timeout_ms', 10000)))
 
             def guard(route):  # navigations/redirects to a host outside allowed_hosts are blocked at network level
@@ -285,22 +303,28 @@ def execute_ui(case, environment, variables=None, meta=None):
                 run['screenshot'] = shot.name
             except Exception:
                 pass
-            if run['status'] != 'passed':
-                trace = core.ARTIFACTS / (run['id'] + '-trace.zip')
-                try:
-                    context.tracing.stop(path=str(trace))
-                    run['trace'] = trace.name
-                except Exception:
-                    pass
+            if live_mode:
+                # El navegador y el resto de sus pestañas son del usuario (los dejó abiertos a propósito, ver
+                # «Navegador en vivo» arriba) — nunca se tocan. Tampoco hay tracing que parar: no se inició
+                # (ver arriba) para no competir con lo que esa misma pestaña compartida esté haciendo.
+                page.close()
             else:
-                context.tracing.stop()
-            context.close()
-            browser.close()
+                if run['status'] != 'passed':
+                    trace = core.ARTIFACTS / (run['id'] + '-trace.zip')
+                    try:
+                        context.tracing.stop(path=str(trace))
+                        run['trace'] = trace.name
+                    except Exception:
+                        pass
+                else:
+                    context.tracing.stop()
+                context.close()
+                browser.close()
             browser = None
     except Exception as exc:
         run['status'] = 'failed'
         run['error'] = f'{type(exc).__name__}: {str(exc)}'[:700]
-        if browser:
+        if browser and not live_mode:
             try: browser.close()
             except Exception: pass
     run = core.scrub(run, secrets_used)

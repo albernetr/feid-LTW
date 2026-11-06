@@ -21,6 +21,7 @@ def _delete_environment(env_id, env_name, on_done):
             ui.notify(f'No se puede eliminar: lo usan {len(affected)} flujo(s){detail}', type='negative', multi_line=True)
             return
         core.secret_delete(core.ui_session_secret_name(env_id))   # sesión guardada para Casos UI, si había una
+        recorder.delete_live_profile(env_id)   # perfil del navegador en vivo, si había uno (ver recorder.launch_live_browser)
         core.delete('environments', env_id)
         ui.notify('Ambiente eliminado', type='positive')
         on_done()
@@ -281,7 +282,8 @@ def environment_edit(id: str = ''):
                         auth_item['token_expires_at'] = current['auth']['token_expires_at']  # unchanged config: keep what we already know
                 hosts = [core.validate_hostname(h) for h in (trusted_hosts.value or '').split(',') if h.strip()]
                 item = {'name': clean_name, 'project_id': pid, 'base_url': base.value.strip(), 'ui_base_url': (ui_base.value or '').strip(),
-                        'trusted_hosts': hosts, 'is_backend': env_backend.value, 'is_frontend': env_frontend.value, 'auth': auth_item, 'variables': clean}
+                        'trusted_hosts': hosts, 'is_backend': env_backend.value, 'is_frontend': env_frontend.value, 'auth': auth_item, 'variables': clean,
+                        'ui_session_mode': session_mode.value, 'ui_live_port': int(live_port.value or recorder.DEFAULT_LIVE_PORT)}
                 if current:
                     item['id'] = current['id']
                     if current.get('ui_session_saved_at'):
@@ -291,32 +293,73 @@ def environment_edit(id: str = ''):
                 ui.navigate.to('/environments')
 
             ui.separator().classes('my-2')
-            ui.label('Sesión guardada para Casos UI (SSO/MFA)').classes('font-medium')
-            saved_at = (current or {}).get('ui_session_saved_at')
-            ui.label(f'Sesión guardada el {fmt_time(saved_at)}.' if saved_at else
-                     'Sin sesión guardada: los Casos UI contra este ambiente arrancan sin iniciar sesión.').classes('text-sm text-gray-600').mark('env-session-status')
+            ui.label('Sesión para Casos UI (SSO/MFA)').classes('font-medium')
             ui.label('Si el login pasa por SSO/MFA (PingID y similares), ningún Caso UI lo puede completar solo — la aprobación por push al teléfono '
-                     'no la puede scriptear ninguna herramienta. En su lugar, iniciá sesión una vez acá a mano; los Casos UI arrancan ya con esa sesión.').classes('text-xs text-gray-500')
+                     'no la puede scriptear ninguna herramienta. Elegí una de las dos formas de dejarlo ya logueado:').classes('text-xs text-gray-500')
+            session_mode = ui.radio({'captured': 'Sesión guardada', 'live': 'Navegador en vivo'},
+                                     value=(current or {}).get('ui_session_mode', 'captured')).props('inline dense').mark('env-session-mode')
 
-            async def capture():
-                if not current:
-                    raise ValueError('Guarda el ambiente primero para poder capturar una sesión.')
-                target = (ui_base.value or base.value or '').strip()
-                core.validate_base_url(target)
-                ui.notify('Se abrirá una ventana de navegador aparte en tu escritorio: iniciá sesión ahí (incluida la verificación en dos pasos si la pide) y cerrala al terminar.', type='info', multi_line=True)
-                state = await run.io_bound(recorder.capture_session, target)
-                core.save_ui_session(current['id'], state)
-                ui.notify('Sesión guardada', type='positive')
-                ui.navigate.reload()
+            with ui.column().classes('w-full gap-1 pt-1').bind_visibility_from(session_mode, 'value', backward=lambda v: v == 'captured'):
+                saved_at = (current or {}).get('ui_session_saved_at')
+                ui.label(f'Sesión guardada el {fmt_time(saved_at)}.' if saved_at else
+                         'Sin sesión guardada: los Casos UI contra este ambiente arrancan sin iniciar sesión.').classes('text-sm text-gray-600').mark('env-session-status')
+                ui.label('Iniciá sesión una vez a mano en una ventana aparte (incluida la verificación en dos pasos); los Casos UI arrancan después con '
+                         'esas cookies cargadas en un navegador nuevo cada vez. Si el proveedor de identidad ata la sesión al navegador/dispositivo '
+                         'concreto (no solo a la cookie), ese navegador nuevo puede quedar rechazado — ahí conviene «Navegador en vivo».').classes('text-xs text-gray-500')
 
-            def clear():
-                core.clear_ui_session(current['id'])
-                ui.notify('Sesión borrada', type='positive')
-                ui.navigate.reload()
-            with ui.row().classes('gap-2'):
-                ui.button('Capturar sesión ahora', icon='fingerprint', on_click=guard(capture)).props('outline dense no-caps').mark('env-session-capture')
-                if saved_at:
-                    ui.button('Borrar sesión', icon='delete', on_click=lambda: confirm('¿Borrar la sesión guardada de este ambiente?', clear)).props('outline dense no-caps color=negative').mark('env-session-clear')
+                async def capture():
+                    if not current:
+                        raise ValueError('Guarda el ambiente primero para poder capturar una sesión.')
+                    target = (ui_base.value or base.value or '').strip()
+                    core.validate_base_url(target)
+                    ui.notify('Se abrirá una ventana de navegador aparte en tu escritorio: iniciá sesión ahí (incluida la verificación en dos pasos si la pide) y cerrala al terminar.', type='info', multi_line=True)
+                    state = await run.io_bound(recorder.capture_session, target)
+                    core.save_ui_session(current['id'], state)
+                    ui.notify('Sesión guardada', type='positive')
+                    ui.navigate.reload()
+
+                def clear():
+                    core.clear_ui_session(current['id'])
+                    ui.notify('Sesión borrada', type='positive')
+                    ui.navigate.reload()
+                with ui.row().classes('gap-2'):
+                    ui.button('Capturar sesión ahora', icon='fingerprint', on_click=guard(capture)).props('outline dense no-caps').mark('env-session-capture')
+                    if saved_at:
+                        ui.button('Borrar sesión', icon='delete', on_click=lambda: confirm('¿Borrar la sesión guardada de este ambiente?', clear)).props('outline dense no-caps color=negative').mark('env-session-clear')
+
+            with ui.column().classes('w-full gap-1 pt-1').bind_visibility_from(session_mode, 'value', backward=lambda v: v == 'live'):
+                live_port = ui.number('Puerto', value=(current or {}).get('ui_live_port') or recorder.DEFAULT_LIVE_PORT, min=1024, max=65535) \
+                    .props('outlined dense').classes('w-32').mark('env-live-port')
+                ui.label('Dejá un Chromium propio de este ambiente abierto y logueado (perfil separado del tuyo, persiste en disco entre sesiones) — '
+                         'los Casos UI se conectan a él en vivo y comparten su sesión, sin tocar tus otras pestañas.').classes('text-xs text-gray-500')
+
+                @ui.refreshable
+                def live_status():
+                    port = int(live_port.value or recorder.DEFAULT_LIVE_PORT)
+                    running = recorder.live_browser_running(port)
+                    ui.label(f'Conectado en el puerto {port}.' if running else f'No hay navegador en vivo abierto en el puerto {port}.') \
+                        .classes('text-sm ' + ('text-positive' if running else 'text-gray-600')).mark('env-live-status')
+                live_status()
+
+                async def open_live():
+                    if not current:
+                        raise ValueError('Guarda el ambiente primero para poder abrir un navegador en vivo.')
+                    target = (ui_base.value or base.value or '').strip()
+                    core.validate_base_url(target)
+                    port = int(live_port.value or recorder.DEFAULT_LIVE_PORT)
+                    ui.notify('Se abrirá un Chromium aparte: iniciá sesión ahí (incluida la verificación en dos pasos si la pide) y dejalo abierto.', type='info', multi_line=True)
+                    await run.io_bound(recorder.launch_live_browser, current['id'], target, port)
+                    ui.notify('Navegador en vivo listo', type='positive')
+                    live_status.refresh()
+
+                async def close_live():
+                    port = int(live_port.value or recorder.DEFAULT_LIVE_PORT)
+                    await run.io_bound(recorder.close_live_browser, port)
+                    ui.notify('Navegador en vivo cerrado', type='positive')
+                    live_status.refresh()
+                with ui.row().classes('gap-2'):
+                    ui.button('Abrir navegador para esta sesión', icon='open_in_browser', on_click=guard(open_live)).props('outline dense no-caps').mark('env-live-open')
+                    ui.button('Cerrar navegador', icon='close', on_click=guard(close_live)).props('outline dense no-caps color=negative').mark('env-live-close')
 
             ui.separator().classes('my-2')
             with ui.row().classes('gap-2'):

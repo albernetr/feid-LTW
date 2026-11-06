@@ -583,6 +583,37 @@ async def test_environments_edit_captures_and_clears_a_ui_session(user: User, mo
     await eventually(lambda: core.get_ui_session(env['id']) is None)
 
 
+async def test_environments_edit_requires_saving_before_opening_a_live_browser(user: User):
+    project = core.create_project('Vivo sin guardar')
+    core.set_active_project(project['id'])
+    await user.open('/environments/edit')
+    user.find('Navegador en vivo').click()   # cambia del modo «Sesión guardada» (por defecto) a este
+    await user.should_see(marker='env-live-open', retries=30)   # bind_visibility_from tarda un tick del binding en reflejarse
+    user.find(marker='env-live-open').click()
+    await user.should_see('Guarda el ambiente primero')
+
+
+async def test_environments_edit_switches_to_live_browser_mode_and_opens_it(user: User, monkeypatch):
+    from app import recorder
+    project = core.create_project('Con navegador en vivo')
+    core.set_active_project(project['id'])
+    env = core.save('environments', {'name': 'qa', 'project_id': project['id'], 'base_url': 'https://qa.example.com', 'variables': {}, 'auth': {'type': 'none'}})
+    opened = {}
+
+    def fake_launch(environment_id, url, port):
+        opened.update(environment_id=environment_id, url=url, port=port)
+    monkeypatch.setattr(recorder, 'launch_live_browser', fake_launch)   # sin abrir un Chromium real
+    monkeypatch.setattr(recorder, 'live_browser_running', lambda port: bool(opened))
+    await user.open(f'/environments/edit?id={env["id"]}')
+    user.find('Navegador en vivo').click()
+    await user.should_see('No hay navegador en vivo abierto', retries=30)
+    user.find(marker='env-live-open').click()
+    await eventually(lambda: opened == {'environment_id': env['id'], 'url': 'https://qa.example.com', 'port': recorder.DEFAULT_LIVE_PORT})
+    await user.should_see('Conectado en el puerto')
+    user.find(marker='env-save').click()
+    await eventually(lambda: core.get('environments', env['id'])['ui_session_mode'] == 'live')
+
+
 async def test_modules_table_row_click_opens_the_detail_page(user: User):
     from nicegui import ui
     seed()
