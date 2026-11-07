@@ -1,12 +1,12 @@
 """Chat: conversar en vivo con un chatbot/API conversacional, un mensaje a la vez — en vez de armar los turnos de
-antemano como una suite. Pantalla propia (no una pestaña más del Espacio de trabajo) para que el área central sea
-la conversación: URL arriba, parámetros en un panel, petición/respuesta cruda en otro, y la barra de escribir abajo
-(fija al fondo con position:sticky, para no depender de calcular la altura exacta del encabezado)."""
+antemano como una suite. Pantalla propia (no una pestaña más del Espacio de trabajo), con el mismo layout de tres
+paneles que ya usa `workspace_page.py`: izquierda (conversaciones/flujos guardados), centro (la conversación en
+vivo), derecha (parámetros + el asistente de IA) — calcado a propósito, no un diseño nuevo."""
 import asyncio
 import copy
 import json
 from nicegui import ui, run
-from .. import core, workspace as ws, evidence_report
+from .. import core, workspace as ws, evidence_report, llm
 from .common import frame, guard, protected_page, show_run, render_evidence, STATUS_LABEL
 from .widgets import kv_rows, dynamic_variable_chips
 
@@ -43,13 +43,17 @@ def build(preset_case_id=None):
     projects_by_id = {p['id']: p['name'] for p in core.list_items('projects')}
     all_envs = [e for e in core.list_items('environments') if e.get('name')]
     d = ws.new_draft()
-    S = {'messages': [], 'thread_id': '', 'last_request': None, 'last_response': None, 'suite_id': None, 'runs': {}, 'replay': None}
+    S = {'messages': [], 'thread_id': '', 'last_request': None, 'last_response': None, 'suite_id': None, 'runs': {}, 'replay': None, 'ai_run': None}
     # S['runs']: índice de turno -> run_doc completo (petición/respuesta/aserciones), para «Ver detalle y evidencia».
     # Solo en memoria — nunca entra a persist_session(), que guarda S['messages'] tal cual: una transcripción larga
     # con el run_doc completo de cada turno (cuerpos de petición/respuesta incluidos) infla el caso guardado.
     # S['replay']: None o un dict en curso {'index', 'total', 'mode': 'play'|'step', 'resume': asyncio.Event,
     # 'cancelled'} mientras «Reproducir conversación» va mandando turnos ya escritos (o los de un Flujo guardado)
     # contra el bot, uno por uno, con controles de reproducir/pausar/paso/detener — nunca se persiste.
+    # S['ai_run']: None o un dict en curso {'phase': 'preset'|'ai', 'turn', 'max_turns', 'mode': 'play'|'step',
+    # 'cancelled', 'draft', 'stop_reason'} mientras «Conversación conducida por IA» (ver run_ai_conversation) va
+    # generando turnos — el turno sugerido queda precargado y EDITABLE en la barra de escribir normal (no se manda
+    # solo salvo en modo «de corrido»): confirmar es, literalmente, mandar ese mensaje como cualquier otro.
     W = {}
 
     def resolve_project():
@@ -98,6 +102,8 @@ def build(preset_case_id=None):
             env_id = envs[0]['id'] if len(envs) == 1 else ''
         d.clear()
         d.update(ws.draft_from_case(case_doc, env_id))
+        d['hu_text'] = case_doc.get('hu_text') or ''   # workspace.draft_from_case no sabe de esto (es propio del chat)
+        d['feature_id'] = case_doc.get('feature_id')
         session = (case_doc.get('chat_session') or {}) if resume else {}
         S.update(messages=list(session.get('messages') or []), thread_id=session.get('thread_id') or '',
                  suite_id=session.get('suite_id'), last_request=None, last_response=None)
@@ -118,7 +124,7 @@ def build(preset_case_id=None):
         sync_url()
 
     def refresh_all():
-        for name in ('params_view', 'chat_view', 'debug_view', 'case_picker', 'template_picker', 'thread_label'):
+        for name in ('params_view', 'chat_view', 'debug_view', 'case_picker', 'template_picker', 'thread_label', 'left_panel'):
             if name in W:
                 W[name].refresh()
 
@@ -127,47 +133,12 @@ def build(preset_case_id=None):
         if existing:
             load_case(existing)
 
-    # ------------------------------------------------------------ top bar
-    with ui.row().classes('w-full items-center gap-2 no-wrap px-3 pt-2'):
-        ui.icon('forum', color='primary', size='sm')
-        ui.input(placeholder='Nombre de este chat').props('borderless dense').classes('text-lg font-medium grow').bind_value(d, 'name')
-
-        @ui.refreshable
-        def template_picker():
-            project_id = core.get_active_project_id()
-            templates = [c for c in core.list_project_items('cases', project_id) if c.get('chat_template')] if project_id else []
-            options = {'': 'Elegir plantilla…', **{c['id']: c['name'] for c in templates}}
-            ui.select(options, value='', label='Plantilla', on_change=lambda e: start_from_template(core.get('cases', e.value)) if e.value else None) \
-                .props('outlined dense options-dense').classes('w-48').mark('chat-template-picker') \
-                .tooltip('Endpoint configurado una vez (URL, headers, body, mapeo) para arrancar conversaciones nuevas sin recargarlo cada vez')
-        W['template_picker'] = template_picker
-        template_picker()
-
-        @ui.refreshable
-        def case_picker():
-            project_id = core.get_active_project_id()
-            # Solo casos con mapeo de chat configurado: los «Turno N: …» que genera cada suite al guardar una
-            # conversación son casos API comunes (chat=None, un paso suelto dentro del flujo) y no se pueden
-            # retomar como chat — listarlos acá solo confundía (el chat quedaba en blanco al elegir uno).
-            cases = [c for c in core.list_project_items('cases', project_id) if c.get('chat')] if project_id else []
-            options = {'': 'Caso nuevo (sin guardar)', **{c['id']: c['name'] for c in cases}}
-            ui.select(options, value='', label='Retomar conversación', on_change=lambda e: load_case(core.get('cases', e.value)) if e.value else None) \
-                .props('outlined dense options-dense').classes('w-56').tooltip('Continúa una conversación guardada exactamente donde quedó')
-        W['case_picker'] = case_picker
-        case_picker()
-        ui.button(icon='note_add', on_click=guard(new_chat)).props('flat round dense').tooltip('Nuevo chat en blanco (otro endpoint)')
-    with ui.row().classes('w-full items-center gap-2 no-wrap px-3'):
-        ui.select({'': 'URL completa', **{e['id']: f'{projects_by_id.get(e.get("project_id"), "sin proyecto")} · {e["name"]}' for e in all_envs}}, label='Ambiente') \
-            .props('outlined dense options-dense').classes('w-48').bind_value(d, 'env_id')
-        ui.select(HTTP_METHODS, label='Método').props('outlined dense').classes('w-24').bind_value(d, 'method')
-        scheme = ui.select(['https', 'http'], label='Proto.').props('outlined dense').classes('w-20').bind_value(d, 'scheme')
-        scheme.bind_visibility_from(d, 'env_id', backward=lambda v: not v)
-        ui.input(placeholder='ejemplo.com/api/chat/messages').props('outlined dense').classes('grow').bind_value(d, 'url').mark('chat-url')
-
-    # ------------------------------------------------------------ parameters (headers + chat mapping)
+    # ------------------------------------------------------------ parameters (headers + chat mapping) — vive en
+    # la pestaña «Parámetros» del panel derecho (ver right_panel más abajo); ya no es un acordeón en el flujo
+    # central, pero su contenido es exactamente el mismo.
     @ui.refreshable
     def params_view():
-        with ui.expansion('Parámetros', icon='tune', value=not d.get('chat')).classes('w-full mx-3').style('width:calc(100% - 24px)'):
+        with ui.column().classes('w-full gap-2 p-3'):
             ui.label('Headers').classes('font-medium text-sm')
             W['headers_view'] = kv_rows(lambda: d['headers'], 'Header', 'Valor', None, HEADER_SUGGESTIONS)
             ui.separator().classes('my-1')
@@ -197,6 +168,16 @@ def build(preset_case_id=None):
                 .props('outlined dense').classes('w-full').mark('chat-options-path') \
                 .tooltip('Si el bot manda botones de respuesta rápida, poné la ruta a esa lista — p. ej. $.conversation.replies[0].options. '
                          'Vacío si el bot no los manda.')
+            ui.separator().classes('my-1')
+            ui.label('Criterio para el veredicto del modelo (opcional)').classes('font-medium text-sm')
+            ui.label('El asistente de IA (pestaña «Asistente IA» →) evalúa la conversación contra esto. Si dejás los '
+                     'dos vacíos, infiere el objetivo del nombre/notas del caso y de la propia conversación.').classes('text-xs text-gray-500')
+            hu_text = ui.textarea('Historia de usuario / criterios de aceptación', value=d.get('hu_text') or '') \
+                .props('outlined dense').classes('w-full').mark('chat-hu-text')
+            active_project_id = core.get_active_project_id()
+            features = core.list_project_items('features', active_project_id) if active_project_id else []
+            feature_id = ui.select({f['id']: f['name'] for f in features}, label='O ligar a una Funcionalidad', clearable=True,
+                                    value=d.get('feature_id')).props('outlined dense').classes('w-full').mark('chat-feature-id')
 
             def activate():
                 """Guarda la configuración (headers, variables, body base y mapeo) como una plantilla reutilizable —
@@ -209,13 +190,16 @@ def build(preset_case_id=None):
                     raise ValueError('Ponele un nombre a este chat arriba (donde dice «Nombre de este chat») para guardar la plantilla')
                 d['chat'] = {name: field.value.strip() for name, field in fields.items()}
                 d['chat']['options_path'] = (options_path.value or '').strip()
+                d['hu_text'] = hu_text.value.strip()
+                d['feature_id'] = feature_id.value
                 project_id = resolve_project()
                 base, env = ws.build_case(d)
                 env_doc = persistent_env(project_id, env)
                 source = d.get('source') or {}
                 existing = core.get('cases', source['id']) if source.get('type') == 'case' else None
                 item = {k: v for k, v in base.items() if k not in ('id', 'updated_at')}
-                item.update({'project_id': project_id, 'environment_id': env_doc['id'], 'chat_template': True})
+                item.update({'project_id': project_id, 'environment_id': env_doc['id'], 'chat_template': True,
+                             'hu_text': d['hu_text'], 'feature_id': d['feature_id']})
                 if existing is not None:
                     item['id'] = existing['id']
                     item['chat_session'] = existing.get('chat_session')
@@ -225,14 +209,15 @@ def build(preset_case_id=None):
                 ui.notify(f'Plantilla «{saved["name"]}» guardada: la vas a encontrar en «Plantilla» la próxima vez', type='positive')
                 W['params_view'].refresh()
                 W['template_picker'].refresh()
+                if 'left_panel' in W:
+                    W['left_panel'].refresh()
                 chat_view.refresh()
             ui.button('Guardar configuración', icon='check', on_click=guard(activate)).props('color=primary dense no-caps').mark('chat-activate')
     W['params_view'] = params_view
-    params_view()
 
     # ------------------------------------------------------------ conversation-level actions (no de un turno
     # puntual): guardar lo pendiente como Flujo, evidencia conjunta, reproducir. Se repiten arriba (junto al
-    # hilo) y abajo (pegadas a la barra de escribir) — antes vivían en una sola fila a mitad de pantalla, que se
+    # hilo) y abajo (pegadas a la barra de envío) — antes vivían en una sola fila a mitad de pantalla, que se
     # perdía de vista apenas la conversación crecía; reportado en vivo («quiero las acciones arriba y abajo, al
     # nivel de la barra de envío»). Detrás de un «+» para no ocupar espacio cuando no se están usando.
     ui_state = {'actions_expanded': False}
@@ -282,37 +267,14 @@ def build(preset_case_id=None):
     W['bottom_actions'] = bottom_actions
 
     # ------------------------------------------------------------ conversation
-    with ui.row().classes('items-center gap-2 w-full px-3 pt-1 no-wrap'):
-        ui.label('Hilo:').classes('text-xs text-gray-500')
-
-        @ui.refreshable
-        def thread_label():
-            ui.input(placeholder='(nuevo)', value=S['thread_id']).props('outlined dense').classes('w-56 font-mono text-xs') \
-                .on_value_change(lambda e: S.__setitem__('thread_id', (e.value or '').strip())).mark('chat-thread-id') \
-                .tooltip('Editalo para continuar un hilo puntual o forzar uno nuevo antes de enviar')
-        W['thread_label'] = thread_label
-        thread_label()
-        ui.space()
-
-        def reset_conversation():
-            S.update(messages=[], thread_id='', last_request=None, last_response=None, suite_id=None, runs={})
-            persist_session()
-            refresh_all()
-        ui.button('Reiniciar conversación', icon='restart_alt', on_click=guard(reset_conversation)) \
-            .props('flat dense size=sm no-caps').tooltip('Borra los mensajes y el hilo; conserva la configuración')
-    with ui.row().classes('items-center gap-2 w-full px-3 pb-1 no-wrap'):
-        suite_name = ui.input('Nombre del flujo', value='Conversación de prueba').props('outlined dense').classes('w-56')
-        top_actions()
-        ui.label('Guardá cada intercambio por separado con el botón que aparece debajo de cada respuesta.').classes('text-xs text-gray-500')
-
     @ui.refreshable
     def chat_view():
-        if not S['messages'] and not S['replay']:
-            # Si hay una reproducción en curso, S['messages'] arranca vacío a propósito (ver run_replay) pero la
-            # barra de control (▶ ⏸ ⏭ ⏹, más abajo) tiene que pintarse igual — si no, «paso a paso» queda
+        if not S['messages'] and not S['replay'] and not S['ai_run']:
+            # Si hay una reproducción (o una conversación conducida por IA) en curso, S['messages'] arranca vacío
+            # a propósito pero la barra de control tiene que pintarse igual — si no, «paso a paso» queda
             # esperando un clic en un control que nunca aparece.
             with ui.column().classes('w-full items-center justify-center').style('min-height:240px'):
-                ui.label('Completa el mapeo en «Parámetros» y guardalo para empezar a conversar.' if not d.get('chat')
+                ui.label('Completa el mapeo en «Parámetros» (panel derecho) y guardalo para empezar a conversar.' if not d.get('chat')
                           else 'Escribe el primer mensaje abajo.').classes('text-sm text-gray-500')
             return
         def turn_request_response_panel(index):
@@ -408,6 +370,37 @@ def build(preset_case_id=None):
                 ui.button(icon='stop', on_click=replay_stop).props('flat dense round size=sm color=negative') \
                     .mark('chat-replay-stop').tooltip('Detener acá')
 
+        if S['ai_run']:
+            ai_run = S['ai_run']
+
+            async def ai_run_play(r=ai_run):
+                # Si ya hay un turno sugerido esperando (modo paso a paso), «seguir de corrido» también lo manda
+                # ahora tal como está en la caja — si no, el bucle se queda esperando un envío que nadie va a
+                # disparar con solo cambiar el modo.
+                r['mode'] = 'play'
+                if r['draft']:
+                    await send_chat_message(box)
+
+            def ai_run_pause(_=None, r=ai_run):
+                r['mode'] = 'step'
+
+            def ai_run_stop(_=None, r=ai_run):
+                r['cancelled'] = True
+            label = (f'IA sugiriendo turno {ai_run["turn"]} de hasta {ai_run["max_turns"]}' if ai_run['phase'] == 'ai'
+                     else 'Retomando los turnos del Flujo elegido…')
+            if ai_run['draft']:
+                label += ' — revisá/editá el mensaje de abajo y mandalo para seguir'
+            with ui.row().classes('items-center gap-2 w-full px-3 py-2 bg-purple-50 rounded-borders'):
+                ui.icon('smart_toy', color='primary')
+                ui.label(label).classes('text-sm text-primary')
+                ui.space()
+                ui.button(icon='play_arrow', on_click=guard(ai_run_play)).props('flat dense round size=sm color=primary') \
+                    .mark('chat-ai-run-play').tooltip('Seguir de corrido (manda cada turno sugerido solo)')
+                ui.button(icon='pause', on_click=ai_run_pause).props('flat dense round size=sm color=primary') \
+                    .mark('chat-ai-run-pause').tooltip('Pausar y revisar cada turno antes de mandarlo')
+                ui.button(icon='stop', on_click=ai_run_stop).props('flat dense round size=sm color=negative') \
+                    .mark('chat-ai-run-stop').tooltip('Detener acá')
+
         with ui.column().classes('w-full gap-1 px-3'):
             for index, turn in enumerate(S['messages']):
                 if turn['who'] == 'user':
@@ -456,12 +449,11 @@ def build(preset_case_id=None):
                     ui.label(turn['text']).classes('text-xs text-red-700')
                     turn_actions_row(index)
     W['chat_view'] = chat_view
-    chat_view()
 
     # ------------------------------------------------------------ last turn, raw (debugging)
     @ui.refreshable
     def debug_view():
-        with ui.expansion('Petición / Respuesta (último turno)', icon='code').classes('w-full mx-3').style('width:calc(100% - 24px)'):
+        with ui.expansion('Petición / Respuesta (último turno)', icon='code', value=False).classes('w-full'):
             if not S['last_request']:
                 ui.label('Aún no enviaste ningún mensaje.').classes('text-xs text-gray-500')
             else:
@@ -470,17 +462,6 @@ def build(preset_case_id=None):
                 ui.label('Recibido').classes('text-xs font-semibold text-gray-500')
                 ui.code(S['last_response'] or '', language='json').classes('w-full').style('max-height:160px;overflow:auto')
     W['debug_view'] = debug_view
-    debug_view()
-
-    # ------------------------------------------------------------ write & send bar — sticky, always reachable regardless of
-    # how tall the content above is (no hardcoded viewport-minus-header math, which broke once against the real header height).
-    # Las acciones de la conversación (bottom_actions) van en esta misma fila, al nivel de la barra de envío —
-    # su duplicado de arriba (top_actions) queda fuera de vista apenas se scrollea una conversación larga.
-    with ui.row().classes('items-center gap-1 w-full px-3 py-2 no-wrap bg-white').style('position:sticky;bottom:0;border-top:1px solid #e5e7eb'):
-        bottom_actions()
-        box = ui.input(placeholder='Escribe un mensaje…').props('outlined dense').classes('grow').mark('chat-input')
-        box.on('keydown.enter', lambda: send_chat_message(box))
-        ui.button(icon='send', on_click=guard(lambda: send_chat_message(box))).props('dense round color=primary').classes('shrink-0').mark('chat-send')
 
     def scroll_to_bottom():
         """Sigue la conversación a medida que se arman los turnos — sin esto, en una conversación larga (o al
@@ -490,7 +471,7 @@ def build(preset_case_id=None):
         turno acaba de refrescar `chat_view` (unas líneas antes, en este mismo handler), ese slot ya no existe
         y NiceGUI tira RuntimeError. No vale la pena que una falla al hacer scroll tire abajo el turno entero."""
         try:
-            ui.run_javascript('window.scrollTo({top: document.body.scrollHeight, behavior: "smooth"})')
+            ui.run_javascript('const el = document.querySelector(".ltw-pane"); if (el) el.scrollTo({top: el.scrollHeight, behavior: "smooth"})')
         except RuntimeError:
             pass
 
@@ -499,7 +480,10 @@ def build(preset_case_id=None):
         `turn.get('options')` en chat_view) envía su texto como si lo hubieras tipeado vos."""
         text = (preset_text if preset_text is not None else (box.value or '')).strip()
         chat = d.get('chat')
-        if not text or not chat:
+        if not text:
+            return
+        if not chat:
+            ui.notify('Completa el mapeo del chat en «Parámetros» (panel derecho) y guárdalo antes de conversar', type='warning')
             return
         if preset_text is None:
             box.set_value('')
@@ -600,6 +584,25 @@ def build(preset_case_id=None):
         scroll_to_bottom()
         persist_session()
 
+    def _build_exploration_path():
+        """S['messages'] (lista plana de turnos) → la forma que espera core.save_exploration_tree: un paso por
+        turno de usuario, con la opción que tomó (si el bot le había ofrecido alguna justo antes) y, de su propia
+        respuesta, el texto y las opciones que ESA MISMA respuesta ofrece — para el turno siguiente, no para
+        este (`options_offered` vive en el paso «padre» de la decisión, no en el elegido, para que
+        core.pending_branches lo encuentre ahí)."""
+        path, prev_offered = [], []
+        for turn in S['messages']:
+            if turn['who'] == 'user':
+                path.append({'message': turn['text'], 'option': turn['text'] if turn['text'] in prev_offered else None,
+                              'bot_reply': '', 'options_offered': []})
+            elif turn['who'] == 'bot':
+                options = turn.get('options') or []
+                if path:
+                    path[-1]['bot_reply'] = turn.get('text', '')
+                    path[-1]['options_offered'] = options
+                prev_offered = options
+        return path
+
     def save_turn_as_case(turn_index):
         """Convierte UN intercambio (el mensaje que escribiste + lo que respondió el bot) en un caso, y lo agrega
         como paso a la suite de esta conversación — encadenado al turno guardado anterior, igual que cualquier otra
@@ -633,12 +636,19 @@ def build(preset_case_id=None):
                                                   'source': {'type': 'step', 'step': prev_alias, 'path': chat['thread_response_path']}}]
         steps.append({'case_id': saved_case['id'], 'alias': alias, 'enrich': enrich})
         suite = core.save_suite((suite_name.value or 'Conversación de prueba').strip(), env_doc['id'], [s['case_id'] for s in steps], project_id,
-                                id=(existing_suite['id'] if existing_suite else None), steps=steps)
+                                id=(existing_suite['id'] if existing_suite else None), steps=steps, chat=chat)
         S['suite_id'] = suite['id']
         turn['saved'], turn['turn_number'] = True, turn_number
         persist_session()
         chat_view.refresh()
+        if 'left_panel' in W:
+            W['left_panel'].refresh()
         ui.notify(f'Turno {turn_number} guardado en el flujo «{suite["name"]}» ({projects_by_id.get(project_id, "")})', type='positive')
+        source = d.get('source') or {}
+        if source.get('type') == 'case':
+            # El árbol de exploración (Fase 4) vive del lado del caso de chat, no del Flujo puntual — un mismo
+            # caso puede terminar con varios Flujos (uno por rama), todos colgando del mismo árbol.
+            core.save_exploration_tree(source['id'], project_id, _build_exploration_path(), suite_id=suite['id'])
 
     def save_all_pending(name):
         pending = [i for i, t in enumerate(S['messages']) if t['who'] == 'user' and not t.get('saved')]
@@ -647,16 +657,34 @@ def build(preset_case_id=None):
         for index in pending:
             save_turn_as_case(index)
 
+    def resolve_verdict_context():
+        """Las tres fuentes de criterio para el veredicto del modelo, en orden: HU escrita a mano, Funcionalidad
+        ligada, o (a falta de las dos) el nombre del caso — lo demás lo infiere el propio prompt de
+        llm.judge_conversation. Devuelve (texto, de dónde salió, para mostrarlo y que no sea una caja negra)."""
+        hu = (d.get('hu_text') or '').strip()
+        if hu:
+            return hu, 'historia de usuario / criterios escritos'
+        feature_id = d.get('feature_id')
+        if feature_id:
+            feature = core.get('features', feature_id)
+            if feature and (feature.get('description') or '').strip():
+                return feature['description'].strip(), f'Funcionalidad «{feature["name"]}»'
+        name = (d.get('name') or '').strip()
+        return (f'Nombre del caso: {name}' if name else ''), 'inferido de la conversación (sin HU ni Funcionalidad)'
+
     def conversation_evidence_dialog():
         """Un solo lugar para la evidencia de TODA la conversación (no turno a turno): elegís qué turnos entran
         —todos, por defecto— y descargás un único HTML/PDF/Word/Markdown con la petición/respuesta de cada uno,
         igual que ya muestra «Ver detalle y evidencia» por turno. Los run_doc salen de S['runs'] (en memoria, nunca
-        persistidos — igual que la evidencia de un solo turno)."""
+        persistidos — igual que la evidencia de un solo turno). También se puede pedir, antes de descargar, que el
+        modelo argumente si la conversación completa (S['messages']) pasa o no — el veredicto viaja con el reporte."""
         indices = sorted(S['runs'].keys())
         if not indices:
             ui.notify('Todavía no hay ningún turno con petición/respuesta para incluir', type='info')
             return
         checked = {i: True for i in indices}
+        V = {'verdict': None, 'busy': False}
+        context_text, context_source = resolve_verdict_context()
         with ui.dialog() as dialog, ui.card().classes('w-[640px] max-w-full'):
             ui.label('Evidencia de la conversación').classes('text-lg font-semibold')
             ui.label('Elegí qué turnos incluir en el reporte (todos, por defecto).').classes('text-sm text-gray-600')
@@ -667,13 +695,43 @@ def build(preset_case_id=None):
                     label = f'{turn_run.get("case_name") or f"Turno {index}"} · {status_word}'
                     cb = ui.checkbox(label, value=True).mark(f'chat-evidence-all-cb-{index}')
                     cb.on_value_change(lambda e, i=index: checked.__setitem__(i, e.value))
+            ui.separator().classes('my-1')
+
+            async def ask_verdict():
+                V['busy'] = True
+                verdict_view.refresh()
+                try:
+                    V['verdict'] = await run.io_bound(llm.judge_conversation, S['messages'], context_text)
+                except llm.LLMError as exc:
+                    ui.notify(str(exc), type='negative', multi_line=True)
+                finally:
+                    V['busy'] = False
+                    verdict_view.refresh()
+
+            @ui.refreshable
+            def verdict_view():
+                ui.label(f'Criterio del veredicto: {context_source}').classes('text-xs text-gray-500')
+                state = llm.status()
+                if V['verdict']:
+                    icon, color = ('check_circle', 'positive') if V['verdict']['pass'] else ('cancel', 'negative')
+                    with ui.row().classes('items-center gap-2'):
+                        ui.icon(icon, color=color)
+                        ui.label('Pasa' if V['verdict']['pass'] else 'No pasa').classes('font-medium')
+                    ui.label(V['verdict']['reasoning']).classes('text-sm text-gray-700').mark('chat-verdict-reasoning')
+                ui.button('Pedir veredicto al modelo', icon='psychology', on_click=guard(ask_verdict)) \
+                    .props('flat dense no-caps').mark('chat-ask-verdict').set_enabled(state['ready'] and not V['busy'])
+                if not state['ready']:
+                    ui.label(state['problem']).classes('text-xs text-gray-500')
+            verdict_view()
+            ui.separator().classes('my-1')
+
             async def download(kind):
                 chosen = [S['runs'][i] for i in indices if checked[i]]
                 if not chosen:
                     ui.notify('Elegí al menos un turno', type='warning')
                     return
                 title = (suite_name.value or d.get('name') or 'Conversación').strip()
-                data = evidence_report.build_multi_report_data(title, chosen)
+                data = evidence_report.build_multi_report_data(title, chosen, llm_verdict=V['verdict'])
                 content, _ = await render_evidence(data, kind)
                 ui.download(content, f'{title.replace(" ", "_")}.{kind}')
                 ui.notify('Evidencia generada', type='positive')
@@ -699,7 +757,10 @@ def build(preset_case_id=None):
         if not texts:
             ui.notify('No hay turnos para reproducir', type='warning')
             return
-        S.update(messages=[], runs={}, thread_id='' if new_thread else S['thread_id'])
+        # Un hilo nuevo es una conversación distinta para el bot — también lo es para «guardar»: sin este reset,
+        # el próximo «Guardar todo lo pendiente» intenta fusionar los turnos nuevos en el Flujo de la corrida
+        # anterior y choca con un alias ya usado («turno1» repetido) apenas el número de turno vuelve a coincidir.
+        S.update(messages=[], runs={}, thread_id='' if new_thread else S['thread_id'], suite_id=None if new_thread else S['suite_id'])
         W['thread_label'].refresh()
         persist_session()
         replay = {'index': 0, 'total': len(texts), 'mode': 'play' if start_playing else 'step',
@@ -762,7 +823,10 @@ def build(preset_case_id=None):
         dialog.open()
 
     def _extract_texts_from_suite(suite_doc):
-        message_path = (d.get('chat') or {}).get('message_path')
+        """Usa el mapeo con el que se guardó el propio Flujo (independiente de qué chat esté abierto en
+        pantalla); solo cae al mapeo del chat actual para Flujos guardados antes de que esto existiera."""
+        chat = suite_doc.get('chat') or d.get('chat') or {}
+        message_path = chat.get('message_path')
         if not message_path:
             return []
         texts = []
@@ -778,9 +842,11 @@ def build(preset_case_id=None):
                 texts.append(value)
         return texts
 
-    def replay_from_suite_dialog():
+    def replay_from_suite_dialog(preselected_suite_id=None):
         """Retomar un Flujo ya guardado (del proyecto activo) como punto de partida de una conversación en vivo
-        — reconstruye sus turnos mandándolos de verdad, sin tener que volver a tipear cada uno."""
+        — reconstruye sus turnos mandándolos de verdad, sin tener que volver a tipear cada uno. `preselected_suite_id`:
+        quien llama (p. ej. una fila del panel izquierdo, «Flujos») ya sabe cuál — se lo deja elegido de entrada,
+        sin tener que volver a buscarlo en el desplegable."""
         project_id = core.get_active_project_id()
         suites = core.list_project_items('suites', project_id) if project_id else []
         if not suites:
@@ -790,7 +856,8 @@ def build(preset_case_id=None):
             ui.label('Retomar un Flujo guardado').classes('text-lg font-semibold')
             ui.label('Reproduce en vivo, en orden, los mensajes de ese Flujo — reemplaza la conversación actual.') \
                 .classes('text-sm text-gray-600')
-            picker = ui.select({s['id']: s['name'] for s in suites}, label='Flujo') \
+            default_value = preselected_suite_id if any(s['id'] == preselected_suite_id for s in suites) else None
+            picker = ui.select({s['id']: s['name'] for s in suites}, value=default_value, label='Flujo') \
                 .props('outlined dense options-dense').classes('w-full').mark('chat-replay-suite-picker')
             new_thread = ui.checkbox('Usar un hilo nuevo (el bot arranca de cero)', value=True).mark('chat-replay-suite-newthread')
             step_mode = ui.checkbox('Empezar pausado (paso a paso)', value=True).mark('chat-replay-suite-stepmode')
@@ -801,7 +868,13 @@ def build(preset_case_id=None):
                 suite_doc = core.get('suites', picker.value)
                 texts = _extract_texts_from_suite(suite_doc)
                 if not texts:
-                    raise ValueError('Ese Flujo no tiene turnos compatibles con el mapeo de este chat (revisa «Ruta del mensaje saliente»)')
+                    raise ValueError('Ese Flujo no tiene turnos compatibles con su mapeo de chat (revisa «Ruta del mensaje saliente» al guardarlo)')
+                if not d.get('chat') and suite_doc.get('chat'):
+                    # Este chat todavía no tiene su propio mapeo guardado (p. ej. uno nuevo, sin "Guardar
+                    # configuración"): toma el del Flujo que se está retomando, para poder seguir conversando
+                    # en vivo después de la reproducción sin que se pierdan los mensajes silenciosamente.
+                    d['chat'] = copy.deepcopy(suite_doc['chat'])
+                    W['params_view'].refresh()
                 start_playing, use_new_thread = not step_mode.value, new_thread.value
                 dialog.close()
                 await run_replay(texts, start_playing, use_new_thread)
@@ -809,3 +882,411 @@ def build(preset_case_id=None):
                 ui.button('Cancelar', on_click=dialog.close).props('flat')
                 ui.button('Reproducir', icon='play_circle', on_click=guard(start)).props('color=primary no-caps').mark('chat-replay-suite-confirm')
         dialog.open()
+
+    # ------------------------------------------------------------ conversación conducida por el modelo: arranca
+    # de cero (o retoma un Flujo guardado, turno a turno fijo, igual que replay_from_suite_dialog) y a partir de
+    # ahí el modelo va sugiriendo cada turno de «vos» (llm.suggest_next_turn) hasta `max_turns` o hasta que el
+    # propio modelo diga que ya terminó. Reusa a propósito la barra de escribir normal como mecanismo de
+    # aprobación: en modo paso a paso, el turno sugerido queda precargado ahí — editable como cualquier borrador
+    # — y mandarlo (Enter o el botón de enviar, sin nada nuevo que aprender) es lo que hace avanzar el bucle; no
+    # hace falta un botón de «confirmar» aparte. «De corrido» manda cada turno solo, con el mismo ritmo visible
+    # que ya usa «Reproducir conversación» — salvo que el bot haya ofrecido opciones y el modelo no haya elegido
+    # ninguna con claridad: ahí pausa igual, para que decida una persona (nunca inventa una opción que el bot no
+    # ofreció). Al cortar (por el motivo que sea), si quedaron turnos nuevos sin guardar, se ofrece guardarlos de
+    # una como Flujo — así una corrida autónoma larga no se pierde por no haber tocado el botón de siempre.
+    def _offered_options():
+        return S['messages'][-1].get('options') or [] if S['messages'] and S['messages'][-1]['who'] == 'bot' else []
+
+    async def run_ai_conversation(preset_texts, start_playing, new_thread, max_turns, instruction, data_goals, unattended=False):
+        """`unattended=True` (ver run_tree_branches, Fase 4): sin nadie mirando, una pausa forzada por falta de
+        una opción clara (ver más abajo) se trata como un motivo más para CORTAR esa rama, no para esperar para
+        siempre a que alguien la apruebe."""
+        # Mismo motivo que en run_replay: un hilo nuevo no debe heredar el suite_id de la corrida anterior, o el
+        # guardado automático de acá choca con un alias de paso ya usado («turno1» repetido).
+        S.update(messages=[], runs={}, thread_id='' if new_thread else S['thread_id'], suite_id=None if new_thread else S['suite_id'])
+        W['thread_label'].refresh()
+        persist_session()
+        ai_run = {'phase': 'preset' if preset_texts else 'ai', 'turn': 0, 'max_turns': max_turns,
+                  'mode': 'play' if start_playing else 'step', 'cancelled': False, 'draft': None, 'stop_reason': None}
+        S['ai_run'] = ai_run
+        chat_view.refresh()
+
+        async def wait_for_a_sent_turn(draft):
+            """Precarga `draft` en la barra de escribir y espera a que SALGA un turno nuevo — sin importar cómo:
+            Enter/enviar con el texto tal cual, editado, o incluso una opción rápida tocada en su lugar. No hace
+            falta enganchar nada dentro de send_chat_message: contar S['messages'] alcanza y no acopla dos
+            funciones que no necesitan saber una de la otra."""
+            ai_run['draft'] = draft
+            box.set_value(draft)
+            chat_view.refresh()
+            count = len(S['messages'])
+            while len(S['messages']) == count and not ai_run['cancelled']:
+                await asyncio.sleep(0.2)
+            ai_run['draft'] = None
+
+        for text in preset_texts:
+            if ai_run['cancelled']:
+                break
+            if ai_run['mode'] != 'play':
+                await wait_for_a_sent_turn(text)
+                continue
+            await send_chat_message(box, text)
+            await asyncio.sleep(0.6)
+        if not ai_run['cancelled']:
+            ai_run['phase'] = 'ai'
+            for turn_n in range(max_turns):
+                if ai_run['cancelled']:
+                    break
+                ai_run['turn'] = turn_n + 1
+                chat_view.refresh()
+                try:
+                    suggestion = await run.io_bound(llm.suggest_next_turn, S['messages'], instruction, data_goals)
+                    if suggestion is None:
+                        # run.io_bound devuelve None (no una excepción) si la llamada se canceló — mismo caso
+                        # documentado en send_chat_message; reintentar en el mismo hilo es la llamada de respaldo.
+                        suggestion = llm.suggest_next_turn(S['messages'], instruction, data_goals)
+                except llm.LLMError as exc:
+                    ai_run['stop_reason'] = f'el modelo no pudo sugerir el próximo turno: {exc}'
+                    break
+                if suggestion['done']:
+                    collected = suggestion['collected']
+                    ai_run['stop_reason'] = 'el modelo dio la conversación por terminada' + \
+                        (f' — datos obtenidos: {", ".join(f"{k}={v}" for k, v in collected.items())}' if collected else '')
+                    break
+                draft = (suggestion['option'] or suggestion['text']).strip()
+                if not draft:
+                    ai_run['stop_reason'] = 'el modelo no sugirió ningún texto para este turno'
+                    break
+                needs_human = bool(_offered_options()) and not suggestion['option']
+                if ai_run['mode'] == 'play' and not needs_human:
+                    await send_chat_message(box, draft)
+                    if turn_n + 1 < max_turns:
+                        await asyncio.sleep(0.6)
+                    continue
+                if needs_human:
+                    if unattended:
+                        ai_run['stop_reason'] = 'el bot ofreció opciones y el modelo no eligió ninguna con claridad (corrida sin supervisión: se corta acá)'
+                        break
+                    ai_run['mode'] = 'step'
+                await wait_for_a_sent_turn(draft)
+            else:
+                if not ai_run['stop_reason'] and not ai_run['cancelled']:
+                    ai_run['stop_reason'] = f'se alcanzó el máximo de {max_turns} turnos'
+        stop_reason = ai_run['stop_reason']
+        S['ai_run'] = None
+        chat_view.refresh()
+        ui.notify('Conversación conducida por IA detenida.' if ai_run['cancelled'] else f'Conversación conducida por IA terminada: {stop_reason}',
+                   type='info' if ai_run['cancelled'] else 'positive')
+        pending = [i for i, t in enumerate(S['messages']) if t['who'] == 'user' and not t.get('saved')]
+        if pending:
+            try:
+                save_all_pending(suite_name.value)
+            except Exception as exc:
+                ui.notify(f'No se pudo guardar el Flujo automáticamente: {exc}', type='warning')
+
+    # ------------------------------------------------------------ árbol de exploración (Fase 4): cada vez que una
+    # conversación conducida por IA (o cualquier guardado turno a turno) pasa por un punto donde el bot ofreció
+    # opciones, lo que NO se tomó queda anotado — ver core.save_exploration_tree, llamado desde save_turn_as_case
+    # — como rama pendiente de ese mismo árbol (uno por caso de chat, acumulado entre corridas). «Ejecutar todas
+    # las ramificaciones» retoma cada una (reproduce fijo hasta el punto de bifurcación, manda la alternativa, y
+    # sigue con el modelo libre) y la guarda como un Flujo propio — en cola, una por vez, nunca en paralelo.
+    async def run_tree_branches(tree, max_branches, max_turns, dialog=None):
+        if S['ai_run'] or S['replay']:
+            raise ValueError('Ya hay una conversación en curso en esta pantalla — esperá a que termine.')
+        pending = core.pending_branches(tree['root'])[:max_branches]
+        if not pending:
+            ui.notify('No hay ramas pendientes para ejecutar', type='info')
+            return
+        if dialog:
+            dialog.close()
+        base_name = (suite_name.value or 'Conversación de prueba').strip()
+        instruction = (tree.get('instructions') or '').strip() or 'Seguí la conversación de forma razonable hacia un cierre.'
+        data_goals = tree.get('data_goals') or []
+        for branch_path, option in pending:
+            preset_texts = [node['message'] for node in branch_path] + [option]
+            suite_name.set_value(f'{base_name} — rama: {option}')
+            await run_ai_conversation(preset_texts, True, True, max_turns, instruction, data_goals, unattended=True)   # new_thread=True ya resetea suite_id
+        suite_name.set_value(base_name)
+        ui.notify(f'Ejecutadas {len(pending)} rama(s) pendiente(s) — revisá «Flujos» en el panel izquierdo.', type='positive')
+
+    def exploration_tree_dialog():
+        source = d.get('source') or {}
+        if source.get('type') != 'case':
+            ui.notify('Guardá este chat como caso («Guardar configuración» en Parámetros) para tener un árbol de exploración', type='info')
+            return
+        project_id = core.get_active_project_id()
+        tree = core.exploration_tree_for_case(source['id'], project_id) if project_id else None
+        if not tree:
+            ui.notify('Todavía no se guardó ningún turno desde esta conversación — no hay árbol para mostrar', type='info')
+            return
+        pending = core.pending_branches(tree['root'])
+        with ui.dialog() as dialog, ui.card().classes('w-[640px] max-w-full'):
+            ui.label('Árbol de exploración').classes('text-lg font-semibold')
+            ui.label(f'{len(pending)} rama(s) sin explorar — opciones que el bot ofreció y todavía no se probaron.').classes('text-sm text-gray-600')
+            with ui.column().classes('w-full gap-0 pt-2').style('max-height:45vh;overflow:auto'):
+                def render(node, depth):
+                    taken = {child.get('option') for child in node['children']}
+                    for child in node['children']:
+                        with ui.row().classes('items-center gap-1').style(f'padding-left:{depth * 18}px'):
+                            ui.icon('check_circle' if child.get('suite_id') else 'forum', size='xs',
+                                     color='positive' if child.get('suite_id') else None).classes('text-gray-400 shrink-0')
+                            ui.label(child['message']).classes('text-sm')
+                        render(child, depth + 1)
+                    for option in (node.get('options_offered') or []):
+                        if option not in taken:
+                            with ui.row().classes('items-center gap-1').style(f'padding-left:{(depth + 1) * 18}px'):
+                                ui.icon('alt_route', size='xs', color='warning')
+                                ui.label(f'«{option}» — sin explorar').classes('text-sm text-amber-700')
+                render(tree['root'], 0)
+            ui.separator().classes('my-2')
+            with ui.row().classes('items-center gap-3'):
+                max_branches = ui.number('Máximo de ramas a correr ahora', value=(min(len(pending), 5) or 1), min=1, max=max(len(pending), 1)) \
+                    .props('outlined dense').classes('w-56').mark('chat-tree-max-branches')
+                max_turns = ui.number('Máximo de turnos por rama', value=12, min=1, max=50).props('outlined dense').classes('w-48').mark('chat-tree-max-turns')
+            with ui.row().classes('justify-end gap-2 w-full pt-2'):
+                ui.button('Cerrar', on_click=dialog.close).props('flat').mark('chat-tree-close')
+                ui.button('Ejecutar todas las ramificaciones', icon='alt_route',
+                          on_click=guard(lambda: run_tree_branches(tree, int(max_branches.value), int(max_turns.value), dialog))) \
+                    .props('color=primary no-caps').mark('chat-tree-run-all').set_enabled(bool(pending) and llm.status()['ready'])
+        dialog.open()
+
+    def ai_conversation_dialog():
+        project_id = core.get_active_project_id()
+        suites = core.list_project_items('suites', project_id) if project_id else []
+        state = llm.status()
+        with ui.dialog() as dialog, ui.card().classes('w-[560px] max-w-full'):
+            ui.label('Conversación conducida por IA').classes('text-lg font-semibold')
+            ui.label('El modelo escribe cada turno de «vos» siguiendo el objetivo que le des — revisalo paso a '
+                      'paso o dejalo correr de corrido.').classes('text-sm text-gray-600')
+            if not state['ready']:
+                ui.label(state['problem']).classes('text-xs text-gray-500')
+            instruction = ui.textarea('Instrucción inicial (objetivo, qué probar, opciones preferidas en ciertos puntos…)') \
+                .props('outlined dense').classes('w-full').mark('chat-ai-run-instruction')
+            data_goals_input = ui.textarea('Objetivo de datos a obtener (opcional, uno por línea — p. ej. «id del lead»)') \
+                .props('outlined dense').classes('w-full').mark('chat-ai-run-data-goals')
+            resume_picker = ui.select({'': '— Empezar de cero —', **{s['id']: s['name'] for s in suites}}, value='', label='Retomar un Flujo guardado (opcional)') \
+                .props('outlined dense options-dense').classes('w-full').mark('chat-ai-run-resume-picker')
+            max_turns = ui.number('Máximo de turnos a generar', value=12, min=1, max=50).props('outlined dense').classes('w-56').mark('chat-ai-run-max-turns')
+            new_thread = ui.checkbox('Usar un hilo nuevo (el bot arranca de cero)', value=True).mark('chat-ai-run-newthread')
+            step_mode = ui.checkbox('Empezar pausado (revisar cada turno antes de mandarlo)', value=True).mark('chat-ai-run-stepmode')
+
+            async def start():
+                if not instruction.value.strip():
+                    raise ValueError('Escribí una instrucción inicial (el objetivo de la conversación)')
+                if not llm.status()['ready']:
+                    raise ValueError('El asistente de IA no está configurado — revisá Modelos de IA')
+                preset_texts = []
+                if resume_picker.value:
+                    suite_doc = core.get('suites', resume_picker.value)
+                    preset_texts = _extract_texts_from_suite(suite_doc)
+                    if not d.get('chat') and suite_doc.get('chat'):
+                        d['chat'] = copy.deepcopy(suite_doc['chat'])
+                        W['params_view'].refresh()
+                elif not d.get('chat'):
+                    raise ValueError('Completa el mapeo del chat en «Parámetros» antes de arrancar de cero')
+                data_goals = [line.strip() for line in (data_goals_input.value or '').splitlines() if line.strip()]
+                start_playing, use_new_thread = not step_mode.value, new_thread.value
+                dialog.close()
+                await run_ai_conversation(preset_texts, start_playing, use_new_thread, int(max_turns.value or 1), instruction.value.strip(), data_goals)
+            with ui.row().classes('justify-end gap-2 w-full pt-2'):
+                ui.button('Cancelar', on_click=dialog.close).props('flat')
+                ui.button('Iniciar', icon='smart_toy', on_click=guard(start)).props('color=primary no-caps').mark('chat-ai-run-confirm').set_enabled(state['ready'])
+        dialog.open()
+
+    # ------------------------------------------------------------ asistente de IA (panel derecho): veredicto
+    # sobre la conversación tal como está AHORA (no hace falta terminarla ni abrir «Evidencia de la conversación»
+    # primero) y análisis de lo recorrido hasta acá — ambos a demanda, nunca automáticos. Estado propio (AI),
+    # independiente del de la Fase 1 dentro del diálogo de evidencia: pedirlo desde un lado no completa el otro,
+    # a propósito — son dos accesos al mismo mecanismo, no un único resultado compartido.
+    AI = {'verdict': None, 'busy': False}
+
+    async def ask_ai_verdict(mode):
+        AI['busy'] = True
+        ai_verdict_view.refresh()
+        try:
+            context_text, _ = resolve_verdict_context()
+            AI['verdict'] = await run.io_bound(llm.judge_conversation, S['messages'], context_text, mode)
+        except llm.LLMError as exc:
+            ui.notify(str(exc), type='negative', multi_line=True)
+        finally:
+            AI['busy'] = False
+            ai_verdict_view.refresh()
+
+    @ui.refreshable
+    def ai_verdict_view():
+        context_text, context_source = resolve_verdict_context()
+        ui.label(f'Criterio en uso: {context_source}').classes('text-xs text-gray-500').mark('chat-ai-context-source')
+        state = llm.status()
+        if not state['ready']:
+            ui.label(state['problem']).classes('text-xs text-gray-500')
+        if not S['messages']:
+            ui.label('Todavía no hay conversación para evaluar.').classes('text-xs text-gray-500')
+        with ui.row().classes('gap-2'):
+            ui.button('Pedir veredicto', icon='psychology', on_click=guard(lambda: ask_ai_verdict('final'))) \
+                .props('outline dense no-caps').mark('chat-ai-ask-verdict') \
+                .set_enabled(state['ready'] and not AI['busy'] and bool(S['messages']))
+            ui.button('Analizar hasta acá', icon='travel_explore', on_click=guard(lambda: ask_ai_verdict('ongoing'))) \
+                .props('outline dense no-caps').mark('chat-ai-ask-ongoing') \
+                .set_enabled(state['ready'] and not AI['busy'] and bool(S['messages'])) \
+                .tooltip('Revisa lo recorrido hasta ahora — no es un cierre definitivo, es para ir viendo si va bien encaminada')
+        if AI['verdict']:
+            icon, color = ('check_circle', 'positive') if AI['verdict']['pass'] else ('cancel', 'negative')
+            with ui.row().classes('items-center gap-2 pt-1'):
+                ui.icon(icon, color=color)
+                ui.label('Pasa' if AI['verdict']['pass'] else 'No pasa').classes('font-medium')
+            ui.label(AI['verdict']['reasoning']).classes('text-sm text-gray-700').mark('chat-ai-verdict-reasoning')
+
+    def ai_tab():
+        with ui.column().classes('w-full gap-2 p-3'):
+            ui.label('Asistente de IA').classes('font-medium text-sm')
+            ui.label('Evalúa la conversación contra el criterio configurado en «Parámetros» — a demanda, nunca '
+                      'automático después de cada turno.').classes('text-xs text-gray-500')
+            ai_verdict_view()
+            ui.separator().classes('my-1')
+            ui.label('Conversación conducida por IA').classes('font-medium text-sm')
+            ui.label('El modelo escribe cada turno de «vos» siguiendo un objetivo que le des — paso a paso '
+                      '(editable antes de mandarlo) o de corrido.').classes('text-xs text-gray-500')
+            ui.button('Iniciar conversación conducida por IA', icon='smart_toy', on_click=guard(lambda: ai_conversation_dialog())) \
+                .props('outline dense no-caps').mark('chat-ai-tab-run-open').set_enabled(llm.status()['ready'])
+            ui.separator().classes('my-1')
+            ui.label('Árbol de exploración').classes('font-medium text-sm')
+            ui.label('Las opciones que el bot ofreció y no se tomaron en ninguna corrida guardada desde acá — '
+                      'para correrlas todas después, una por una.').classes('text-xs text-gray-500')
+            ui.button('Ver árbol de exploración', icon='alt_route', on_click=guard(lambda: exploration_tree_dialog())) \
+                .props('outline dense no-caps').mark('chat-tree-open')
+
+    # ------------------------------------------------------------ panel izquierdo: conversaciones y Flujos
+    # guardados en el proyecto activo — mismo patrón de pestañas que ya usa workspace_page.py, pero sin
+    # «Historial»: el Chat no persiste turno a turno a propósito (para poder explorar sin quedar registrado),
+    # así que acá no hay un equivalente real a eso.
+    @ui.refreshable
+    def left_panel():
+        with ui.tabs().props('dense align=justify').classes('w-full') as left_tabs:
+            t_conv = ui.tab('Conversaciones', icon='forum')
+            t_flows = ui.tab('Flujos', icon='playlist_play')
+        with ui.tab_panels(left_tabs, value=t_conv).classes('w-full'):
+            with ui.tab_panel(t_conv).classes('p-2 gap-0'):
+                project_id = core.get_active_project_id()
+                cases = sorted((c for c in core.list_project_items('cases', project_id) if c.get('chat')) if project_id else [],
+                                key=lambda c: (c.get('name') or '').lower())
+                if not cases:
+                    ui.label('No hay conversaciones guardadas en este proyecto.').classes('text-xs text-gray-500')
+                for case in cases:
+                    with ui.row().classes('w-full items-center gap-1 cursor-pointer hover:bg-gray-100 rounded px-1 py-1 no-wrap') \
+                            .on('click', lambda _, c=case: load_case(c)).mark(f'chat-left-case-{case["id"]}'):
+                        ui.icon('forum', size='xs').classes('text-gray-400 shrink-0')
+                        ui.label(case['name']).classes('text-sm truncate')
+            with ui.tab_panel(t_flows).classes('p-2 gap-0'):
+                project_id = core.get_active_project_id()
+                # Solo Flujos con mapeo propio (ver «Retomar un Flujo guardado»): los que no lo tienen son suites
+                # de API comunes, no algo que haya salido de una conversación — listarlos acá confundiría.
+                suites = sorted((s for s in core.list_project_items('suites', project_id) if s.get('chat')) if project_id else [],
+                                 key=lambda s: (s.get('name') or '').lower())
+                if not suites:
+                    ui.label('No hay Flujos guardados desde una conversación en este proyecto.').classes('text-xs text-gray-500')
+                for suite in suites:
+                    with ui.row().classes('w-full items-center gap-1 cursor-pointer hover:bg-gray-100 rounded px-1 py-1 no-wrap') \
+                            .on('click', lambda _, s=suite: replay_from_suite_dialog(s['id'])).mark(f'chat-left-flow-{suite["id"]}'):
+                        ui.icon('playlist_play', size='xs').classes('text-gray-400 shrink-0')
+                        ui.label(suite['name']).classes('text-sm truncate')
+    W['left_panel'] = left_panel
+
+    # ------------------------------------------------------------ panel central: todo lo que antes ocupaba toda
+    # la pantalla — selector de caso/plantilla, ambiente/método/URL, hilo, conversación y barra de escribir.
+    def center_panel():
+        with ui.row().classes('w-full items-center gap-2 no-wrap px-3 pt-2'):
+            ui.icon('forum', color='primary', size='sm')
+            ui.input(placeholder='Nombre de este chat').props('borderless dense').classes('text-lg font-medium grow').bind_value(d, 'name')
+
+            @ui.refreshable
+            def template_picker():
+                project_id = core.get_active_project_id()
+                templates = [c for c in core.list_project_items('cases', project_id) if c.get('chat_template')] if project_id else []
+                options = {'': 'Elegir plantilla…', **{c['id']: c['name'] for c in templates}}
+                ui.select(options, value='', label='Plantilla', on_change=lambda e: start_from_template(core.get('cases', e.value)) if e.value else None) \
+                    .props('outlined dense options-dense').classes('w-48').mark('chat-template-picker') \
+                    .tooltip('Endpoint configurado una vez (URL, headers, body, mapeo) para arrancar conversaciones nuevas sin recargarlo cada vez')
+            W['template_picker'] = template_picker
+            template_picker()
+
+            @ui.refreshable
+            def case_picker():
+                project_id = core.get_active_project_id()
+                # Solo casos con mapeo de chat configurado: los «Turno N: …» que genera cada suite al guardar una
+                # conversación son casos API comunes (chat=None, un paso suelto dentro del flujo) y no se pueden
+                # retomar como chat — listarlos acá solo confundía (el chat quedaba en blanco al elegir uno).
+                cases = [c for c in core.list_project_items('cases', project_id) if c.get('chat')] if project_id else []
+                options = {'': 'Caso nuevo (sin guardar)', **{c['id']: c['name'] for c in cases}}
+                ui.select(options, value='', label='Retomar conversación', on_change=lambda e: load_case(core.get('cases', e.value)) if e.value else None) \
+                    .props('outlined dense options-dense').classes('w-56').tooltip('Continúa una conversación guardada exactamente donde quedó')
+            W['case_picker'] = case_picker
+            case_picker()
+            ui.button(icon='note_add', on_click=guard(new_chat)).props('flat round dense').tooltip('Nuevo chat en blanco (otro endpoint)')
+        with ui.row().classes('w-full items-center gap-2 no-wrap px-3'):
+            ui.select({'': 'URL completa', **{e['id']: f'{projects_by_id.get(e.get("project_id"), "sin proyecto")} · {e["name"]}' for e in all_envs}}, label='Ambiente') \
+                .props('outlined dense options-dense').classes('w-48').bind_value(d, 'env_id')
+            ui.select(HTTP_METHODS, label='Método').props('outlined dense').classes('w-24').bind_value(d, 'method').mark('chat-method')
+            scheme = ui.select(['https', 'http'], label='Proto.').props('outlined dense').classes('w-20').bind_value(d, 'scheme')
+            scheme.bind_visibility_from(d, 'env_id', backward=lambda v: not v)
+            ui.input(placeholder='ejemplo.com/api/chat/messages').props('outlined dense').classes('grow').bind_value(d, 'url').mark('chat-url')
+        with ui.row().classes('items-center gap-2 w-full px-3 pt-1 no-wrap'):
+            ui.label('Hilo:').classes('text-xs text-gray-500')
+
+            @ui.refreshable
+            def thread_label():
+                ui.input(placeholder='(nuevo)', value=S['thread_id']).props('outlined dense').classes('w-56 font-mono text-xs') \
+                    .on_value_change(lambda e: S.__setitem__('thread_id', (e.value or '').strip())).mark('chat-thread-id') \
+                    .tooltip('Editalo para continuar un hilo puntual o forzar uno nuevo antes de enviar')
+            W['thread_label'] = thread_label
+            thread_label()
+            ui.space()
+
+            def reset_conversation():
+                S.update(messages=[], thread_id='', last_request=None, last_response=None, suite_id=None, runs={})
+                persist_session()
+                refresh_all()
+            ui.button('Reiniciar conversación', icon='restart_alt', on_click=guard(reset_conversation)) \
+                .props('flat dense size=sm no-caps').tooltip('Borra los mensajes y el hilo; conserva la configuración')
+        with ui.row().classes('items-center gap-2 w-full px-3 pb-1 no-wrap'):
+            suite_name = ui.input('Nombre del flujo', value='Conversación de prueba').props('outlined dense').classes('w-56').mark('chat-suite-name')
+            top_actions()
+            ui.label('Guardá cada intercambio por separado con el botón que aparece debajo de cada respuesta.').classes('text-xs text-gray-500')
+        chat_view()
+        debug_view()
+        with ui.row().classes('items-center gap-1 w-full px-3 py-2 no-wrap bg-white').style('position:sticky;bottom:0;border-top:1px solid #e5e7eb'):
+            bottom_actions()
+            box = ui.input(placeholder='Escribe un mensaje…').props('outlined dense').classes('grow').mark('chat-input')
+            box.on('keydown.enter', lambda: send_chat_message(box))
+            ui.button(icon='send', on_click=guard(lambda: send_chat_message(box))).props('dense round color=primary').classes('shrink-0').mark('chat-send')
+        return suite_name, box
+
+    # ------------------------------------------------------------ panel derecho: parámetros + asistente de IA,
+    # como una carrilera vertical de pestañas — mismo patrón que la columna derecha de workspace_page.py.
+    def right_panel():
+        with ui.row().classes('w-full h-full no-wrap gap-0'):
+            with ui.tab_panels(None, value='Params').props('vertical').style('flex:1 1 0;min-width:0;overflow:auto;height:100%') as panels:
+                with ui.tab_panel('Params').classes('p-0'):
+                    params_view()
+                with ui.tab_panel('Asistente').classes('p-0'):
+                    ai_tab()
+            with ui.tabs().props('vertical dense no-caps').classes('shrink-0').style('width:56px;border-left:1px solid #e5e7eb') as rail:
+                ui.tab('Params', label='', icon='tune').tooltip('Parámetros').mark('chat-rail-Params')
+                ui.tab('Asistente', label='', icon='smart_toy').tooltip('Asistente de IA').mark('chat-rail-Asistente')
+            panels.bind_value_from(rail, 'value')
+            rail.set_value('Params')
+
+    # ------------------------------------------------------------ layout: tres paneles, mismo patrón que
+    # workspace_page.py (splitter anidado, cada panel con la clase `.ltw-pane` para scrollear por su cuenta).
+    with ui.element('div').classes('w-full').style('height: calc(100vh - 50px)'):
+        with ui.splitter(value=18, limits=(12, 35)).classes('w-full').style('height:100%') as outer:
+            with outer.before:
+                with ui.element('div').classes('ltw-pane'):
+                    left_panel()
+            with outer.after:
+                with ui.splitter(value=72, limits=(35, 90)).classes('w-full').style('height:100%') as inner:
+                    with inner.before:
+                        with ui.element('div').classes('ltw-pane').style('display:flex;flex-direction:column'):
+                            suite_name, box = center_panel()
+                    with inner.after:
+                        with ui.element('div').classes('ltw-pane'):
+                            right_panel()

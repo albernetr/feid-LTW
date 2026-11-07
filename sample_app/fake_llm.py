@@ -43,6 +43,10 @@ def _default_reply(user):
     if 'Descripción de lo que hay que probar' in user:
         return '```json\n' + json.dumps({'format': 'ltw.spec/1', 'name': 'generado', 'environments': [{'name': 'api', 'base_url': 'http://127.0.0.1:8765'}],
                                          'cases': [{'name': 'health', 'method': 'GET', 'path': '/health', 'environment': 'api', 'assertions': [{'type': 'status', 'expected': 200}]}]}) + '\n```'
+    if 'Conversación:' in user:   # llm.judge_conversation (veredicto de una conversación de Chat)
+        return json.dumps({'pass': True, 'reasoning': 'La conversación cumple con lo pedido en el criterio.'})
+    if 'Objetivo de la conversación' in user or 'Conversación hasta ahora' in user:   # llm.suggest_next_turn
+        return json.dumps({'text': '', 'option': None, 'done': True, 'collected': {}})
     return '**Qué pasó**\nLa respuesta no cumple lo esperado.\n\n**Causa más probable**\nCambio en el servicio.\n\n**Dónde corregir**\nEl handler.\n\n**Siguiente paso**\nReejecutar.'
 
 

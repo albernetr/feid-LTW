@@ -193,3 +193,86 @@ def test_registered_models_switch_without_mixing_keys(fake):
     llm.delete_profile(a['id'])
     assert a['id'] not in {p['id'] for p in llm.list_profiles()}
     assert core.secret_get(llm.profile_secret_name(a['id'])) is None
+
+
+CHAT_MESSAGES = [{'who': 'user', 'text': 'Hola, quiero cotizar un seguro'},
+                  {'who': 'bot', 'text': '¡Gracias por aceptar! ¿Qué tipo de seguro buscás?'},
+                  {'who': 'user', 'text': 'Seguro de vida para mi esposa'},
+                  {'who': 'bot', 'text': '¿Cuál es el nombre completo de la persona a asegurar?'}]
+
+
+def test_judge_conversation_parses_the_models_verdict(fake):
+    configure(fake)
+    fake.queue(json.dumps({'pass': True, 'reasoning': 'El bot pidió el tipo de seguro y el nombre de la persona a asegurar, como esperaba la HU.'}))
+    result = llm.judge_conversation(CHAT_MESSAGES, 'El bot debe pedir tipo de seguro y nombre del asegurado.')
+    assert result['pass'] is True
+    assert 'tipo de seguro' in result['reasoning']
+    sent = fake.requests[-1]['body']['messages'][-1]['content']
+    assert 'El bot debe pedir tipo de seguro' in sent and 'Vos: Hola, quiero cotizar un seguro' in sent and 'Bot: ¡Gracias por aceptar!' in sent
+
+
+def test_judge_conversation_without_explicit_context_still_sends_the_transcript(fake):
+    configure(fake)
+    fake.queue(json.dumps({'pass': False, 'reasoning': 'La conversación no llegó a una conclusión clara.'}))
+    result = llm.judge_conversation(CHAT_MESSAGES, '')
+    assert result['pass'] is False
+    system, user = llm.verdict_messages(CHAT_MESSAGES, '')
+    assert 'Criterio contra el que evaluar' not in user   # sin contexto explícito, no se manda una sección vacía
+    assert 'inferilo' in system                            # pero el system prompt ya le dice que infiera
+
+
+def test_judge_conversation_raises_a_clear_error_when_the_model_does_not_return_json(fake):
+    configure(fake)
+    fake.queue('no sé qué decir')
+    with pytest.raises(llm.LLMError, match='no es el JSON esperado'):
+        llm.judge_conversation(CHAT_MESSAGES, 'algún criterio')
+
+
+def test_judge_conversation_requires_at_least_one_turn(fake):
+    configure(fake)
+    with pytest.raises(llm.LLMError, match='No hay turnos'):
+        llm.judge_conversation([], 'algún criterio')
+
+
+def test_judge_conversation_redacts_secrets_from_the_transcript(fake):
+    configure(fake)
+    core.secret_set('TOKEN_Y', 'otro-secreto-123')
+    fake.queue(json.dumps({'pass': True, 'reasoning': 'ok'}))
+    messages = CHAT_MESSAGES + [{'who': 'bot', 'text': 'Tu token es otro-secreto-123'}]
+    llm.judge_conversation(messages, '')
+    assert 'otro-secreto-123' not in json.dumps(fake.requests[-1]['body'])
+
+
+def test_suggest_next_turn_parses_free_text(fake):
+    configure(fake)
+    fake.queue(json.dumps({'text': 'Seguro de auto', 'option': None, 'done': False, 'collected': {}}))
+    result = llm.suggest_next_turn(CHAT_MESSAGES, 'Cotizar un seguro de auto.')
+    assert result == {'text': 'Seguro de auto', 'option': None, 'done': False, 'collected': {}}
+    sent = fake.requests[-1]['body']['messages'][-1]['content']
+    assert 'Cotizar un seguro de auto.' in sent and 'Vos: Hola, quiero cotizar un seguro' in sent
+
+
+def test_suggest_next_turn_picks_an_offered_option_by_its_exact_text(fake):
+    configure(fake)
+    messages = CHAT_MESSAGES + [{'who': 'bot', 'text': '¿Preferís mensual o anual?', 'options': ['Mensual', 'Anual']}]
+    fake.queue(json.dumps({'text': '', 'option': 'Anual', 'done': False, 'collected': {}}))
+    result = llm.suggest_next_turn(messages, 'Elegí siempre el plan anual.')
+    assert result['option'] == 'Anual'
+    sent = fake.requests[-1]['body']['messages'][-1]['content']
+    assert 'Mensual | Anual' in sent   # el modelo necesita ver las opciones ofrecidas, tal cual, para elegir una
+
+
+def test_suggest_next_turn_reports_data_already_collected_and_when_to_stop(fake):
+    configure(fake)
+    fake.queue(json.dumps({'text': '', 'option': None, 'done': True, 'collected': {'nombre': 'Ana'}}))
+    result = llm.suggest_next_turn(CHAT_MESSAGES, 'Conseguí el nombre del asegurado.', data_goals=['nombre del asegurado'])
+    assert result['done'] is True and result['collected'] == {'nombre': 'Ana'}
+    sent = fake.requests[-1]['body']['messages'][-1]['content']
+    assert 'nombre del asegurado' in sent
+
+
+def test_suggest_next_turn_raises_a_clear_error_when_the_model_does_not_return_json(fake):
+    configure(fake)
+    fake.queue('no sé qué decir')
+    with pytest.raises(llm.LLMError, match='no es el JSON esperado'):
+        llm.suggest_next_turn(CHAT_MESSAGES, 'algún objetivo')

@@ -58,8 +58,10 @@ def _step_from_item_entry(entry):
     return step
 
 
-def build_report_data(run):
-    """Normaliza un doc de `runs` (api/ui/suite/suite_group) a una estructura uniforme para los tres formatos."""
+def build_report_data(run, llm_verdict=None):
+    """Normaliza un doc de `runs` (api/ui/suite/suite_group) a una estructura uniforme para los tres formatos.
+    `llm_verdict` ({'pass': bool, 'reasoning': str}, ver llm.judge_conversation) es opcional y, si se da, los
+    renderers lo muestran arriba de todo — nadie lo calcula acá, es responsabilidad del caller pedirlo antes."""
     kind = run.get('type')
     if kind == 'suite':
         steps = [_step_from_case_entry(e) for e in run.get('case_runs', [])]
@@ -73,10 +75,11 @@ def build_report_data(run):
     title = run.get('case_name') or run.get('suite_name') or run.get('group_name') or 'Ejecución'
     return {'format': FORMAT, 'title': title, 'run_id': run.get('id'), 'run_type': kind, 'status': run.get('status'),
             'started_at': run.get('started_at'), 'finished_at': run.get('finished_at'), 'generated_at': core.now(),
-            'summary': {'total': len(steps), 'passed': passed, 'failed': failed, 'skipped': skipped}, 'steps': steps}
+            'summary': {'total': len(steps), 'passed': passed, 'failed': failed, 'skipped': skipped}, 'steps': steps,
+            'llm_verdict': llm_verdict}
 
 
-def build_multi_report_data(title, runs):
+def build_multi_report_data(title, runs, llm_verdict=None):
     """Misma estructura que build_report_data, para una lista de corridas sueltas elegidas a mano (p. ej. los
     turnos de una conversación de Chat que el agente nunca persiste en Historial: persist=False). A diferencia de
     una Suite, acá no hay un doc de `runs` que las agrupe — cada una ya es un run_doc completo (petición,
@@ -88,7 +91,8 @@ def build_multi_report_data(title, runs):
     return {'format': FORMAT, 'title': title, 'run_id': None, 'run_type': 'conversation',
             'status': 'passed' if failed == 0 else 'failed',
             'started_at': runs[0].get('started_at') if runs else None, 'finished_at': runs[-1].get('finished_at') if runs else None,
-            'generated_at': core.now(), 'summary': {'total': len(steps), 'passed': passed, 'failed': failed, 'skipped': skipped}, 'steps': steps}
+            'generated_at': core.now(), 'summary': {'total': len(steps), 'passed': passed, 'failed': failed, 'skipped': skipped}, 'steps': steps,
+            'llm_verdict': llm_verdict}
 
 
 # --------------------------------------------------------------------------- HTML / PDF
@@ -104,6 +108,8 @@ main{max-width:900px;margin:0 auto;padding:24px 20px 48px}h1{font-size:22px;marg
 pre{background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:8px 10px;font-size:12px;overflow:auto;white-space:pre-wrap;word-break:break-word}
 .assert{display:flex;gap:6px;align-items:flex-start;font-size:13px;margin:2px 0}.ok{color:#16a34a}.bad{color:#dc2626}
 .err{color:#991b1b;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:6px 10px;font-size:13px;white-space:pre-wrap}
+.verdict{border-radius:8px;padding:10px 14px;margin:14px 0;font-size:14px}.verdict.ok{background:#f0fdf4;border:1px solid #bbf7d0;color:#166534}
+.verdict.bad{background:#fef2f2;border:1px solid #fecaca;color:#991b1b}.verdict .t{font-weight:700;margin-bottom:4px}
 @media print{body{background:#fff}main{padding:0}.step{break-inside:avoid}}
 '''
 
@@ -139,6 +145,13 @@ def _render_step_html(step, depth=0):
     return body
 
 
+def _verdict_html(verdict):
+    e = html.escape
+    cls = 'ok' if verdict['pass'] else 'bad'
+    title = '✅ El modelo considera que pasa' if verdict['pass'] else '❌ El modelo considera que no pasa'
+    return f'<div class="verdict {cls}"><div class="t">{title}</div><div>{e(verdict["reasoning"])}</div></div>'
+
+
 def render_evidence_html(data):
     e = html.escape
     s = data['summary']
@@ -148,6 +161,8 @@ def render_evidence_html(data):
             + (f' · inicio {e(data["started_at"])}' if data.get('started_at') else '') + '</div>',
             f'<span class="pill" style="background:{STATUS_COLOR.get(data["status"], "#6b7280")}">{e(STATUS_ES.get(data["status"], data["status"] or ""))}</span>',
             f'<div class="cards">{card(s["total"], "Pasos")}{card(s["passed"], "Pasaron")}{card(s["failed"], "Fallaron")}{card(s["skipped"], "Omitidos")}</div>']
+    if data.get('llm_verdict'):
+        body.append(_verdict_html(data['llm_verdict']))
     body += [_render_step_html(step) for step in data['steps']]
     return (f'<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>{e(data["title"])}</title><style>{HTML_CSS}</style></head><body><main>{"".join(body)}</main></body></html>')
@@ -191,6 +206,10 @@ def render_evidence_markdown(data):
     s = data['summary']
     lines = [f'# {data["title"]}', '', f'Estado: **{status}** · Generado: {data["generated_at"]}', '',
              f'{s["passed"]} de {s["total"]} pasos pasaron ({s["failed"]} fallaron, {s["skipped"]} omitidos)', '']
+    verdict = data.get('llm_verdict')
+    if verdict:
+        title = '✅ El modelo considera que pasa' if verdict['pass'] else '❌ El modelo considera que no pasa'
+        lines += [f'> **{title}**', f'> {verdict["reasoning"]}', '']
     for step in data['steps']:
         lines += _step_markdown(step)
     return '\n'.join(lines) + '\n'
@@ -236,6 +255,11 @@ def render_evidence_docx(data):
     doc.add_paragraph(f'Estado: {STATUS_ES.get(data["status"], data["status"] or "")} · Generado: {data["generated_at"]}')
     s = data['summary']
     doc.add_paragraph(f'{s["passed"]} de {s["total"]} pasos pasaron ({s["failed"]} fallaron, {s["skipped"]} omitidos)')
+    verdict = data.get('llm_verdict')
+    if verdict:
+        title = '✅ El modelo considera que pasa' if verdict['pass'] else '❌ El modelo considera que no pasa'
+        doc.add_heading(title, level=2)
+        doc.add_paragraph(verdict['reasoning'])
     for step in data['steps']:
         _write_step_docx(doc, step)
     buffer = io.BytesIO()

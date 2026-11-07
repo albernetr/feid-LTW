@@ -59,7 +59,7 @@ SECRET_SERVICE = 'local-test-workspace'
 SENSITIVE_HEADERS = ('authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization')
 SENSITIVE_NAME = re.compile(r'token|password|passwd|secret|key|authorization|cookie', re.I)
 TABLES = ('projects', 'module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'datasets', 'suite_groups', 'integrations')
-ALL_TABLES = TABLES + ('settings', 'runs', 'taps', 'interfaces', 'lab_history', 'llm_profiles', 'sequences', 'users')
+ALL_TABLES = TABLES + ('settings', 'runs', 'taps', 'interfaces', 'lab_history', 'llm_profiles', 'sequences', 'users', 'exploration_trees')
 UUID_RE = re.compile(r'^[0-9a-fA-F-]{8,64}$')
 
 
@@ -345,6 +345,9 @@ def _purge_project_history(project_id):
     for interface in list_items('interfaces'):
         if interface.get('project_id') == project_id:
             delete('interfaces', interface['id'])
+    for tree in list_items('exploration_trees'):
+        if tree.get('project_id') == project_id:
+            delete('exploration_trees', tree['id'])
 
 
 def delete_project(project_id):
@@ -550,7 +553,10 @@ def save_suite(name, environment_id, case_ids, project_id=None, **options):
              steps (list of {case_id, alias, environment_id, enrich}: a flow across modules; replaces case_ids),
              created_by (id de `users` que lo creó; quien llama decide si preservarlo en una edición o asignarlo
              recién, igual que ya hace con `id`), expected_updated_at (refuse the write if someone else saved
-             the suite meanwhile).
+             the suite meanwhile), chat (el mapeo {message_path, thread_request_path, thread_response_path,
+             reply_path, options_path} con el que se grabó, si este Flujo salió de una conversación — así
+             «Retomar un Flujo guardado» funciona sin depender de qué chat esté abierto en pantalla; si no se
+             pasa en una edición, se conserva el que ya tenía guardado).
     """
     steps = options.get('steps')
     if steps is not None:
@@ -605,6 +611,14 @@ def save_suite(name, environment_id, case_ids, project_id=None, **options):
         item['steps'] = _validated_steps(steps, environment, project_id)
     if options.get('id'):
         item['id'] = options['id']
+        if 'chat' in options:
+            item['chat'] = options['chat']
+        else:
+            existing = get('suites', options['id'])
+            if existing and existing.get('chat'):
+                item['chat'] = existing['chat']
+    elif options.get('chat'):
+        item['chat'] = options['chat']
     if project_id is not None:
         item['project_id'] = project_id
     if 'expected_updated_at' in options:
@@ -681,6 +695,85 @@ def materialize_suite_variants(suite, count):
                                    seq_start=suite.get('seq_start'), feature_id=suite.get('feature_id'),
                                    steps=copy.deepcopy(steps), draws=[]))
     return created
+
+
+# --------------------------------------------------------------------------- árboles de exploración (Chat → Fase 4:
+# ramificar en las opciones que el bot ofreció y no se tomaron, para poder correrlas todas después)
+
+def _match_tree_child(node, step):
+    for child in node['children']:
+        if child['message'] == step['message'] and child.get('option') == step.get('option'):
+            return child
+    return None
+
+
+def _merge_exploration_path(node, path):
+    """Inserta/reusa, turno a turno, la secuencia `path` (lista de {message, option, bot_reply, options_offered},
+    en orden desde el primer turno) dentro del árbol que cuelga de `node` — un turno ya presente (mismo mensaje y
+    misma opción en el mismo punto) se reusa tal cual, conservando lo que ya colgaba de él (sus propios hijos,
+    su `suite_id`); uno nuevo se agrega como hijo. Devuelve el nodo hoja donde terminó este camino — las ramas
+    PENDIENTES en cualquier punto del árbol son, en cualquier momento, `options_offered` del nodo menos las
+    opciones que ya tienen un hijo propio (no hace falta guardar un `explored` aparte: se deduce de los datos)."""
+    current = node
+    for step in path:
+        child = _match_tree_child(current, step)
+        if child is None:
+            child = {'message': step['message'], 'option': step.get('option'), 'bot_reply': step.get('bot_reply') or '',
+                      'options_offered': step.get('options_offered') or [], 'suite_id': None, 'children': []}
+            current['children'].append(child)
+        else:
+            # la respuesta del bot a un mismo mensaje puede variar de una corrida a otra (no es determinístico) —
+            # se actualiza con la más reciente, sin tocar lo que ya colgaba de este nodo.
+            child['bot_reply'] = step.get('bot_reply') or child['bot_reply']
+            child['options_offered'] = step.get('options_offered') or child['options_offered']
+        current = child
+    return current
+
+
+def save_exploration_tree(case_id, project_id, path, suite_id=None, name=None, instructions=None, data_goals=None):
+    """Upsert por `case_id` (un árbol por caso de chat, que va creciendo con cada corrida): fusiona `path` dentro
+    del árbol existente para ese caso, o crea uno nuevo si no había. `suite_id`, si se pasa, se marca en el nodo
+    HOJA de este camino — ese recorrido completo ya quedó guardado como ese Flujo. `path` vacío no hace nada."""
+    if not path:
+        return None
+    existing = next((t for t in list_project_items('exploration_trees', project_id) if t.get('case_id') == case_id), None)
+    tree = existing or {'project_id': project_id, 'case_id': case_id, 'name': name or 'Árbol de exploración',
+                         'instructions': '', 'data_goals': [],
+                         'root': {'message': None, 'option': None, 'bot_reply': None, 'options_offered': [], 'suite_id': None, 'children': []}}
+    if existing:
+        tree = copy.deepcopy(existing)
+    if name:
+        tree['name'] = name
+    if instructions:
+        tree['instructions'] = instructions
+    if data_goals:
+        tree['data_goals'] = data_goals
+    leaf = _merge_exploration_path(tree['root'], path)
+    if suite_id:
+        leaf['suite_id'] = suite_id
+    return save('exploration_trees', tree)
+
+
+def exploration_tree_for_case(case_id, project_id):
+    return next((t for t in list_project_items('exploration_trees', project_id) if t.get('case_id') == case_id), None)
+
+
+def pending_branches(node):
+    """[(camino_hasta_el_padre, opción_pendiente), ...] — todo punto de decisión del árbol, en cualquier
+    profundidad, donde el bot ofreció una opción que ningún hijo tomó todavía. `camino_hasta_el_padre` es la
+    lista de nodos desde la raíz (sin incluir la raíz) hasta (e incluyendo) el nodo cuya respuesta ofreció esas
+    opciones — reproducir esos turnos tal cual, y mandar la opción pendiente, es cómo se arranca esa rama."""
+    found = []
+
+    def walk(current, path):
+        taken = {child.get('option') for child in current['children']}
+        for option in current.get('options_offered') or []:
+            if option not in taken:
+                found.append((path, option))
+        for child in current['children']:
+            walk(child, path + [child])
+    walk(node, [])
+    return found
 
 
 # --------------------------------------------------------------------------- suite groups ("Suites": grupos de Flujos/Casos)

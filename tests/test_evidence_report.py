@@ -132,6 +132,54 @@ def test_render_evidence_docx_is_a_valid_document(world):
     assert any('Pasó' in h for h in headings)    # encabezado del paso, con su estado
 
 
+def test_build_report_data_without_a_verdict_leaves_it_as_none(world):
+    case = world['api_case']('health', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    run = core.execute_api(case, world['env'])
+    data = evidence_report.build_report_data(run)
+    assert data['llm_verdict'] is None
+
+
+def test_render_evidence_html_shows_the_verdict_at_the_top_when_given(world):
+    case = world['api_case']('crear', 'POST', '/api/items', [{'type': 'status', 'expected': 201}], body={'name': 'x'})
+    run = core.execute_api(case, world['env'])
+    verdict = {'pass': True, 'reasoning': 'El flujo hizo exactamente lo que pedía la HU.'}
+    data = evidence_report.build_report_data(run, llm_verdict=verdict)
+    html_out = evidence_report.render_evidence_html(data)
+    assert 'El flujo hizo exactamente lo que pedía la HU.' in html_out
+    assert html_out.index('verdict') < html_out.index('class="step"')   # arriba de los pasos, no mezclado
+
+
+def test_render_evidence_html_marks_a_failing_verdict_differently(world):
+    case = world['api_case']('crear', 'POST', '/api/items', [{'type': 'status', 'expected': 201}], body={'name': 'x'})
+    run = core.execute_api(case, world['env'])
+    verdict = {'pass': False, 'reasoning': 'No pidió el dato que exigía la HU.'}
+    data = evidence_report.build_report_data(run, llm_verdict=verdict)
+    html_out = evidence_report.render_evidence_html(data)
+    assert 'verdict bad' in html_out and 'No pidió el dato' in html_out
+
+
+def test_render_evidence_markdown_includes_the_verdict(world):
+    case = world['api_case']('crear', 'POST', '/api/items', [{'type': 'status', 'expected': 201}], body={'name': 'x'})
+    run = core.execute_api(case, world['env'])
+    verdict = {'pass': True, 'reasoning': 'Cumple el criterio.'}
+    data = evidence_report.build_report_data(run, llm_verdict=verdict)
+    md_out = evidence_report.render_evidence_markdown(data)
+    assert 'Cumple el criterio.' in md_out
+    assert md_out.index('Cumple el criterio.') < md_out.index('## crear')   # arriba de los pasos
+
+
+def test_render_evidence_docx_includes_the_verdict(world):
+    case = world['api_case']('crear', 'POST', '/api/items', [{'type': 'status', 'expected': 201}], body={'name': 'x'})
+    run = core.execute_api(case, world['env'])
+    verdict = {'pass': True, 'reasoning': 'Cumple el criterio esperado.'}
+    data = evidence_report.build_report_data(run, llm_verdict=verdict)
+    content = evidence_report.render_evidence_docx(data)
+    from docx import Document
+    import io
+    doc = Document(io.BytesIO(content))
+    assert any('Cumple el criterio esperado.' in p.text for p in doc.paragraphs)
+
+
 def test_render_evidence_pdf_when_chromium_is_available(world, tmp_path):
     try:
         from playwright.sync_api import sync_playwright

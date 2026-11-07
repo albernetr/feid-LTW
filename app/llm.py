@@ -374,3 +374,123 @@ def generate_spec(description, module=None, environment_names=(), config=None, a
         user = redact(_clip(user.split('\n\nTu respuesta anterior')[0] + '\n\nTu respuesta anterior tenía estos errores de validación; devuelve el JSON completo corregido:\n' +
                             '\n'.join(f'- {e["path"]}: {e["message"]}' for e in errors[:15])))
     return {'spec': spec, 'valid': False, 'errors': errors, 'warnings': [], 'raw': raw, 'attempts': attempts}
+
+
+# --------------------------------------------------------------------------- judging a chat conversation
+# Not "did the request match the contract" (that's what assertions already check on a saved turn-as-case) but
+# "does this conversation actually satisfy what it was meant to prove" — a chat has no assertions of its own
+# until a turn gets frozen into a case, and even then they're mechanical (status code, a field exists). The
+# three sources of criteria (explicit HU text, a linked Funcionalidad, or just the case's own name/notes) are
+# resolved by the caller (chat_page.py knows about Funcionalidades; this module doesn't) and handed in as one
+# `context_text` string — empty means "infer it from the conversation itself", which the prompt already covers.
+
+VERDICT_SYSTEM_FINAL = (
+    'Eres un QA senior. Te paso una conversación con un chatbot y, si existe, el criterio contra el que debe '
+    'evaluarse (una historia de usuario, criterios de aceptación, o la descripción del caso de prueba). '
+    'Responde SOLO con un objeto JSON válido, sin texto antes ni después: {"pass": true|false, "reasoning": "..."}. '
+    'reasoning: 2-4 frases concretas, en español, citando turnos puntuales cuando corresponda. '
+    'Si no hay criterio explícito, inferilo del nombre/notas del caso y de la propia conversación, y decilo en el razonamiento.')
+
+VERDICT_SYSTEM_ONGOING = (
+    'Eres un QA senior. Te paso una conversación con un chatbot, TODAVÍA EN CURSO (no necesariamente terminada), '
+    'y si existe, el criterio contra el que debe evaluarse (una historia de usuario, criterios de aceptación, o '
+    'la descripción del caso de prueba). Responde SOLO con un objeto JSON válido, sin texto antes ni después: '
+    '{"pass": true|false, "reasoning": "..."}. pass: true si, hasta donde llegó, va bien encaminada hacia el '
+    'criterio (no hace falta que ya lo haya cumplido del todo); false si ya se desvió o algo contradice el '
+    'criterio. reasoning: 2-4 frases concretas sobre cómo va hasta ahora, no un cierre definitivo. Si no hay '
+    'criterio explícito, inferilo del nombre/notas del caso y de la propia conversación.')
+
+
+def _transcript(messages):
+    """'Vos: ...' / 'Bot: ...' por turno, en orden — mismo texto que ya arma conversation_evidence_dialog."""
+    who_labels = {'user': 'Vos', 'bot': 'Bot', 'error': 'Error'}
+    return '\n'.join(f'{who_labels.get(turn.get("who"), turn.get("who"))}: {turn.get("text", "")}' for turn in messages)
+
+
+def verdict_messages(messages, context_text='', mode='final'):
+    """(system, user) exactly as they will be sent - the UI shows this before anything leaves the machine.
+    mode: 'final' (¿pasa o no, de punta a punta?) u 'ongoing' (¿va bien encaminada hasta donde llegó? — para
+    «Analizar hasta acá», sobre una conversación que puede seguir, no un cierre definitivo)."""
+    system = VERDICT_SYSTEM_FINAL if mode == 'final' else VERDICT_SYSTEM_ONGOING
+    parts = []
+    if (context_text or '').strip():
+        parts.append(f'Criterio contra el que evaluar:\n{context_text.strip()}')
+    parts.append(f'Conversación:\n{_transcript(messages)}')
+    return system, redact(_clip('\n\n'.join(parts)))
+
+
+def judge_conversation(messages, context_text='', mode='final', config=None):
+    """{'pass': bool, 'reasoning': str, 'raw': str}. `messages` son los turnos tal como vive S['messages'] en
+    chat_page.py ({'who', 'text', ...}); `context_text` es la HU/criterio ya resuelto por el caller (vacío si
+    hay que inferirlo); `mode` ver verdict_messages. Parsea el JSON de la respuesta con _extract_json; si no
+    parsea o le faltan campos, es un LLMError claro — nunca un veredicto inventado."""
+    if not messages:
+        raise LLMError('No hay turnos todavía para evaluar.')
+    system, user = verdict_messages(messages, context_text, mode)
+    raw = ask(system, user, config)
+    try:
+        data = _extract_json(raw)
+    except ValueError as exc:
+        raise LLMError(f'La respuesta del modelo no es el JSON esperado: {exc}') from exc
+    if not isinstance(data, dict) or 'pass' not in data or 'reasoning' not in data:
+        raise LLMError('La respuesta del modelo no tiene el formato esperado (pass/reasoning).')
+    return {'pass': bool(data['pass']), 'reasoning': str(data['reasoning']), 'raw': raw}
+
+
+# --------------------------------------------------------------------------- conversación conducida por el modelo
+# El modelo hace de PERSONA USUARIA (no del bot): a partir de una instrucción/objetivo y, si corresponde, un
+# objetivo de datos a conseguir, sugiere el próximo turno — texto libre o, si el bot acaba de ofrecer opciones de
+# respuesta rápida, cuál de ellas tomar. `chat_page.py` decide qué hacer con la sugerencia (mandarla de corrido o
+# mostrarla editable antes de mandarla); acá no se manda nada solo.
+
+TURN_SYSTEM = (
+    'Actuás como la persona USUARIA (no el bot) en una conversación de prueba con un chatbot, siguiendo el '
+    'objetivo que te paso. Si el bot ofreció opciones de respuesta rápida para elegir, se te informan aparte: '
+    'elegí la que más se ajuste al objetivo y devolvé su texto EXACTO en "option" (nunca inventes una opción que '
+    'el bot no ofreció); si ninguna encaja o no hay opciones, "option" va en null y escribís el mensaje libre en '
+    '"text". Si la instrucción menciona una preferencia para cierto punto de la conversación, respetala al pie '
+    'de la letra cuando llegues ahí. Responde SOLO con un objeto JSON válido, sin texto antes ni después: '
+    '{"text": "...", "option": "..."|null, "done": true|false, "collected": {}}. "collected": de los datos que '
+    'se piden conseguir (si los hay), los que ya se puedan confirmar con lo visto hasta ahora — puede ir vacío. '
+    'done=true cuando el objetivo (o los datos pedidos) ya se cumplieron, o cuando ya no tiene sentido seguir '
+    '(el bot quedó en un error o en un bucle, por ejemplo); ahí "text"/"option" pueden ir vacíos.')
+
+
+def _offered_options(messages):
+    if messages and messages[-1].get('who') == 'bot':
+        return messages[-1].get('options') or []
+    return []
+
+
+def turn_messages(messages, instruction, data_goals=None):
+    """(system, user) exactly as they will be sent - mismo criterio que verdict_messages: la UI lo puede mostrar
+    antes de mandarlo. `instruction`: el objetivo/instrucción inicial que escribió la persona (puede incluir
+    opciones preferidas, ver TURN_SYSTEM). `data_goals`: lista de strings con lo que se busca conseguir."""
+    parts = []
+    if (instruction or '').strip():
+        parts.append(f'Objetivo de la conversación:\n{instruction.strip()}')
+    if data_goals:
+        parts.append('Datos a conseguir durante la conversación:\n' + '\n'.join(f'- {g}' for g in data_goals))
+    parts.append(f'Conversación hasta ahora:\n{_transcript(messages)}' if messages else
+                 'Conversación hasta ahora: todavía no empezó — este es el primer mensaje.')
+    offered = _offered_options(messages)
+    if offered:
+        parts.append('El bot acaba de ofrecer estas opciones de respuesta rápida: ' + ' | '.join(offered))
+    return TURN_SYSTEM, redact(_clip('\n\n'.join(parts)))
+
+
+def suggest_next_turn(messages, instruction, data_goals=None, config=None):
+    """{'text': str, 'option': str|None, 'done': bool, 'collected': dict} — el próximo turno que escribiría la
+    persona usuaria, sugerido por el modelo. Mismo parseo robusto que judge_conversation: si la respuesta no es
+    el JSON esperado, LLMError claro — nunca un turno inventado de este lado."""
+    system, user = turn_messages(messages, instruction, data_goals)
+    raw = ask(system, user, config)
+    try:
+        data = _extract_json(raw)
+    except ValueError as exc:
+        raise LLMError(f'La respuesta del modelo no es el JSON esperado: {exc}') from exc
+    if not isinstance(data, dict) or 'done' not in data:
+        raise LLMError('La respuesta del modelo no tiene el formato esperado (text/option/done).')
+    collected = data.get('collected')
+    return {'text': str(data.get('text') or ''), 'option': (str(data['option']) if data.get('option') else None),
+            'done': bool(data['done']), 'collected': collected if isinstance(collected, dict) else {}}

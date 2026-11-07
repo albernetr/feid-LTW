@@ -214,11 +214,80 @@ def test_delete_project_cascade_wipes_everything_and_evidence_files():
     assert not shot.exists()
 
 
+def test_save_suite_keeps_the_chat_mapping_it_was_created_with_until_explicitly_changed():
+    """El mapeo de chat de un Flujo (si salió de una conversación) viaja con la propia suite, no solo con el
+    chat que estaba abierto al guardarlo — así «Retomar un Flujo guardado» no depende de qué chat esté abierto
+    en pantalla. Editar la suite desde cualquier otro lugar (p. ej. el editor de Flujos, que no sabe nada de
+    `chat`) no debe borrarlo en el camino."""
+    project = core.create_project('Flujo con mapeo')
+    env = core.save('environments', {'name': 'E', 'project_id': project['id'], 'base_url': 'https://x', 'auth': {'type': 'none'}, 'variables': {}})
+    case = core.save('cases', {'name': 'C', 'type': 'api', 'project_id': project['id'], 'method': 'GET', 'path': '/x', 'assertions': []})
+    mapping = {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+               'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}
+
+    suite = core.save_suite('S', env['id'], [case['id']], project['id'], chat=mapping)
+    assert suite['chat'] == mapping
+
+    unaware_update = core.save_suite('S renombrada', env['id'], [case['id']], project['id'], id=suite['id'])
+    assert unaware_update['chat'] == mapping                              # un caller que no sabe de "chat" no lo pisa
+
+    other_mapping = {**mapping, 'reply_path': '$.answer'}
+    explicit_update = core.save_suite('S', env['id'], [case['id']], project['id'], id=suite['id'], chat=other_mapping)
+    assert explicit_update['chat'] == other_mapping                       # pero sí se puede reemplazar a propósito
+
+    plain_suite = core.save_suite('Suite común', env['id'], [case['id']], project['id'])
+    assert 'chat' not in plain_suite                                      # una suite que nunca vino de un chat no lo gana de la nada
+
+
 def test_delete_project_cascade_clears_active_project_if_it_was_selected():
     project = core.create_project('Activo')
     assert core.get_active_project_id() == project['id']
     core.delete_project_cascade(project['id'])
     assert core.get_active_project_id() is None
+
+
+def test_save_exploration_tree_merges_a_path_and_marks_the_leaf_with_its_suite():
+    """Guardar el mismo camino dos veces (p. ej. dos corridas que arrancan igual) no lo duplica — el segundo
+    guardado reusa los nodos ya presentes y solo agrega lo nuevo al final."""
+    project = core.create_project('Árbol')
+    path = [
+        {'message': 'Hola', 'option': None, 'bot_reply': '¿Preferís mensual o anual?', 'options_offered': ['Mensual', 'Anual']},
+        {'message': 'Anual', 'option': 'Anual', 'bot_reply': 'Perfecto, ¿nombre completo?', 'options_offered': []},
+    ]
+    tree = core.save_exploration_tree('caso-1', project['id'], path, suite_id='suite-1')
+    assert tree['case_id'] == 'caso-1'
+    assert len(tree['root']['children']) == 1
+    first = tree['root']['children'][0]
+    assert first['message'] == 'Hola' and first['options_offered'] == ['Mensual', 'Anual']
+    second = first['children'][0]
+    assert second['message'] == 'Anual' and second['option'] == 'Anual' and second['suite_id'] == 'suite-1'
+
+    # un segundo camino que arranca igual («Hola») pero toma la otra opción agrega una rama nueva, sin duplicar «Hola»
+    other_path = [
+        {'message': 'Hola', 'option': None, 'bot_reply': '¿Preferís mensual o anual?', 'options_offered': ['Mensual', 'Anual']},
+        {'message': 'Mensual', 'option': 'Mensual', 'bot_reply': 'Dale, ¿nombre completo?', 'options_offered': []},
+    ]
+    tree = core.save_exploration_tree('caso-1', project['id'], other_path, suite_id='suite-2')
+    assert len(tree['root']['children']) == 1                      # «Hola» se reusó, no se duplicó
+    assert len(tree['root']['children'][0]['children']) == 2       # ahora cuelgan las dos ramas: Anual y Mensual
+    assert core.exploration_tree_for_case('caso-1', project['id'])['id'] == tree['id']
+
+
+def test_pending_branches_lists_offered_options_without_a_child_yet():
+    project = core.create_project('Árbol pendientes')
+    path = [{'message': 'Hola', 'option': None, 'bot_reply': '¿Mensual o anual?', 'options_offered': ['Mensual', 'Anual']},
+            {'message': 'Anual', 'option': 'Anual', 'bot_reply': 'ok', 'options_offered': []}]
+    tree = core.save_exploration_tree('caso-2', project['id'], path, suite_id='suite-1')
+    pending = core.pending_branches(tree['root'])
+    assert len(pending) == 1
+    branch_path, option = pending[0]
+    assert option == 'Mensual' and [n['message'] for n in branch_path] == ['Hola']   # hasta el padre, sin incluir la rama pendiente
+
+    # al cubrir esa rama, ya no queda nada pendiente en ese punto
+    path2 = [{'message': 'Hola', 'option': None, 'bot_reply': '¿Mensual o anual?', 'options_offered': ['Mensual', 'Anual']},
+             {'message': 'Mensual', 'option': 'Mensual', 'bot_reply': 'ok', 'options_offered': []}]
+    tree = core.save_exploration_tree('caso-2', project['id'], path2, suite_id='suite-2')
+    assert core.pending_branches(tree['root']) == []
 
 
 def test_disable_project_blocks_activation_and_clears_it_if_active():
