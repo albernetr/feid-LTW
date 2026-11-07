@@ -276,3 +276,45 @@ def test_suggest_next_turn_raises_a_clear_error_when_the_model_does_not_return_j
     fake.queue('no sé qué decir')
     with pytest.raises(llm.LLMError, match='no es el JSON esperado'):
         llm.suggest_next_turn(CHAT_MESSAGES, 'algún objetivo')
+
+
+API_RUN = {'id': 'r1', 'type': 'api', 'case_name': 'Crear pedido', 'http_status': 422,
+           'request': {'method': 'POST', 'url': 'http://x/api/items', 'body': {'name': ''}},
+           'response': {'body': '{"error": "name is required"}'},
+           'assertions': [{'rule': {'type': 'status', 'expected': 201}, 'passed': False, 'actual': 422}]}
+
+UI_RUN = {'id': 'r2', 'type': 'ui', 'case_name': 'Login UI',
+          'steps': [{'index': 0, 'action': 'navigate', 'passed': True}, {'index': 1, 'action': 'fill', 'passed': True},
+                    {'index': 2, 'action': 'assert_visible', 'passed': False}]}
+
+
+def test_judge_run_parses_the_models_verdict_for_an_api_run(fake):
+    configure(fake)
+    fake.queue(json.dumps({'pass': False, 'reasoning': 'La aserción de status esperaba 201 y llegó 422 — el caso no pasa.'}))
+    result = llm.judge_run(API_RUN, 'El endpoint debe crear el pedido y devolver 201.')
+    assert result['pass'] is False
+    assert '422' in result['reasoning']
+    sent = fake.requests[-1]['body']['messages'][-1]['content']
+    assert 'Crear pedido' in sent and 'POST http://x/api/items' in sent and 'FALLÓ' in sent
+
+
+def test_judge_run_formats_ui_steps_instead_of_request_response(fake):
+    configure(fake)
+    fake.queue(json.dumps({'pass': False, 'reasoning': 'El tercer paso no encontró el elemento esperado.'}))
+    result = llm.judge_run(UI_RUN, '')
+    assert result['pass'] is False
+    sent = fake.requests[-1]['body']['messages'][-1]['content']
+    assert 'Paso 1: navigate — OK' in sent and 'Paso 3: assert_visible — FALLÓ' in sent
+
+
+def test_judge_run_raises_a_clear_error_when_the_model_does_not_return_json(fake):
+    configure(fake)
+    fake.queue('no sé qué decir')
+    with pytest.raises(llm.LLMError, match='no es el JSON esperado'):
+        llm.judge_run(API_RUN, 'algún criterio')
+
+
+def test_judge_run_requires_a_run(fake):
+    configure(fake)
+    with pytest.raises(llm.LLMError, match='No hay corrida'):
+        llm.judge_run(None, 'algún criterio')

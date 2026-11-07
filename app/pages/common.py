@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from fastapi.responses import RedirectResponse
 from nicegui import app, ui, run
-from .. import core, automation, evidence_report, integrations
+from .. import core, automation, evidence_report, integrations, llm
 
 NAV = [
     ('Inicio', '/', 'home'), ('Resumen', '/resumen', 'monitor_heart'), ('Espacio de trabajo', '/workspace', 'space_dashboard'), ('Proyectos', '/projects', 'folder_open'),
@@ -394,14 +394,14 @@ async def render_evidence(data, kind):
     return evidence_report.render_evidence_html(data).encode('utf-8'), CONTENT_TYPES['html']
 
 
-async def _download_evidence(run_doc, kind):
-    data = evidence_report.build_report_data(run_doc)
+async def _download_evidence(run_doc, kind, llm_verdict=None):
+    data = evidence_report.build_report_data(run_doc, llm_verdict=llm_verdict)
     content, _ = await render_evidence(data, kind)
     ui.download(content, f'{_evidence_stem(run_doc)}.{kind}')
     ui.notify('Evidencia generada', type='positive')
 
 
-def _send_to_ticket_dialog(run_doc):
+def _send_to_ticket_dialog(run_doc, llm_verdict=None):
     pid = core.get_active_project_id()
     items = core.list_project_items('integrations', pid) if pid else []
     if not items:
@@ -418,7 +418,7 @@ def _send_to_ticket_dialog(run_doc):
             ticket_value = (ticket.value or '').strip()
             if not ticket_value:
                 raise ValueError('Indica el ticket o work item de destino')
-            data = evidence_report.build_report_data(run_doc)
+            data = evidence_report.build_report_data(run_doc, llm_verdict=llm_verdict)
             content, content_type = await render_evidence(data, kind.value)
             integration = core.get('integrations', integ.value)
             await run.io_bound(integrations.attach_evidence, integration, f'{_evidence_stem(run_doc)}.{kind.value}', content, content_type, ticket_value)
@@ -430,20 +430,36 @@ def _send_to_ticket_dialog(run_doc):
     dialog.open()
 
 
-def show_run(run):
+def _resolve_run_verdict_context(run_doc):
+    """Única fuente de criterio hoy para un run suelto de Caso API/UI: la Funcionalidad ligada a la suite de la
+    que este run es un paso (si la hay) — a diferencia de un caso de Chat, un caso API/UI no tiene su propio
+    hu_text/feature_id. El resto lo infiere el propio prompt de llm.judge_run (nombre del caso, aserciones)."""
+    suite_id = run_doc.get('suite_id')
+    if suite_id:
+        suite = core.get('suites', suite_id)
+        feature_id = suite.get('feature_id') if suite else None
+        if feature_id:
+            feature = core.get('features', feature_id)
+            if feature and (feature.get('description') or '').strip():
+                return feature['description'].strip(), f'Funcionalidad «{feature["name"]}»'
+    return '', 'inferido del caso y sus aserciones (sin Funcionalidad ligada)'
+
+
+def show_run(run_doc):
     """Dialog with the full detail of a run (api / ui / suite)."""
+    V = {'verdict': None, 'busy': False}   # veredicto del modelo (Fase 6) — vacío para suite/suite_group, que no piden uno propio
     with ui.dialog() as dialog, ui.card().classes('w-[820px] max-w-full'):
         with ui.row().classes('items-center gap-3'):
-            status_badge(run.get('status'))
-            ui.label(run.get('case_name') or run.get('suite_name') or run.get('group_name') or '').classes('text-lg font-semibold')
-            ui.label(fmt_time(run.get('started_at'))).classes('text-gray-500 text-sm')
-        if run.get('executed_by'):
-            ui.label(f'Ejecutado por: {core.user_display_name(run["executed_by"])}').classes('text-xs text-gray-500')
-        if run.get('error'):
-            ui.label(run['error']).classes('text-red-700 whitespace-pre-wrap')
-        if run.get('type') == 'suite':
+            status_badge(run_doc.get('status'))
+            ui.label(run_doc.get('case_name') or run_doc.get('suite_name') or run_doc.get('group_name') or '').classes('text-lg font-semibold')
+            ui.label(fmt_time(run_doc.get('started_at'))).classes('text-gray-500 text-sm')
+        if run_doc.get('executed_by'):
+            ui.label(f'Ejecutado por: {core.user_display_name(run_doc["executed_by"])}').classes('text-xs text-gray-500')
+        if run_doc.get('error'):
+            ui.label(run_doc['error']).classes('text-red-700 whitespace-pre-wrap')
+        if run_doc.get('type') == 'suite':
             with ui.column().classes('w-full gap-1'):
-                for entry in run.get('case_runs', []):
+                for entry in run_doc.get('case_runs', []):
                     with ui.row().classes('items-center gap-2'):
                         status_badge(entry['status'])
                         ui.label((entry.get('alias') + ' · ' if entry.get('alias') else '') + (entry.get('case_name') or entry['case_id'][:8])
@@ -454,9 +470,9 @@ def show_run(run):
                             ui.label(entry['error']).classes('text-red-700 text-sm')
                         if entry.get('run_id') and core.get('runs', entry['run_id']):
                             ui.button('Ver detalle', on_click=lambda _, r=entry['run_id']: show_run(core.get('runs', r))).props('flat dense')
-        elif run.get('type') == 'suite_group':
+        elif run_doc.get('type') == 'suite_group':
             with ui.column().classes('w-full gap-1'):
-                for entry in run.get('item_runs', []):
+                for entry in run_doc.get('item_runs', []):
                     with ui.row().classes('items-center gap-2'):
                         status_badge(entry['status'])
                         ui.badge('Flujo' if entry['type'] == 'flow' else 'Caso', color='deep-orange' if entry['type'] == 'flow' else 'primary').classes('text-xs')
@@ -465,27 +481,27 @@ def show_run(run):
                             ui.label(entry['error']).classes('text-red-700 text-sm')
                         if entry.get('run_id') and core.get('runs', entry['run_id']):
                             ui.button('Ver detalle', on_click=lambda _, r=entry['run_id']: show_run(core.get('runs', r))).props('flat dense')
-        elif run.get('type') == 'ui':
-            for step in run.get('steps', []):
+        elif run_doc.get('type') == 'ui':
+            for step in run_doc.get('steps', []):
                 with ui.row().classes('items-center gap-2'):
                     ui.icon('check_circle' if step.get('passed') else 'cancel', color='positive' if step.get('passed') else 'negative')
                     label = automation.STEP_ACTIONS.get(step['action'], {}).get('label', step['action'])
                     ui.label(f'{step["index"] + 1}. {label}')
-            _evidence(run)
+            _evidence(run_doc)
         else:
-            ui.label(f'HTTP {run.get("http_status", "—")} · {run.get("duration_ms", "—")} ms').classes('text-gray-600')
-            if run.get('request'):
-                ui.label(f'{run["request"]["method"]} {run["request"]["url"]}').classes('font-mono text-sm')
-                for line in run.get('enriched') or []:
+            ui.label(f'HTTP {run_doc.get("http_status", "—")} · {run_doc.get("duration_ms", "—")} ms').classes('text-gray-600')
+            if run_doc.get('request'):
+                ui.label(f'{run_doc["request"]["method"]} {run_doc["request"]["url"]}').classes('font-mono text-sm')
+                for line in run_doc.get('enriched') or []:
                     ui.label('✎ ' + line).classes('text-sm text-blue-800')
-                sent = run['request']
+                sent = run_doc['request']
                 if sent.get('body') is not None or sent.get('query'):
                     with ui.expansion('Petición enviada (lo que salió)').classes('w-full'):
                         if sent.get('query'):
                             ui.code(json.dumps(sent['query'], indent=2, ensure_ascii=False), language='json').classes('w-full')
                         if sent.get('body') is not None:
                             ui.code(json.dumps(sent['body'], indent=2, ensure_ascii=False) if not isinstance(sent['body'], str) else sent['body'], language='json').classes('w-full')
-            for item in run.get('assertions', []):
+            for item in run_doc.get('assertions', []):
                 rule = item['rule']
                 spec = core.ASSERTION_TYPES.get(rule.get('type'), {})
                 with ui.row().classes('items-start gap-2 no-wrap'):
@@ -496,21 +512,53 @@ def show_run(run):
                         actual = item['actual']
                         shown = chr(10).join(actual) if isinstance(actual, list) and all(isinstance(x, str) for x in actual) else show_value(actual)
                         ui.label(f'→ {shown[:400]}').classes('text-sm text-red-700 whitespace-pre-wrap')
-            if run.get('extracted'):
-                ui.label('Variables extraídas: ' + ', '.join(run['extracted'])).classes('text-sm text-gray-600')
-            if run.get('status') in ('failed', 'error') and core.get('runs', run['id']):
-                ui.button('Brief para agente', icon='smart_toy', on_click=guard(lambda: agent_brief(run['id']))).props('outline dense no-caps').tooltip('Fallo con todo el contexto, listo para que un agente vaya al código')
-            if run.get('response'):
+            if run_doc.get('extracted'):
+                ui.label('Variables extraídas: ' + ', '.join(run_doc['extracted'])).classes('text-sm text-gray-600')
+            if run_doc.get('status') in ('failed', 'error') and core.get('runs', run_doc['id']):
+                ui.button('Brief para agente', icon='smart_toy', on_click=guard(lambda: agent_brief(run_doc['id']))).props('outline dense no-caps').tooltip('Fallo con todo el contexto, listo para que un agente vaya al código')
+            if run_doc.get('response'):
                 with ui.expansion('Respuesta').classes('w-full'):
-                    ui.code(run['response'].get('body', '')[:5000], language='json').classes('w-full')
-        if run.get('id'):   # no exige que esté persistida: build_report_data/_download_evidence solo leen el dict (p. ej. Chat, que nunca guarda en Historial)
+                    ui.code(run_doc['response'].get('body', '')[:5000], language='json').classes('w-full')
+        if run_doc.get('type') not in ('suite', 'suite_group'):
+            # Veredicto con argumento (Fase 6): mismo mecanismo que ya usa Chat (llm.judge_conversation), pero
+            # sobre UN run de Caso API/UI (llm.judge_run) — no aplica a una fila de suite/grupo, que son listas
+            # de sub-runs, cada uno con su propio «Ver detalle» para pedirlo ahí.
+            context_text, context_source = _resolve_run_verdict_context(run_doc)
+
+            async def ask_verdict():
+                V['busy'] = True
+                verdict_view.refresh()
+                try:
+                    V['verdict'] = await run.io_bound(llm.judge_run, run_doc, context_text)
+                except llm.LLMError as exc:
+                    ui.notify(str(exc), type='negative', multi_line=True)
+                finally:
+                    V['busy'] = False
+                    verdict_view.refresh()
+
+            @ui.refreshable
+            def verdict_view():
+                state = llm.status()
+                ui.label(f'Criterio del veredicto: {context_source}').classes('text-xs text-gray-500')
+                if V['verdict']:
+                    icon, color = ('check_circle', 'positive') if V['verdict']['pass'] else ('cancel', 'negative')
+                    with ui.row().classes('items-center gap-2'):
+                        ui.icon(icon, color=color)
+                        ui.label('Pasa' if V['verdict']['pass'] else 'No pasa').classes('font-medium')
+                    ui.label(V['verdict']['reasoning']).classes('text-sm text-gray-700').mark('run-verdict-reasoning')
+                ui.button('Pedir veredicto al modelo', icon='psychology', on_click=guard(ask_verdict)) \
+                    .props('flat dense no-caps').mark('run-ask-verdict').set_enabled(state['ready'] and not V['busy'])
+                if not state['ready']:
+                    ui.label(state['problem']).classes('text-xs text-gray-500')
+            verdict_view()
+        if run_doc.get('id'):   # no exige que esté persistida: build_report_data/_download_evidence solo leen el dict (p. ej. Chat, que nunca guarda en Historial)
             with ui.row().classes('items-center gap-2'):
                 ui.label('Descargar evidencia:').classes('text-sm text-gray-600')
-                ui.button('HTML', icon='download', on_click=guard(lambda: _download_evidence(run, 'html'))).props('flat dense no-caps')
-                ui.button('PDF', icon='picture_as_pdf', on_click=guard(lambda: _download_evidence(run, 'pdf'))).props('flat dense no-caps')
-                ui.button('Word', icon='description', on_click=guard(lambda: _download_evidence(run, 'docx'))).props('flat dense no-caps')
-                ui.button('Markdown', icon='code', on_click=guard(lambda: _download_evidence(run, 'md'))).props('flat dense no-caps')
-                ui.button('Enviar a Jira/Azure DevOps', icon='send', on_click=guard(lambda: _send_to_ticket_dialog(run))).props('flat dense no-caps')
+                ui.button('HTML', icon='download', on_click=guard(lambda: _download_evidence(run_doc, 'html', V['verdict']))).props('flat dense no-caps')
+                ui.button('PDF', icon='picture_as_pdf', on_click=guard(lambda: _download_evidence(run_doc, 'pdf', V['verdict']))).props('flat dense no-caps')
+                ui.button('Word', icon='description', on_click=guard(lambda: _download_evidence(run_doc, 'docx', V['verdict']))).props('flat dense no-caps')
+                ui.button('Markdown', icon='code', on_click=guard(lambda: _download_evidence(run_doc, 'md', V['verdict']))).props('flat dense no-caps')
+                ui.button('Enviar a Jira/Azure DevOps', icon='send', on_click=guard(lambda: _send_to_ticket_dialog(run_doc, V['verdict']))).props('flat dense no-caps')
         with ui.row().classes('justify-end w-full'):
             ui.button('Cerrar', on_click=dialog.close).props('flat')
     dialog.open()

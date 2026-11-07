@@ -437,6 +437,75 @@ def judge_conversation(messages, context_text='', mode='final', config=None):
     return {'pass': bool(data['pass']), 'reasoning': str(data['reasoning']), 'raw': raw}
 
 
+# --------------------------------------------------------------------------- veredicto con argumento, Fase 6: el
+# mismo mecanismo de judge_conversation, aplicado a UN run de Caso API/UI en vez de a una conversación de Chat —
+# «¿esta corrida cumple el objetivo, y por qué?», no solo el resultado mecánico de sus aserciones.
+
+RUN_VERDICT_SYSTEM = (
+    'Eres un QA senior. Te paso la corrida de un caso de prueba (API o UI) — la petición y la respuesta, o los '
+    'pasos ejecutados, y el resultado de sus aserciones — y, si existe, el criterio contra el que debe '
+    'evaluarse (una historia de usuario, criterios de aceptación, o una Funcionalidad ligada). Responde SOLO '
+    'con un objeto JSON válido, sin texto antes ni después: {"pass": true|false, "reasoning": "..."}. '
+    'reasoning: 2-4 frases concretas, en español, citando el paso o la aserción puntual cuando corresponda. '
+    'Si no hay criterio explícito, inferilo del nombre del caso, de la petición o los pasos, y de si las '
+    'aserciones ya definidas pasaron o no, y decilo en el razonamiento.')
+
+
+def _run_transcript(run):
+    """Texto legible de UN run de Caso API/UI (no una conversación) — nombre, qué se mandó/ejecutó, y el
+    resultado de cada aserción o paso. Formateador propio: la forma de un run no se parece en nada a
+    S['messages'] de Chat, así que no tiene sentido reusar _transcript acá."""
+    lines = [f'Caso: {run.get("case_name") or run.get("case_id") or "(sin nombre)"} (tipo {run.get("type", "api")})']
+    if run.get('type') == 'ui':
+        for step in run.get('steps') or []:
+            label = step.get('action', '')
+            lines.append(f'Paso {step.get("index", 0) + 1}: {label} — {"OK" if step.get("passed") else "FALLÓ"}')
+    else:
+        req = run.get('request') or {}
+        if req:
+            lines.append(f'{req.get("method", "")} {req.get("url", "")}')
+            if req.get('body') is not None:
+                lines.append(f'Body enviado: {_clip(str(req["body"]), 1500)}')
+        lines.append(f'HTTP {run.get("http_status", "—")}')
+        resp = run.get('response') or {}
+        if resp.get('body'):
+            lines.append(f'Respuesta: {_clip(str(resp["body"]), 1500)}')
+    for item in run.get('assertions') or []:
+        rule = item.get('rule') or {}
+        ok = item.get('passed')
+        detail = f' (se esperaba {rule.get("expected")!r}, se obtuvo {item.get("actual")!r})' if not ok else ''
+        lines.append(f'Aserción {rule.get("type", "?")}: {"OK" if ok else "FALLÓ" + detail}')
+    if run.get('error'):
+        lines.append(f'Error: {run["error"]}')
+    return '\n'.join(lines)
+
+
+def run_verdict_messages(run, context_text=''):
+    """(system, user) exactly as they will be sent — mismo criterio que verdict_messages."""
+    parts = []
+    if (context_text or '').strip():
+        parts.append(f'Criterio contra el que evaluar:\n{context_text.strip()}')
+    parts.append(f'Corrida:\n{_run_transcript(run)}')
+    return RUN_VERDICT_SYSTEM, redact(_clip('\n\n'.join(parts)))
+
+
+def judge_run(run, context_text='', config=None):
+    """{'pass': bool, 'reasoning': str, 'raw': str} — mismo contrato que judge_conversation, para un run de
+    Caso API/UI en vez de una conversación de Chat. Mismo parseo robusto: si la respuesta no es el JSON
+    esperado, LLMError claro, nunca un veredicto inventado."""
+    if not run:
+        raise LLMError('No hay corrida para evaluar.')
+    system, user = run_verdict_messages(run, context_text)
+    raw = ask(system, user, config)
+    try:
+        data = _extract_json(raw)
+    except ValueError as exc:
+        raise LLMError(f'La respuesta del modelo no es el JSON esperado: {exc}') from exc
+    if not isinstance(data, dict) or 'pass' not in data or 'reasoning' not in data:
+        raise LLMError('La respuesta del modelo no tiene el formato esperado (pass/reasoning).')
+    return {'pass': bool(data['pass']), 'reasoning': str(data['reasoning']), 'raw': raw}
+
+
 # --------------------------------------------------------------------------- conversación conducida por el modelo
 # El modelo hace de PERSONA USUARIA (no del bot): a partir de una instrucción/objetivo y, si corresponde, un
 # objetivo de datos a conseguir, sugiere el próximo turno — texto libre o, si el bot acaba de ofrecer opciones de

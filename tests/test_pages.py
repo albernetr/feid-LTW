@@ -867,6 +867,25 @@ async def test_workspace_offers_detail_and_evidence_for_the_last_sent_request(us
     await user.should_see('HTML')
 
 
+async def test_show_run_offers_a_model_verdict_for_an_api_case_run(user: User, sample_app):
+    """Fase 6: el mismo «Pedir veredicto al modelo» que ya tiene Chat, ahora en el detalle de CUALQUIER run de
+    Caso API/UI (common.show_run) — mismo botón, mismo llm.status() como compuerta."""
+    from app import llm
+    from sample_app.fake_llm import FakeLLM
+    with FakeLLM() as fake:
+        llm.save_config({'preset': 'local', 'protocol': 'openai', 'base_url': fake.url + '/v1', 'model': 'modelo-demo', 'auth': 'none'})
+        fake.queue(json.dumps({'pass': True, 'reasoning': 'La respuesta trae el usuario esperado.'}))
+        await user.open('/workspace')
+        user.find('ws-url').type(sample_app.url + '/api/users/2')
+        user.find('ws-send').click()
+        await eventually(lambda: any('"name": "user2"' in text for text in code_texts(user)))
+        user.find(marker='ws-evidence').click()
+        await user.should_see(marker='run-ask-verdict', retries=30)
+        user.find(marker='run-ask-verdict').click()
+        await user.should_see(marker='run-verdict-reasoning', retries=30)
+        await user.should_see('La respuesta trae el usuario esperado.')
+
+
 async def test_workspace_history_reload_and_search(user: User, sample_app):
     from app import workspace as ws_logic
     d = ws_logic.new_draft()
