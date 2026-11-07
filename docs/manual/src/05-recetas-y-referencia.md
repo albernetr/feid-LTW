@@ -234,6 +234,8 @@ LTW **no incluye ningún modelo ni llama a uno por su cuenta**. Si quieres ayuda
 | No abre `http://127.0.0.1:8080` | La aplicación no está corriendo o el puerto está ocupado por otra aplicación. | Ejecuta `scripts\run.bat`. Si el puerto está ocupado, usa otro: `set LTW_PORT=8090` y vuelve a arrancar. |
 | «Address already in use» / error de puerto | Otra instancia o programa usa el puerto. | Cierra la otra instancia o cambia `LTW_PORT`. |
 | Casos UI: «Executable doesn't exist… playwright install» | Falta Chromium de Playwright. | `python -m playwright install chromium` (con el entorno virtual activo). |
+| Casos UI, modo «Extensión (MCP)»: «Esto necesita Node.js…» | No hay Node.js instalado en esta máquina. | Instalalo desde [nodejs.org](https://nodejs.org) y volvé a abrir el puente. |
+| Casos UI, modo «Extensión (MCP)»: «No se pudo conectar al puente MCP» | El puente no está abierto, o se cerró. | Ambientes → el ambiente → **«Abrir puente»**; si acabás de abrirlo, aprobá la conexión desde la extensión en el navegador. |
 | «Zona horaria inválida» en una programación | En Windows falta el paquete `tzdata`. | `pip install tzdata` (el instalador ya lo incluye). |
 | Caso en **Error**: «Variables sin resolver: x» | La ruta/headers/body usa `{{x}}` sin valor. | Define `x` en **Variables** del caso, del ambiente o de la suite. |
 | Caso en **Error**: «Falta el secreto/variable de entorno de autenticación» | El ambiente apunta a un secreto que no existe. | Créalo en **Ambientes → Secretos** (mismo nombre) o define la variable de entorno. |

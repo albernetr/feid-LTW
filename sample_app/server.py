@@ -3,7 +3,7 @@
 Run it manually with:  python -m sample_app.server   (http://127.0.0.1:8765)
 API: GET /health, POST /api/login, GET/POST /api/items, GET /api/items/<id>   (Bearer tok-abc123)
      GET /api/users/<1-5> (public; includes a volatile requested_at)
-UI : /login (form), /clientes (list)
+UI : /login (form), /clientes (list), /con-iframe (an <iframe> wrapping /iframe-inner)
 """
 import datetime
 import json
@@ -22,6 +22,10 @@ LOGIN = '''<h1>Iniciar sesión</h1>
 const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
 body:JSON.stringify({user:u.value,password:p.value})});
 document.getElementById('msg').textContent=r.ok?'Bienvenido '+u.value:'Credenciales inválidas';});</script>'''
+IFRAME_INNER = '''<h2>Adentro</h2>
+<label for="campo">Campo interno</label><input id="campo" data-testid="campo-interno">
+<button data-testid="boton-interno" type="button" onclick="document.getElementById('campo').setAttribute('data-ok','1')">Confirmar</button>'''
+IFRAME_OUTER = '<h1>Con iframe</h1><iframe id="caja" src="/iframe-inner" style="width:400px;height:200px"></iframe>'
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -57,6 +61,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/clientes':
             rows = ''.join(f'<li>{i["name"]}</li>' for i in self.server.items)
             return self._send(200, PAGE.format(title='Clientes', body=f'<h1>Clientes</h1><ul>{rows}</ul>'), 'text/html')
+        if path == '/con-iframe':   # para probar que un locator necesita `frame` para entrar a un <iframe>
+            return self._send(200, PAGE.format(title='Con iframe', body=IFRAME_OUTER), 'text/html')
+        if path == '/iframe-inner':
+            return self._send(200, PAGE.format(title='Adentro', body=IFRAME_INNER), 'text/html')
         if path == '/set-cookie':   # para probar que una sesión guardada (storage_state) llega al navegador antes del primer paso
             body = PAGE.format(title='Cookie', body='<p>ok</p>').encode()
             self.send_response(200)

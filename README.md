@@ -14,7 +14,7 @@ Esto no es "¿funciona?" — es "¿se probó contra algo real, más de una vez, 
 |---|---|---|
 | 🟢 **Estable** | Probado contra sistemas reales, con pruebas automáticas y fallos reales encontrados y corregidos. | Motor de aserciones y ejecución de casos API (26 tipos) · Protocolo para agentes (`ltw.spec`/`ltw.report`/`ltw.failure`) · Importar contratos OpenAPI (archivo, URL, Swagger UI/Redoc/FastAPI) · Exploración automática de contratos · Importar/Exportar del workspace · Seguridad de secretos |
 | 🟡 **Beta** | Funciona y tiene pruebas, pero con menos uso real sostenido o un límite conocido que conviene vigilar. | Suites y flujos con enriquecimiento entre componentes · Observador de interfaces (el tap/proxy en vivo, más que aprender del historial) · Resumen ejecutivo y reporte de estatus · Casos UI y el espacio de trabajo unificado · Actualización automática de token por petición HTTP · Componentes creados manualmente sin contrato · Módulos y Funcionalidades (agrupación por dominio y trazabilidad de negocio) · Componentes con múltiples ambientes y backend+frontend a la vez · Chat multi-turno (conversar con un bot paso a paso, retomar, plantillas, congelar como suite) · Consecutivos con nombre (`{{seq:nombre}}`) y consecutivo propio de una suite (`seq_start`) · Conjuntos de datos (subidos o armados a mano) y `{{random:conjunto.columna}}` · Sorteos en una Suite (misma fila de datos para todos los pasos) y ejecutar/generar N conversaciones |
-| ⚪ **Experimental** | Usable, pero la calidad depende de algo fuera de LTW (el modelo que conectes) o de un uso que casi no se ha probado. | Asistente con modelo de lenguaje (depende del modelo que conectes) · Programaciones de larga duración sin supervisión · Actualización automática de token por comando del sistema |
+| ⚪ **Experimental** | Usable, pero la calidad depende de algo fuera de LTW (el modelo que conectes) o de un uso que casi no se ha probado. | Asistente con modelo de lenguaje (depende del modelo que conectes) · Programaciones de larga duración sin supervisión · Actualización automática de token por comando del sistema · Casos UI con sesión «Extensión de Chrome (MCP)» (depende de Node.js y de una extensión de navegador de terceros; «Verificar texto»/«Verificar valor» y locators por testid todavía no soportados en este modo) |
 
 Detalle de límites conocidos por sección: [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
 
@@ -28,6 +28,8 @@ scripts\run.bat          :: abre http://127.0.0.1:8080
 scripts\scheduler.bat    :: (opcional, otra ventana) activa las programaciones
 scripts\test.bat         :: ejecuta la batería de pruebas
 ```
+
+Opcional: **Node.js** (de [nodejs.org](https://nodejs.org)), solo si vas a usar la sesión «Extensión de Chrome (MCP)» de Casos UI — no hace falta para el resto de la aplicación.
 
 Manual / Linux / macOS:
 

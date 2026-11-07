@@ -1,5 +1,5 @@
 import datetime as dt
-from app import core, automation
+from app import core, automation, mcp_client, mcp_steps
 
 def test_scheduler_daily(monkeypatch,tmp_path):
     monkeypatch.setattr(core,'ROOT',tmp_path)
@@ -116,3 +116,80 @@ def test_execute_ui_live_mode_gives_a_clear_error_when_no_live_browser_is_listen
     result = automation.execute_ui(case, env)
     assert result['status'] == 'failed'
     assert 'Navegador en vivo' in result['error']
+
+
+class _FakeMCPSession:
+    """Sustituye mcp_client.MCPSession — execute_ui solo la instancia y llama initialize()."""
+    def __init__(self, port, **kwargs):
+        self.port = port
+
+    def initialize(self):
+        pass
+
+
+def test_execute_ui_mcp_mode_runs_steps_through_the_bridge_and_keeps_a_screenshot(monkeypatch, tmp_path):
+    monkeypatch.setattr(core, 'ROOT', tmp_path)
+    monkeypatch.setattr(core, 'DB', tmp_path / 'db.sqlite3')
+    monkeypatch.setattr(core, 'ARTIFACTS', tmp_path / 'evidence')
+    core.initialize()
+    seen_ports = []
+
+    def fake_run_mcp_steps(session, steps, base, allowed_hosts, timeout_ms, run_steps):
+        seen_ports.append(session.port)
+        for i, step in enumerate(steps):
+            run_steps.append({'index': i, 'action': step['action'], 'passed': True})
+        return 'http://127.0.0.1:8080/'
+
+    def fake_capture_screenshot(session, path):
+        path.write_bytes(b'fake-png')
+
+    monkeypatch.setattr(mcp_client, 'MCPSession', _FakeMCPSession)
+    monkeypatch.setattr(mcp_steps, 'run_mcp_steps', fake_run_mcp_steps)
+    monkeypatch.setattr(mcp_steps, 'capture_screenshot', fake_capture_screenshot)
+    case = {'id': 'ui-1', 'name': 'UI', 'type': 'ui', 'steps': [{'action': 'navigate', 'url': '/'}]}
+    env = {'id': 'env-1', 'base_url': 'http://127.0.0.1:8765', 'ui_session_mode': 'mcp', 'ui_mcp_port': 8931}
+    result = automation.execute_ui(case, env)
+    assert result['status'] == 'passed', result
+    assert seen_ports == [8931]   # se conectó al puerto configurado para este ambiente
+    assert result['screenshot'] == result['id'] + '.png'
+    assert (core.ARTIFACTS / result['screenshot']).read_bytes() == b'fake-png'
+
+
+def test_execute_ui_mcp_mode_gives_a_clear_error_when_no_bridge_is_listening(monkeypatch, tmp_path):
+    monkeypatch.setattr(core, 'ROOT', tmp_path)
+    monkeypatch.setattr(core, 'DB', tmp_path / 'db.sqlite3')
+    monkeypatch.setattr(core, 'ARTIFACTS', tmp_path / 'evidence')
+    core.initialize()
+
+    class RefusingSession:
+        def __init__(self, port, **kwargs):
+            pass
+
+        def initialize(self):
+            raise mcp_client.MCPError('connection refused')
+    monkeypatch.setattr(mcp_client, 'MCPSession', RefusingSession)
+    case = {'id': 'ui-1', 'name': 'UI', 'type': 'ui', 'steps': [{'action': 'navigate', 'url': '/'}]}
+    env = {'id': 'env-1', 'base_url': 'http://127.0.0.1:8765', 'ui_session_mode': 'mcp', 'ui_mcp_port': 8931}
+    result = automation.execute_ui(case, env)
+    assert result['status'] == 'failed'
+    assert 'Extensión de Chrome (MCP)' in result['error']
+
+
+def test_execute_ui_mcp_mode_marks_the_last_step_failed_when_a_step_raises(monkeypatch, tmp_path):
+    monkeypatch.setattr(core, 'ROOT', tmp_path)
+    monkeypatch.setattr(core, 'DB', tmp_path / 'db.sqlite3')
+    monkeypatch.setattr(core, 'ARTIFACTS', tmp_path / 'evidence')
+    core.initialize()
+
+    def fake_run_mcp_steps(session, steps, base, allowed_hosts, timeout_ms, run_steps):
+        run_steps.append({'index': 0, 'action': steps[0]['action']})
+        raise ValueError('No se encontró ningún elemento para el locator.')
+    monkeypatch.setattr(mcp_client, 'MCPSession', _FakeMCPSession)
+    monkeypatch.setattr(mcp_steps, 'run_mcp_steps', fake_run_mcp_steps)
+    monkeypatch.setattr(mcp_steps, 'capture_screenshot', lambda session, path: None)
+    case = {'id': 'ui-1', 'name': 'UI', 'type': 'ui', 'steps': [{'action': 'click', 'locator': {'by': 'text', 'value': 'x'}}]}
+    env = {'id': 'env-1', 'base_url': 'http://127.0.0.1:8765', 'ui_session_mode': 'mcp', 'ui_mcp_port': 8931}
+    result = automation.execute_ui(case, env)
+    assert result['status'] == 'failed'
+    assert result['steps'][-1]['passed'] is False
+    assert 'No se encontró' in result['error']

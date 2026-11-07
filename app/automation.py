@@ -59,6 +59,9 @@ def build_locator(page, spec):
 
 
 def _base_locator(page, spec):
+    frame_selector = spec.get('frame')
+    if frame_selector:
+        page = page.frame_locator(frame_selector)   # FrameLocator exposes the same get_by_* methods as Page
     kind = spec.get('by')
     value = spec.get('value', '')
     exact = bool(spec.get('exact', False))  # Playwright default: case-insensitive substring match
@@ -192,6 +195,37 @@ def discover_views(base_url, start_path=None, max_pages=15, timeout_ms=8000, on_
         return {'ok': False, 'detail': str(exc), 'views': []}
 
 
+def _execute_ui_mcp(run, steps, base, allowed_hosts, case, environment):
+    """Modo «Extensión de Chrome (MCP)»: habla con el puente que abrió Ambientes → «Extensión de Chrome (MCP)»
+    (ver mcp_bridge.py) en vez de con la API de Playwright — mismo contrato que el loop nativo (run['steps'],
+    run['status'], run['error'], run['screenshot']), para que show_run/evidence_report no necesiten saber cuál
+    de los dos modos corrió."""
+    from . import mcp_bridge, mcp_client, mcp_steps
+    port = environment.get('ui_mcp_port') or mcp_bridge.DEFAULT_MCP_PORT
+    try:
+        session = mcp_client.MCPSession(port)
+        session.initialize()
+    except Exception as exc:
+        run['status'] = 'failed'
+        run['error'] = (f'No se pudo conectar al puente MCP (puerto {port}): abrilo primero desde Ambientes → '
+                         f'«Extensión de Chrome (MCP)». ({type(exc).__name__}: {exc})')[:700]
+        return
+    try:
+        mcp_steps.run_mcp_steps(session, steps, base, allowed_hosts, case.get('timeout_ms', 10000), run['steps'])
+        run['status'] = 'passed'
+    except Exception as exc:
+        if run['steps']:
+            run['steps'][-1]['passed'] = False
+        run['status'] = 'failed'
+        run['error'] = f'{type(exc).__name__}: {str(exc)}'[:700]
+    shot = core.ARTIFACTS / (run['id'] + '.png')
+    try:
+        mcp_steps.capture_screenshot(session, shot)
+        run['screenshot'] = shot.name
+    except Exception:
+        pass
+
+
 def execute_ui(case, environment, variables=None, meta=None):
     """Execute declarative UI steps; browser is isolated per case. Keeps screenshot (always) and trace (on failure).
     `meta` (e.g. {'suite_id':, 'alias':, 'executed_by':}) is mixed straight into the run, same as core.execute_api."""
@@ -217,110 +251,115 @@ def execute_ui(case, environment, variables=None, meta=None):
         # Hosts adicionales de confianza (SSO/MFA como PingID, que redirige a otro dominio) — nunca cualquier
         # dominio: solo los que el ambiente declaró explícitamente (ver Ambientes → «Hosts adicionales»).
         allowed_hosts = {base_host} | {h for h in (environment.get('trusted_hosts') or []) if h}
-        _use_system_browsers()
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            live_mode = environment.get('ui_session_mode') == 'live' and bool(environment.get('id'))
-            if live_mode:
-                # Navegador real, ya logueado, que alguien dejó abierto a propósito (Ambientes → «Navegador en
-                # vivo», ver recorder.launch_live_browser) — para un proveedor de identidad que ata la sesión al
-                # navegador/dispositivo concreto, no solo a la cookie: ahí, repetir las cookies capturadas (ver
-                # el otro modo, más abajo) en un contexto nuevo puede quedar rechazado aunque sean válidas. Se
-                # abre una pestaña NUEVA en ese mismo navegador (comparte su sesión) y, al terminar, se cierra
-                # solo esa pestaña — nunca el navegador ni sus otras pestañas (ver el cierre, más abajo).
-                port = environment.get('ui_live_port') or recorder.DEFAULT_LIVE_PORT
-                try:
-                    browser = p.chromium.connect_over_cdp(f'http://127.0.0.1:{port}')
-                except Exception as exc:
-                    raise ValueError(f'No se pudo conectar al navegador en vivo (puerto {port}): abrilo primero '
-                                      f'desde Ambientes → «Navegador en vivo». ({exc})') from exc
-                context = browser.contexts[0] if browser.contexts else browser.new_context()
-                page = context.new_page()
-            else:
-                browser = p.chromium.launch(headless=True)
-                # Una sesión capturada a mano (ver core.save_ui_session/recorder.capture_session) deja al caso
-                # arrancar ya logueado — sin eso, un login detrás de SSO/MFA no se puede completar solo: la
-                # aprobación por push al teléfono no la puede scriptear ninguna herramienta.
-                session_state = core.get_ui_session(environment['id']) if environment.get('id') else None
-                context = browser.new_context(accept_downloads=False, storage_state=session_state)
-                context.tracing.start(screenshots=True, snapshots=True)
-                page = context.new_page()
-            page.set_default_timeout(int(case.get('timeout_ms', 10000)))
-
-            def guard(route):  # navigations/redirects to a host outside allowed_hosts are blocked at network level
-                if route.request.is_navigation_request() and urlparse(route.request.url).hostname not in allowed_hosts:
-                    route.abort()
-                else:
-                    route.continue_()
-            page.route('**/*', guard)
-            try:
-                for index, step in enumerate(steps):
-                    action = step['action']
-                    outcome = {'index': index, 'action': action}
-                    run['steps'].append(outcome)
-                    if action == 'navigate':
-                        page.goto(_resolve_url(base, step['url'], allowed_hosts), wait_until='domcontentloaded')
-                    elif action == 'assert_url':
-                        if step['expected'] not in page.url:
-                            raise AssertionError(f'URL actual «{page.url}» no contiene «{step["expected"]}»')
-                    else:
-                        loc = build_locator(page, step['locator'])
-                        if action == 'click': loc.click()
-                        elif action == 'fill': loc.fill(str(step['value']))
-                        elif action == 'press': loc.press(str(step['value']))
-                        elif action == 'check': loc.check()
-                        elif action == 'uncheck': loc.uncheck()
-                        elif action == 'select_option': loc.select_option(str(step['value']))
-                        elif action in ('wait_visible', 'assert_visible'): loc.wait_for(state='visible')
-                        elif action == 'assert_not_visible': loc.wait_for(state='hidden')
-                        elif action == 'assert_text':
-                            deadline = time.monotonic() + int(case.get('timeout_ms', 10000)) / 1000
-                            text = loc.inner_text()
-                            while step['expected'] not in text and time.monotonic() < deadline:
-                                time.sleep(0.1)
-                                text = loc.inner_text()
-                            if step['expected'] not in text:
-                                raise AssertionError(f'Texto esperado «{step["expected"]}» no encontrado en «{text[:80]}»')
-                        elif action == 'assert_value':
-                            expected = str(step['expected'])
-                            deadline = time.monotonic() + int(case.get('timeout_ms', 10000)) / 1000
-                            value = loc.input_value()
-                            while value != expected and time.monotonic() < deadline:
-                                time.sleep(0.1)
-                                value = loc.input_value()
-                            if value != expected:
-                                raise AssertionError('Valor distinto del esperado')
-                    outcome['passed'] = True
-                run['status'] = 'passed'
-            except Exception as exc:
-                if run['steps']:
-                    run['steps'][-1]['passed'] = False
-                run['status'] = 'failed'
-                run['error'] = f'{type(exc).__name__}: {str(exc)}'[:700]
-            shot = core.ARTIFACTS / (run['id'] + '.png')
-            try:
-                page.screenshot(path=str(shot), full_page=True)
-                run['screenshot'] = shot.name
-            except Exception:
-                pass
-            if live_mode:
-                # El navegador y el resto de sus pestañas son del usuario (los dejó abiertos a propósito, ver
-                # «Navegador en vivo» arriba) — nunca se tocan. Tampoco hay tracing que parar: no se inició
-                # (ver arriba) para no competir con lo que esa misma pestaña compartida esté haciendo.
-                page.close()
-            else:
-                if run['status'] != 'passed':
-                    trace = core.ARTIFACTS / (run['id'] + '-trace.zip')
+        if environment.get('ui_session_mode') == 'mcp' and environment.get('id'):
+            # Puro HTTP/JSON-RPC contra el puente Node+Playwright MCP (ver mcp_bridge.py) — nunca toca la API
+            # de Playwright, así que ni siquiera hace falta sync_playwright() acá.
+            _execute_ui_mcp(run, steps, base, allowed_hosts, case, environment)
+        else:
+            _use_system_browsers()
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as p:
+                live_mode = environment.get('ui_session_mode') == 'live' and bool(environment.get('id'))
+                if live_mode:
+                    # Navegador real, ya logueado, que alguien dejó abierto a propósito (Ambientes → «Navegador en
+                    # vivo», ver recorder.launch_live_browser) — para un proveedor de identidad que ata la sesión al
+                    # navegador/dispositivo concreto, no solo a la cookie: ahí, repetir las cookies capturadas (ver
+                    # el otro modo, más abajo) en un contexto nuevo puede quedar rechazado aunque sean válidas. Se
+                    # abre una pestaña NUEVA en ese mismo navegador (comparte su sesión) y, al terminar, se cierra
+                    # solo esa pestaña — nunca el navegador ni sus otras pestañas (ver el cierre, más abajo).
+                    port = environment.get('ui_live_port') or recorder.DEFAULT_LIVE_PORT
                     try:
-                        context.tracing.stop(path=str(trace))
-                        run['trace'] = trace.name
-                    except Exception:
-                        pass
+                        browser = p.chromium.connect_over_cdp(f'http://127.0.0.1:{port}')
+                    except Exception as exc:
+                        raise ValueError(f'No se pudo conectar al navegador en vivo (puerto {port}): abrilo primero '
+                                          f'desde Ambientes → «Navegador en vivo». ({exc})') from exc
+                    context = browser.contexts[0] if browser.contexts else browser.new_context()
+                    page = context.new_page()
                 else:
-                    context.tracing.stop()
-                context.close()
-                browser.close()
-            browser = None
+                    browser = p.chromium.launch(headless=True)
+                    # Una sesión capturada a mano (ver core.save_ui_session/recorder.capture_session) deja al caso
+                    # arrancar ya logueado — sin eso, un login detrás de SSO/MFA no se puede completar solo: la
+                    # aprobación por push al teléfono no la puede scriptear ninguna herramienta.
+                    session_state = core.get_ui_session(environment['id']) if environment.get('id') else None
+                    context = browser.new_context(accept_downloads=False, storage_state=session_state)
+                    context.tracing.start(screenshots=True, snapshots=True)
+                    page = context.new_page()
+                page.set_default_timeout(int(case.get('timeout_ms', 10000)))
+
+                def guard(route):  # navigations/redirects to a host outside allowed_hosts are blocked at network level
+                    if route.request.is_navigation_request() and urlparse(route.request.url).hostname not in allowed_hosts:
+                        route.abort()
+                    else:
+                        route.continue_()
+                page.route('**/*', guard)
+                try:
+                    for index, step in enumerate(steps):
+                        action = step['action']
+                        outcome = {'index': index, 'action': action}
+                        run['steps'].append(outcome)
+                        if action == 'navigate':
+                            page.goto(_resolve_url(base, step['url'], allowed_hosts), wait_until='domcontentloaded')
+                        elif action == 'assert_url':
+                            if step['expected'] not in page.url:
+                                raise AssertionError(f'URL actual «{page.url}» no contiene «{step["expected"]}»')
+                        else:
+                            loc = build_locator(page, step['locator'])
+                            if action == 'click': loc.click()
+                            elif action == 'fill': loc.fill(str(step['value']))
+                            elif action == 'press': loc.press(str(step['value']))
+                            elif action == 'check': loc.check()
+                            elif action == 'uncheck': loc.uncheck()
+                            elif action == 'select_option': loc.select_option(str(step['value']))
+                            elif action in ('wait_visible', 'assert_visible'): loc.wait_for(state='visible')
+                            elif action == 'assert_not_visible': loc.wait_for(state='hidden')
+                            elif action == 'assert_text':
+                                deadline = time.monotonic() + int(case.get('timeout_ms', 10000)) / 1000
+                                text = loc.inner_text()
+                                while step['expected'] not in text and time.monotonic() < deadline:
+                                    time.sleep(0.1)
+                                    text = loc.inner_text()
+                                if step['expected'] not in text:
+                                    raise AssertionError(f'Texto esperado «{step["expected"]}» no encontrado en «{text[:80]}»')
+                            elif action == 'assert_value':
+                                expected = str(step['expected'])
+                                deadline = time.monotonic() + int(case.get('timeout_ms', 10000)) / 1000
+                                value = loc.input_value()
+                                while value != expected and time.monotonic() < deadline:
+                                    time.sleep(0.1)
+                                    value = loc.input_value()
+                                if value != expected:
+                                    raise AssertionError('Valor distinto del esperado')
+                        outcome['passed'] = True
+                    run['status'] = 'passed'
+                except Exception as exc:
+                    if run['steps']:
+                        run['steps'][-1]['passed'] = False
+                    run['status'] = 'failed'
+                    run['error'] = f'{type(exc).__name__}: {str(exc)}'[:700]
+                shot = core.ARTIFACTS / (run['id'] + '.png')
+                try:
+                    page.screenshot(path=str(shot), full_page=True)
+                    run['screenshot'] = shot.name
+                except Exception:
+                    pass
+                if live_mode:
+                    # El navegador y el resto de sus pestañas son del usuario (los dejó abiertos a propósito, ver
+                    # «Navegador en vivo» arriba) — nunca se tocan. Tampoco hay tracing que parar: no se inició
+                    # (ver arriba) para no competir con lo que esa misma pestaña compartida esté haciendo.
+                    page.close()
+                else:
+                    if run['status'] != 'passed':
+                        trace = core.ARTIFACTS / (run['id'] + '-trace.zip')
+                        try:
+                            context.tracing.stop(path=str(trace))
+                            run['trace'] = trace.name
+                        except Exception:
+                            pass
+                    else:
+                        context.tracing.stop()
+                    context.close()
+                    browser.close()
+                browser = None
     except Exception as exc:
         run['status'] = 'failed'
         run['error'] = f'{type(exc).__name__}: {str(exc)}'[:700]

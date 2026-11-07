@@ -75,6 +75,7 @@ Convenciones: los nombres de botones, pestañas y campos aparecen en **negrita**
 | Python | **3.11 o superior**, instalado y disponible en el `PATH` (comprueba con `python --version`). |
 | Navegador | Un navegador moderno (Chrome, Edge, Firefox) para usar la interfaz de LTW. |
 | Chromium de Playwright | Solo para **casos UI**, grabador y «Navegar». Se instala con un comando (ver abajo). |
+| Node.js | Opcional — solo para la sesión **«Extensión de Chrome (MCP)»** de Casos UI (ver [7.3](#s-7-3)). Se descarga de [nodejs.org](https://nodejs.org). |
 | Espacio en disco | Unos 500 MB (dependencias + Chromium). |
 
 ## 2.2 Instalación

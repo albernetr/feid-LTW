@@ -614,6 +614,40 @@ async def test_environments_edit_switches_to_live_browser_mode_and_opens_it(user
     await eventually(lambda: core.get('environments', env['id'])['ui_session_mode'] == 'live')
 
 
+async def test_environments_edit_switches_to_mcp_extension_mode_and_opens_the_bridge(user: User, monkeypatch):
+    from app import mcp_bridge
+    project = core.create_project('Con puente MCP')
+    core.set_active_project(project['id'])
+    env = core.save('environments', {'name': 'qa', 'project_id': project['id'], 'base_url': 'https://qa.example.com', 'variables': {}, 'auth': {'type': 'none'}})
+    opened = {}
+
+    def fake_launch(port, profile=None):
+        opened.update(port=port, profile=profile)
+    monkeypatch.setattr(mcp_bridge, 'launch_mcp_bridge', fake_launch)   # sin abrir Node de verdad
+    monkeypatch.setattr(mcp_bridge, 'mcp_server_running', lambda port: bool(opened))
+    await user.open(f'/environments/edit?id={env["id"]}')
+    user.find('Extensión de Chrome (MCP)').click()
+    await user.should_see('No hay un puente MCP abierto', retries=30)
+    user.find(marker='env-mcp-open').click()
+    await eventually(lambda: opened == {'port': mcp_bridge.DEFAULT_MCP_PORT, 'profile': None})
+    await user.should_see('Puente MCP abierto en el puerto')
+    user.find(marker='env-save').click()
+    await eventually(lambda: core.get('environments', env['id'])['ui_session_mode'] == 'mcp')
+
+
+async def test_environments_edit_mcp_bridge_close_reports_when_this_session_never_opened_it(user: User, monkeypatch):
+    from app import mcp_bridge
+    project = core.create_project('Puente MCP sin abrir')
+    core.set_active_project(project['id'])
+    env = core.save('environments', {'name': 'qa', 'project_id': project['id'], 'base_url': 'https://qa.example.com', 'variables': {}, 'auth': {'type': 'none'}})
+    monkeypatch.setattr(mcp_bridge, 'close_mcp_bridge', lambda port: (_ for _ in ()).throw(ValueError('No hay un puente MCP en el puerto 8931 que esta sesión haya abierto')))
+    await user.open(f'/environments/edit?id={env["id"]}')
+    user.find('Extensión de Chrome (MCP)').click()
+    await user.should_see(marker='env-mcp-close', retries=30)
+    user.find(marker='env-mcp-close').click()
+    await user.should_see('esta sesión haya abierto')
+
+
 async def test_modules_table_row_click_opens_the_detail_page(user: User):
     from nicegui import ui
     seed()
@@ -942,6 +976,20 @@ async def test_ui_cases_is_one_workspace_like_the_api_one(user: User):
     await user.open('/ui-cases')
     user.find('ui-history-item').click()
     await user.should_see('Snapshot cargado')
+
+
+async def test_ui_case_step_locator_keeps_its_iframe_selector_on_reload(user: User):
+    """El campo «Iframe CSS (opcional)» (automation._base_locator / spec['frame']) viaja con el resto del
+    locator al guardar/recargar un Caso UI — no es un campo nuevo separado, es parte del mismo dict."""
+    project = core.create_project('Iframe en caso UI')
+    core.set_active_project(project['id'])
+    core.save('cases', {'name': 'Pago embebido', 'type': 'ui', 'project_id': project['id'], 'timeout_ms': 10000,
+                        'steps': [{'action': 'navigate', 'url': '/pago'},
+                                  {'action': 'fill', 'locator': {'by': 'testid', 'value': 'numero', 'frame': '#caja'}, 'value': '4111'}]})
+    await user.open('/ui-cases')
+    user.find('Guardados').click()
+    user.find('ui-saved-item').click()
+    await user.should_see('#caja')             # el selector del iframe quedó visible en el paso recargado
 
 
 async def test_saved_cases_are_unified_across_both_workspaces(user: User):

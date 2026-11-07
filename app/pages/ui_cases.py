@@ -218,9 +218,15 @@ def ui_cases_page(id: str = '', name: str = '', url: str = ''):
                                             spec = step.setdefault('locator', {'by': 'label', 'value': ''})
 
                                             def change_by(event, sp=spec):
+                                                frame_selector = sp.get('frame')
                                                 sp.clear(); sp['by'] = event.value
+                                                if frame_selector:
+                                                    sp['frame'] = frame_selector   # el iframe es independiente del tipo de locator
                                                 step_rows.refresh()
                                             ui.select(LOCATOR_LABELS, value=spec.get('by', 'label'), on_change=change_by).props('outlined dense').classes('w-44')
+                                            ui.input('Iframe CSS (opcional)', value=spec.get('frame', '')).props('outlined dense').classes('w-36') \
+                                                .tooltip('Selector CSS del <iframe> que contiene el elemento (p. ej. "#pago" o "iframe.checkout") — vacío si no está dentro de un iframe') \
+                                                .on_value_change(lambda e, sp=spec: sp.__setitem__('frame', e.value) if e.value.strip() else sp.pop('frame', None))
                                             if spec.get('by') == 'role':
                                                 ui.select(ROLES, value=spec.get('role'), label='Rol', new_value_mode='add-unique', with_input=True) \
                                                     .props('outlined dense').classes('w-36').on_value_change(lambda e, sp=spec: sp.__setitem__('role', e.value))

@@ -1,6 +1,6 @@
 import json
 from nicegui import run, ui
-from .. import core, recorder
+from .. import core, mcp_bridge, recorder
 from .common import frame, guard, confirm, empty_state, require_project, kv_editor, fmt_time, protected_page
 
 AUTH_LABELS = {'none': 'Sin autenticación', 'bearer': 'Bearer', 'api_key': 'API Key'}
@@ -283,7 +283,8 @@ def environment_edit(id: str = ''):
                 hosts = [core.validate_hostname(h) for h in (trusted_hosts.value or '').split(',') if h.strip()]
                 item = {'name': clean_name, 'project_id': pid, 'base_url': base.value.strip(), 'ui_base_url': (ui_base.value or '').strip(),
                         'trusted_hosts': hosts, 'is_backend': env_backend.value, 'is_frontend': env_frontend.value, 'auth': auth_item, 'variables': clean,
-                        'ui_session_mode': session_mode.value, 'ui_live_port': int(live_port.value or recorder.DEFAULT_LIVE_PORT)}
+                        'ui_session_mode': session_mode.value, 'ui_live_port': int(live_port.value or recorder.DEFAULT_LIVE_PORT),
+                        'ui_mcp_port': int(mcp_port.value or mcp_bridge.DEFAULT_MCP_PORT), 'ui_mcp_profile': (mcp_profile.value or '').strip()}
                 if current:
                     item['id'] = current['id']
                     if current.get('ui_session_saved_at'):
@@ -296,7 +297,7 @@ def environment_edit(id: str = ''):
             ui.label('Sesión para Casos UI (SSO/MFA)').classes('font-medium')
             ui.label('Si el login pasa por SSO/MFA (PingID y similares), ningún Caso UI lo puede completar solo — la aprobación por push al teléfono '
                      'no la puede scriptear ninguna herramienta. Elegí una de las dos formas de dejarlo ya logueado:').classes('text-xs text-gray-500')
-            session_mode = ui.radio({'captured': 'Sesión guardada', 'live': 'Navegador en vivo'},
+            session_mode = ui.radio({'captured': 'Sesión guardada', 'live': 'Navegador en vivo', 'mcp': 'Extensión de Chrome (MCP)'},
                                      value=(current or {}).get('ui_session_mode', 'captured')).props('inline dense').mark('env-session-mode')
 
             with ui.column().classes('w-full gap-1 pt-1').bind_visibility_from(session_mode, 'value', backward=lambda v: v == 'captured'):
@@ -360,6 +361,42 @@ def environment_edit(id: str = ''):
                 with ui.row().classes('gap-2'):
                     ui.button('Abrir navegador para esta sesión', icon='open_in_browser', on_click=guard(open_live)).props('outline dense no-caps').mark('env-live-open')
                     ui.button('Cerrar navegador', icon='close', on_click=guard(close_live)).props('outline dense no-caps color=negative').mark('env-live-close')
+
+            with ui.column().classes('w-full gap-1 pt-1').bind_visibility_from(session_mode, 'value', backward=lambda v: v == 'mcp'):
+                mcp_port = ui.number('Puerto', value=(current or {}).get('ui_mcp_port') or mcp_bridge.DEFAULT_MCP_PORT, min=1024, max=65535) \
+                    .props('outlined dense').classes('w-32').mark('env-mcp-port')
+                mcp_profile = ui.input('Perfil de Chrome (opcional)', value=(current or {}).get('ui_mcp_profile') or '') \
+                    .props('outlined dense').classes('w-56').mark('env-mcp-profile') \
+                    .tooltip('Solo si tenés más de un perfil con la extensión instalada — p. ej. "Profile 1". Vacío usa el último perfil que la usó.')
+                ui.label('Se conecta a una pestaña ya abierta en tu Chrome/Edge de siempre (con tu sesión ya puesta), en vez de que Playwright abra su '
+                         'propio navegador — así un sitio con detección de bots (Google y otros) no lo marca como automatizado. Hace falta: Node.js '
+                         'instalado en esta máquina y, una vez, instalar la extensión «Playwright Extension» en Chrome/Edge desde su tienda de '
+                         'extensiones.').classes('text-xs text-gray-500')
+
+                @ui.refreshable
+                def mcp_status():
+                    port = int(mcp_port.value or mcp_bridge.DEFAULT_MCP_PORT)
+                    running = mcp_bridge.mcp_server_running(port)
+                    ui.label(f'Puente MCP abierto en el puerto {port}.' if running else f'No hay un puente MCP abierto en el puerto {port}.') \
+                        .classes('text-sm ' + ('text-positive' if running else 'text-gray-600')).mark('env-mcp-status')
+                mcp_status()
+
+                async def open_mcp():
+                    port = int(mcp_port.value or mcp_bridge.DEFAULT_MCP_PORT)
+                    ui.notify('Se abrirá un puente aparte (Node.js) — después, aprobá la conexión desde la extensión «Playwright Extension» en tu '
+                              'navegador si te lo pide.', type='info', multi_line=True)
+                    await run.io_bound(mcp_bridge.launch_mcp_bridge, port, (mcp_profile.value or '').strip() or None)
+                    ui.notify('Puente MCP listo', type='positive')
+                    mcp_status.refresh()
+
+                async def close_mcp():
+                    port = int(mcp_port.value or mcp_bridge.DEFAULT_MCP_PORT)
+                    await run.io_bound(mcp_bridge.close_mcp_bridge, port)
+                    ui.notify('Puente MCP cerrado', type='positive')
+                    mcp_status.refresh()
+                with ui.row().classes('gap-2'):
+                    ui.button('Abrir puente', icon='extension', on_click=guard(open_mcp)).props('outline dense no-caps').mark('env-mcp-open')
+                    ui.button('Cerrar puente', icon='close', on_click=guard(close_mcp)).props('outline dense no-caps color=negative').mark('env-mcp-close')
 
             ui.separator().classes('my-2')
             with ui.row().classes('gap-2'):

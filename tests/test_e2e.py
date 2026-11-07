@@ -307,6 +307,26 @@ def test_first_and_nth_locators_avoid_strict_mode_violations(world):
     assert [s['locator'] for s in spec['steps']] == [{'by': 'role', 'role': 'link', 'name': 'a', 'nth': 2}, {'by': 'text', 'value': 'z', 'first': True}]
 
 
+def test_locator_needs_the_frame_selector_to_reach_inside_an_iframe(world):
+    """Playwright no busca adentro de un <iframe> por defecto: un locator normal no lo encuentra aunque esté
+    visible en pantalla. `locator.frame` (selector CSS del <iframe>) lo hace entrar con `page.frame_locator(...)`
+    antes de resolver el resto del locator (ver automation._base_locator)."""
+    without_frame = [{'action': 'navigate', 'url': '/con-iframe'},
+                      {'action': 'assert_visible', 'locator': {'by': 'testid', 'value': 'campo-interno'}}]
+    case = core.save('cases', {'name': 'sin frame', 'type': 'ui', 'steps': without_frame, 'timeout_ms': 800})
+    missing = automation.execute_ui(case, world['env'])
+    assert missing['status'] == 'failed'                                           # no cruza al iframe solo
+
+    with_frame = [{'action': 'navigate', 'url': '/con-iframe'},
+                  {'action': 'fill', 'locator': {'by': 'testid', 'value': 'campo-interno', 'frame': '#caja'}, 'value': 'hola'},
+                  {'action': 'click', 'locator': {'by': 'testid', 'value': 'boton-interno', 'frame': '#caja'}},
+                  {'action': 'assert_value', 'locator': {'by': 'testid', 'value': 'campo-interno', 'frame': '#caja'}, 'expected': 'hola'}]
+    case = core.save('cases', {'name': 'con frame', 'type': 'ui', 'steps': with_frame, 'timeout_ms': 3000})
+    result = automation.execute_ui(case, world['env'])
+    assert result['status'] == 'passed', result
+    assert [s['passed'] for s in result['steps']] == [True] * 4
+
+
 def test_random_variable_picks_from_an_uploaded_dataset(world):
     """{{random:conjunto.columna}} sortea una fila del conjunto subido en cada envío. Si el conjunto no existe,
     el nombre exacto queda sin resolver — el mismo mecanismo (y el mismo mensaje) que cualquier otra variable
