@@ -5,10 +5,13 @@ vivo), derecha (parámetros + el asistente de IA) — calcado a propósito, no u
 import asyncio
 import copy
 import json
+from pathlib import Path
 from nicegui import ui, run
 from .. import core, workspace as ws, evidence_report, llm
-from .common import frame, guard, protected_page, show_run, render_evidence, STATUS_LABEL
+from .common import frame, guard, protected_page, show_run, render_evidence, read_upload, STATUS_LABEL
 from .widgets import kv_rows, dynamic_variable_chips
+
+CONTEXT_FILE_EXTENSIONS = ('.md', '.txt', '.csv')
 
 HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 HEADER_SUGGESTIONS = (('+ Content-Type', 'Content-Type', 'application/json'), ('+ Accept', 'Accept', 'application/json'), ('+ Bearer', 'Authorization', 'Bearer {{secret:TOKEN}}'))
@@ -104,6 +107,7 @@ def build(preset_case_id=None):
         d.update(ws.draft_from_case(case_doc, env_id))
         d['hu_text'] = case_doc.get('hu_text') or ''   # workspace.draft_from_case no sabe de esto (es propio del chat)
         d['feature_id'] = case_doc.get('feature_id')
+        d['context_data'] = case_doc.get('context_data')   # un .csv cargado «solo para esta exploración» (Fase 5)
         session = (case_doc.get('chat_session') or {}) if resume else {}
         S.update(messages=list(session.get('messages') or []), thread_id=session.get('thread_id') or '',
                  suite_id=session.get('suite_id'), last_request=None, last_response=None)
@@ -179,6 +183,90 @@ def build(preset_case_id=None):
             feature_id = ui.select({f['id']: f['name'] for f in features}, label='O ligar a una Funcionalidad', clearable=True,
                                     value=d.get('feature_id')).props('outlined dense').classes('w-full').mark('chat-feature-id')
 
+            ui.separator().classes('my-1')
+            ui.label('Contexto adicional (opcional)').classes('font-medium text-sm')
+            ui.label('Un .md/.txt de HU o casos de prueba se suma al criterio de arriba. Un .csv ofrece usarlo '
+                      'solo para esta exploración (el Asistente de IA lo ve como datos disponibles al redactar '
+                      'turnos) o guardarlo como Conjunto de datos reusable en cualquier caso/suite después.') \
+                .classes('text-xs text-gray-500')
+
+            def _context_data_summary():
+                data = d.get('context_data')
+                if not data:
+                    return 'Sin datos cargados para esta exploración.'
+                return f'Datos cargados para esta exploración: «{data.get("source", "")}» ({len(data.get("rows") or [])} fila(s))'
+            context_data_label = ui.label(_context_data_summary()).classes('text-xs text-gray-600').mark('chat-context-data-summary')
+
+            def csv_offer_dialog(filename, columns, rows):
+                with ui.dialog() as dlg, ui.card().classes('w-[480px] max-w-full'):
+                    ui.label(f'«{filename}»: {len(rows)} fila(s), columnas: {", ".join(columns)}').classes('text-sm')
+                    ui.label('¿Cómo lo usamos?').classes('text-sm text-gray-600')
+                    name_input = ui.input('Nombre del Conjunto de datos', value=Path(filename).stem) \
+                        .props('outlined dense').classes('w-full').mark('chat-context-csv-name')
+
+                    def use_once():
+                        d['context_data'] = {'columns': columns, 'rows': rows, 'source': filename}
+                        context_data_label.set_text(_context_data_summary())
+                        ui.notify('Datos disponibles para esta exploración (se guardan junto al caso al activar)', type='positive')
+                        dlg.close()
+
+                    def save_as_dataset():
+                        name = (name_input.value or '').strip()
+                        if not name:
+                            raise ValueError('Ponele un nombre al Conjunto de datos')
+                        core.save_dataset(name, resolve_project(), columns, rows)
+                        ui.notify(f'Conjunto de datos «{name}» guardado — reusable en cualquier caso/suite del proyecto', type='positive')
+                        dlg.close()
+                    with ui.row().classes('justify-end gap-2 w-full pt-2'):
+                        ui.button('Cancelar', on_click=dlg.close).props('flat')
+                        ui.button('Solo esta exploración', on_click=guard(use_once)).props('no-caps').mark('chat-context-csv-once')
+                        ui.button('Guardar como Conjunto de datos', on_click=guard(save_as_dataset)).props('color=primary no-caps').mark('chat-context-csv-save')
+                dlg.open()
+
+            def apply_context_file(filename, raw):
+                """.md/.txt se suman a la Historia de usuario (completan ese mismo campo, no uno nuevo); .csv
+                ofrece, a demanda, usarlo solo para esta exploración o guardarlo como Conjunto de datos —
+                nunca se decide solo. Mismo tope de tamaño que ya usan los Conjuntos de datos."""
+                ext = Path(filename).suffix.lower()
+                if ext not in CONTEXT_FILE_EXTENSIONS:
+                    raise ValueError(f'Extensión no soportada «{ext or filename}» — usa .md, .txt o .csv')
+                if len(raw) > core.MAX_DATASET_BYTES:
+                    raise ValueError(f'El archivo pesa más de {core.MAX_DATASET_BYTES // 1_000_000} MB')
+                if ext == '.csv':
+                    columns, rows = core.parse_dataset_file(filename, raw)
+                    csv_offer_dialog(filename, columns, rows)
+                    return
+                try:
+                    text = raw.decode('utf-8')
+                except UnicodeDecodeError as exc:
+                    raise ValueError(f'No se pudo leer «{filename}» como texto (¿no es UTF-8?)') from exc
+                existing = (hu_text.value or '').strip()
+                hu_text.set_value((existing + '\n\n' if existing else '') + text.strip())
+                ui.notify(f'«{filename}» sumado a la Historia de usuario / criterios — no olvides «Guardar configuración»', type='positive')
+
+            async def on_context_upload(event):
+                try:
+                    raw = await read_upload(event)
+                    apply_context_file(event.file.name, raw)
+                except ValueError as exc:
+                    ui.notify(str(exc), type='negative', multi_line=True)
+            ui.upload(label='Subir archivo (.md/.txt/.csv)', on_upload=on_context_upload, auto_upload=True,
+                      max_file_size=core.MAX_DATASET_BYTES).props('accept=.md,.txt,.csv flat bordered').classes('w-full').mark('chat-context-upload')
+
+            with ui.row().classes('w-full items-center gap-2'):
+                context_path = ui.input('O cargar por ruta local (.md/.txt/.csv)').props('outlined dense').classes('grow').mark('chat-context-path')
+
+                def load_from_path():
+                    raw_path = (context_path.value or '').strip()
+                    if not raw_path:
+                        raise ValueError('Escribí una ruta')
+                    path = Path(raw_path)
+                    if not path.is_file():
+                        raise ValueError(f'No se encontró el archivo «{raw_path}»')
+                    apply_context_file(path.name, path.read_bytes())
+                    context_path.set_value('')
+                ui.button('Cargar', icon='upload_file', on_click=guard(load_from_path)).props('outline dense no-caps').mark('chat-context-load-path')
+
             def activate():
                 """Guarda la configuración (headers, variables, body base y mapeo) como una plantilla reutilizable —
                 un endpoint de chat configurado una vez que después aparece en «Plantilla» para arrancar cualquier
@@ -199,7 +287,7 @@ def build(preset_case_id=None):
                 existing = core.get('cases', source['id']) if source.get('type') == 'case' else None
                 item = {k: v for k, v in base.items() if k not in ('id', 'updated_at')}
                 item.update({'project_id': project_id, 'environment_id': env_doc['id'], 'chat_template': True,
-                             'hu_text': d['hu_text'], 'feature_id': d['feature_id']})
+                             'hu_text': d['hu_text'], 'feature_id': d['feature_id'], 'context_data': d.get('context_data')})
                 if existing is not None:
                     item['id'] = existing['id']
                     item['chat_session'] = existing.get('chat_session')
@@ -672,6 +760,21 @@ def build(preset_case_id=None):
         name = (d.get('name') or '').strip()
         return (f'Nombre del caso: {name}' if name else ''), 'inferido de la conversación (sin HU ni Funcionalidad)'
 
+    def context_data_prompt_note():
+        """Texto adicional para la instrucción de la IA con las filas de un .csv cargado «solo para esta
+        exploración» (Fase 5, panel Parámetros → «Contexto adicional») — para que el modelo elija valores
+        realistas al redactar un turno en vez de inventarlos. Vacío si no se cargó nada."""
+        data = d.get('context_data')
+        rows = (data or {}).get('rows') or []
+        if not rows:
+            return ''
+        columns = data.get('columns') or []
+        sample = rows[:10]
+        lines = [' | '.join(str(row.get(c, '')) for c in columns) for row in sample]
+        more = f' (y {len(rows) - len(sample)} fila(s) más)' if len(rows) > len(sample) else ''
+        return (f'Datos de prueba disponibles — «{data.get("source", "")}»{more}, elegí valores realistas de '
+                f'acá cuando haga falta en vez de inventarlos:\n' + ' | '.join(columns) + '\n' + '\n'.join(lines))
+
     def conversation_evidence_dialog():
         """Un solo lugar para la evidencia de TODA la conversación (no turno a turno): elegís qué turnos entran
         —todos, por defecto— y descargás un único HTML/PDF/Word/Markdown con la petición/respuesta de cada uno,
@@ -1000,7 +1103,8 @@ def build(preset_case_id=None):
         if dialog:
             dialog.close()
         base_name = (suite_name.value or 'Conversación de prueba').strip()
-        instruction = (tree.get('instructions') or '').strip() or 'Seguí la conversación de forma razonable hacia un cierre.'
+        base_instruction = (tree.get('instructions') or '').strip() or 'Seguí la conversación de forma razonable hacia un cierre.'
+        instruction = '\n\n'.join(p for p in (base_instruction, context_data_prompt_note()) if p)
         data_goals = tree.get('data_goals') or []
         for branch_path, option in pending:
             preset_texts = [node['message'] for node in branch_path] + [option]
@@ -1086,8 +1190,9 @@ def build(preset_case_id=None):
                     raise ValueError('Completa el mapeo del chat en «Parámetros» antes de arrancar de cero')
                 data_goals = [line.strip() for line in (data_goals_input.value or '').splitlines() if line.strip()]
                 start_playing, use_new_thread = not step_mode.value, new_thread.value
+                full_instruction = '\n\n'.join(p for p in (instruction.value.strip(), context_data_prompt_note()) if p)
                 dialog.close()
-                await run_ai_conversation(preset_texts, start_playing, use_new_thread, int(max_turns.value or 1), instruction.value.strip(), data_goals)
+                await run_ai_conversation(preset_texts, start_playing, use_new_thread, int(max_turns.value or 1), full_instruction, data_goals)
             with ui.row().classes('justify-end gap-2 w-full pt-2'):
                 ui.button('Cancelar', on_click=dialog.close).props('flat')
                 ui.button('Iniciar', icon='smart_toy', on_click=guard(start)).props('color=primary no-caps').mark('chat-ai-run-confirm').set_enabled(state['ready'])

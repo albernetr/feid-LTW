@@ -849,3 +849,132 @@ async def test_ai_conversation_with_a_fresh_thread_does_not_collide_with_the_pre
         assert len(suites) == 2                                       # dos corridas con hilo nuevo -> dos Flujos, no uno fusionado
         for suite in suites:
             assert [step['alias'] for step in core.suite_steps(suite)] == ['turno1']   # cada uno arranca su propio turno1, sin chocar
+
+
+async def test_uploading_a_md_file_sums_into_the_hu_text(user, chat_app):
+    """Un .md/.txt cargado como contexto no es un campo nuevo — completa la Historia de usuario / criterios que
+    ya usa el veredicto del Asistente de IA, sumándose a lo que ya estaba escrito."""
+    from nicegui import ui
+    from nicegui.elements.upload_files import SmallFileUpload
+    project = core.create_project('Contexto md')
+    core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    core.set_active_project(project['id'])
+    await user.open('/chat')
+    user.find(marker='chat-url').type(chat_app.url + '/api/chat/messages')
+    user.find('Nombre de este chat').type('Chat con contexto')
+    user.find(marker='chat-hu-text').type('Texto ya escrito.')
+    upload = user.find(kind=ui.upload).elements.pop()
+    await upload.handle_uploads([SmallFileUpload(name='hu.md', content_type='text/markdown', _data='El bot debe pedir el tipo de seguro.'.encode())])
+    await user.should_see('sumado a la Historia de usuario')
+    hu_input = user.find(marker='chat-hu-text').elements.pop()
+    assert hu_input.value == 'Texto ya escrito.\n\nEl bot debe pedir el tipo de seguro.'
+    user.find(marker='chat-activate').click()
+    await user.should_see('la vas a encontrar en «Plantilla»')
+    case_id = core.list_project_items('cases', project['id'])[0]['id']
+    assert core.get('cases', case_id)['hu_text'] == 'Texto ya escrito.\n\nEl bot debe pedir el tipo de seguro.'
+
+
+async def test_uploading_a_csv_offers_using_it_once_for_this_exploration(user, chat_app):
+    """Un .csv cargado como contexto NO se decide solo — ofrece «solo esta exploración» (se guarda junto al
+    caso, no reusable en otro lado) o «guardar como Conjunto de datos» (ver el siguiente test)."""
+    from nicegui import ui
+    from nicegui.elements.upload_files import SmallFileUpload
+    project = core.create_project('Contexto csv')
+    core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    core.set_active_project(project['id'])
+    await user.open('/chat')
+    user.find(marker='chat-url').type(chat_app.url + '/api/chat/messages')
+    user.find('Nombre de este chat').type('Chat con datos')
+    csv_bytes = 'nombre,seguro\nJuan Pérez,Vida\nAna Ruiz,Auto\n'.encode()
+    upload = user.find(kind=ui.upload).elements.pop()
+    await upload.handle_uploads([SmallFileUpload(name='clientes.csv', content_type='text/csv', _data=csv_bytes)])
+    await user.should_see(marker='chat-context-csv-once', retries=30)
+    user.find(marker='chat-context-csv-once').click()
+    await user.should_see('Datos disponibles para esta exploración')
+    user.find(marker='chat-activate').click()
+    await user.should_see('la vas a encontrar en «Plantilla»')
+    case_id = core.list_project_items('cases', project['id'])[0]['id']
+    stored = core.get('cases', case_id)['context_data']
+    assert stored['columns'] == ['nombre', 'seguro'] and len(stored['rows']) == 2
+    assert core.list_project_items('datasets', project['id']) == []   # «solo esta exploración»: no creó un Conjunto de datos aparte
+
+
+async def test_uploading_a_csv_can_be_saved_as_a_reusable_dataset(user, chat_app):
+    from nicegui import ui
+    from nicegui.elements.upload_files import SmallFileUpload
+    project = core.create_project('Contexto csv reusable')
+    core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    core.set_active_project(project['id'])
+    await user.open('/chat')
+    csv_bytes = 'nombre,seguro\nJuan Pérez,Vida\n'.encode()
+    upload = user.find(kind=ui.upload).elements.pop()
+    await upload.handle_uploads([SmallFileUpload(name='clientes.csv', content_type='text/csv', _data=csv_bytes)])
+    await user.should_see(marker='chat-context-csv-save', retries=30)
+    name_input = user.find(marker='chat-context-csv-name').elements.pop()
+    with user:
+        name_input.value = 'Clientes de prueba'
+    user.find(marker='chat-context-csv-save').click()
+    await user.should_see('Conjunto de datos «Clientes de prueba» guardado')
+    datasets = core.list_project_items('datasets', project['id'])
+    assert len(datasets) == 1 and datasets[0]['name'] == 'Clientes de prueba' and datasets[0]['columns'] == ['nombre', 'seguro']
+
+
+async def test_loading_context_by_local_path_gives_clear_errors(user, chat_app, tmp_path):
+    """Ruta inexistente o extensión no soportada dan un error claro (ui.notify), no una excepción cruda — mismo
+    criterio que subir un archivo."""
+    project = core.create_project('Contexto por ruta')
+    core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    core.set_active_project(project['id'])
+    await user.open('/chat')
+    path_input = user.find(marker='chat-context-path').elements.pop()
+    with user:
+        path_input.value = str(tmp_path / 'no-existe.md')
+    user.find(marker='chat-context-load-path').click()
+    await user.should_see('No se encontró el archivo')
+
+    bad_ext = tmp_path / 'notas.docx'
+    bad_ext.write_text('contenido', encoding='utf-8')
+    with user:
+        path_input.value = str(bad_ext)
+    user.find(marker='chat-context-load-path').click()
+    await user.should_see('Extensión no soportada')
+
+    good = tmp_path / 'hu.txt'
+    good.write_text('El bot debe saludar primero.', encoding='utf-8')
+    with user:
+        path_input.value = str(good)
+    user.find(marker='chat-context-load-path').click()
+    await user.should_see('sumado a la Historia de usuario')
+    hu_input = user.find(marker='chat-hu-text').elements.pop()
+    assert hu_input.value == 'El bot debe saludar primero.'
+
+
+async def test_context_data_from_a_csv_reaches_the_ai_conducted_conversation_prompt(user, chat_app):
+    """Lo cargado como «solo esta exploración» no se queda guardado sin usarse: llega al prompt del modelo
+    cuando arranca una Conversación conducida por IA, para que elija valores realistas en vez de inventarlos."""
+    with FakeLLM() as fake:
+        configure_fake_llm(fake)
+        fake.queue(json.dumps({'text': 'Hola', 'option': None, 'done': True, 'collected': {}}))
+        project = core.create_project('Contexto csv en prompt')
+        env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+        case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                                   'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                                   'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}}, 'assertions': [],
+                                   'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                            'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'},
+                                   'context_data': {'columns': ['nombre', 'seguro'], 'rows': [{'nombre': 'Juan Pérez', 'seguro': 'Vida'}], 'source': 'clientes.csv'}})
+        core.set_active_project(project['id'])
+        await user.open(f'/chat?case={case["id"]}')
+        await user.should_see('Hilo:')
+        user.find(marker='chat-rail-Asistente').click()
+        await user.should_see(marker='chat-ai-tab-run-open', retries=30)
+        user.find(marker='chat-ai-tab-run-open').click()
+        await user.should_see(marker='chat-ai-run-instruction', retries=30)
+        user.find(marker='chat-ai-run-instruction').type('Cotizar un seguro.')
+        user.find(marker='chat-ai-run-stepmode').click()
+        user.find(marker='chat-ai-run-confirm').click()
+        # El modelo contesta done=True de entrada — nunca se llega a mandar nada al bot, pero sí se lo llamó A
+        # ÉL, que es lo que importa acá: el contexto cargado debe viajar en ESE primer pedido.
+        await user.should_see('Conversación conducida por IA terminada', retries=30)
+        sent = fake.requests[-1]['body']['messages'][-1]['content']
+        assert 'Juan Pérez' in sent and 'Datos de prueba disponibles' in sent
