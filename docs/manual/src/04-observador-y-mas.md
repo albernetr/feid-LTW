@@ -153,7 +153,7 @@ Un clic en una fila abre su detalle:
 - **Flujo:** la lista de pasos con su estado, alias, ambiente e intentos, y **Ver detalle** de cada uno.
 - **Suite** (grupo): cada Flujo o Caso suelto miembro, con su propio estado y **Ver detalle**.
 - **Caso API:** petición, **reglas de enriquecimiento aplicadas**, **petición enviada**, aserciones ✓/✗ con lo obtenido, variables extraídas y la respuesta.
-- **Caso UI:** cada paso con ✓/✗, la **captura de pantalla** (visible en el cuadro y descargable con **Descargar captura**) y la **traza de Playwright** (si falló; **Descargar traza**). Para abrirla: `python -m playwright show-trace archivo.zip`.
+- **Caso UI:** cada paso con ✓/✗ (y, si el caso tiene «Capturar pantalla en cada paso» activado — ver [9.5](#s-9-5) —, un ícono 📷 propio junto al paso que abre esa captura en una pestaña nueva), la **captura de pantalla** del final de la corrida (visible en el cuadro y descargable con **Descargar captura**) y la **traza de Playwright** (si falló; **Descargar traza**). Para abrirla: `python -m playwright show-trace archivo.zip`.
 - Si falló: **Brief para agente** (ver [capítulo 17](#cap-17)).
 
 ![Brief para agente de una ejecución fallida](img/47-brief-agente.png)

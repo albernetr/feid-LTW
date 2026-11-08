@@ -165,6 +165,29 @@ def test_ui_case_records_a_video_only_when_asked(world):
     assert core.evidence_path(bad['id'], bad['video']).stat().st_size > 1000   # evidencia también en una corrida que falla
 
 
+def test_ui_case_takes_a_screenshot_per_step_only_when_asked(world):
+    """`record_step_screenshots`: a demanda por caso, una captura además de la del final — por cada paso, pase o
+    falle (incluido el paso que rompe la corrida, para ver qué mostraba la pantalla justo ahí)."""
+    steps = [{'action': 'navigate', 'url': '/clientes'}, {'action': 'assert_visible', 'locator': {'by': 'role', 'role': 'heading', 'name': 'Clientes'}}]
+    plain = core.save('cases', {'name': 'sin capturas por paso', 'type': 'ui', 'steps': steps})
+    plain_run = automation.execute_ui(plain, world['env'])
+    assert all('screenshot' not in s for s in plain_run['steps'])
+
+    recorded = core.save('cases', {'name': 'con capturas por paso', 'type': 'ui', 'record_step_screenshots': True, 'steps': steps})
+    run = automation.execute_ui(recorded, world['env'])
+    assert run['status'] == 'passed', run
+    assert len(run['steps']) == 2
+    for step in run['steps']:
+        assert core.evidence_path(run['id'], step['screenshot']).stat().st_size > 1000
+
+    failing = core.save('cases', {'name': 'con capturas por paso falla', 'type': 'ui', 'record_step_screenshots': True, 'timeout_ms': 800, 'steps': [
+        {'action': 'navigate', 'url': '/clientes'}, {'action': 'assert_visible', 'locator': {'by': 'text', 'value': 'No existe'}}]})
+    bad = automation.execute_ui(failing, world['env'])
+    assert bad['status'] == 'failed'
+    assert bad['steps'][-1]['passed'] is False
+    assert core.evidence_path(bad['id'], bad['steps'][-1]['screenshot']).stat().st_size > 1000   # también del paso que falló
+
+
 def test_trusted_hosts_allows_navigating_to_an_additional_host(world):
     """`localhost` y `127.0.0.1` son hosts DISTINTOS para el chequeo (aunque el mismo servidor responda a los
     dos) — sirve para probar `trusted_hosts` (SSO/MFA como PingID) sin levantar un segundo dominio real."""

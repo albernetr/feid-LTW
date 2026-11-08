@@ -413,13 +413,15 @@ async def _download_evidence(run_doc, kind, llm_verdict=None):
     ui.notify('Evidencia generada', type='positive')
 
 
-def open_evidence_in_new_tab(view_id, filename):
+def open_evidence_in_new_tab(view_id, filename, client=None):
     """`ui.navigate.to(..., new_tab=True)` igual pasa por `Client.open`, que en el navegador real manda un mensaje
     al cliente para que abra la pestaña — pero bajo pruebas (NiceGUI testing) `new_tab` se ignora y el harness
     simula una navegación COMPLETA de página, que falla para una ruta como /evidence/ que no devuelve una página
     NiceGUI sino un archivo (FileResponse). `window.open` por JS logra lo mismo en el navegador real sin pasar
-    por ese camino — fire-and-forget, no se espera respuesta, así que tampoco bloquea bajo pruebas."""
-    ui.run_javascript(f'window.open({json.dumps(f"/evidence/{view_id}/{filename}")}, "_blank")')
+    por ese camino — fire-and-forget, no se espera respuesta, así que tampoco bloquea bajo pruebas. `client`
+    (opcional, ver _run_js) evita la resolución de context.client cuando quien llama viene de «Hablale al
+    Asistente», con un refresh previo en el mismo turno de por medio."""
+    _run_js(client, f'window.open({json.dumps(f"/evidence/{view_id}/{filename}")}, "_blank")', 5.0)
 
 
 async def _save_evidence_to_folder(run_doc, llm_verdict=None):
@@ -625,6 +627,9 @@ def show_run(run_doc):
                     ui.icon('check_circle' if step.get('passed') else 'cancel', color='positive' if step.get('passed') else 'negative')
                     label = automation.STEP_ACTIONS.get(step['action'], {}).get('label', step['action'])
                     ui.label(f'{step["index"] + 1}. {label}')
+                    if step.get('screenshot'):
+                        ui.button(icon='photo', on_click=lambda _, rid=run_doc['id'], f=step['screenshot']: open_evidence_in_new_tab(rid, f)) \
+                            .props('flat round dense size=sm').mark(f'ui-step-screenshot-{step["index"]}').tooltip('Ver captura de este paso')
             _evidence(run_doc)
         elif run_doc.get('type') in ('screenshot', 'video'):
             # Capturas/video del propio Chat o Espacio de trabajo (Fase D) — no son una corrida de Caso API/UI,

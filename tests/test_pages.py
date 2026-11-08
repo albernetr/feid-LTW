@@ -944,6 +944,27 @@ async def test_show_run_offers_a_video_player_and_a_save_button_when_a_run_has_o
     assert saved.read_bytes() == b'fake-webm-bytes'
 
 
+async def test_show_run_offers_a_screenshot_button_on_each_step_that_has_one(user: User):
+    """Captura por paso (`record_step_screenshots`, ver automation.execute_ui): cada paso con su propia captura
+    muestra un botón para verla — un paso sin captura (p. ej. una corrida vieja, o el flag apagado) no lo tiene."""
+    from nicegui import ui
+    project = core.create_project('Capturas por paso en historial')
+    core.set_active_project(project['id'])
+    run_id = core.uid()
+    (core.ARTIFACTS / f'{run_id}-step0.png').write_bytes(b'fake-step-png')
+    run = core.save('runs', {'id': run_id, 'type': 'ui', 'case_name': 'Con capturas por paso', 'project_id': project['id'], 'status': 'passed',
+                             'started_at': core.now(), 'steps': [
+                                 {'index': 0, 'action': 'navigate', 'passed': True, 'screenshot': f'{run_id}-step0.png'},
+                                 {'index': 1, 'action': 'click', 'passed': True}]})
+
+    await user.open('/runs')
+    user.find(kind=ui.table).trigger('rowClick', [None, {'id': run['id']}, 0])
+    await user.should_see('Con capturas por paso', retries=30)
+    assert len(user.find(marker='ui-step-screenshot-0').elements) == 1
+    with pytest.raises(AssertionError):
+        user.find(marker='ui-step-screenshot-1')   # ese paso no tiene captura propia: sin botón
+
+
 async def test_workspace_can_capture_a_screenshot_and_record_a_slideshow_video(user: User):
     """Fase D: los dos íconos junto a «Conectividad» capturan/graban el propio Espacio de trabajo con
     html2canvas (no hay navegador de prueba del lado del servidor acá) — se simula la respuesta del cliente."""
@@ -1112,6 +1133,29 @@ async def test_ui_case_record_video_checkbox_is_saved_and_restored(user: User):
     user.find('Guardados').click()
     user.find('ui-saved-item').click()
     checkbox = user.find(marker='ui-case-record-video').elements.pop()
+    assert checkbox.value is True
+
+
+async def test_ui_case_record_step_screenshots_checkbox_is_saved_and_restored(user: User):
+    """Misma mecánica que «Grabar video», para la captura por paso (apagada por defecto)."""
+    project = core.create_project('Capturas por paso')
+    core.set_active_project(project['id'])
+    case = core.save('cases', {'name': 'Con capturas', 'type': 'ui', 'project_id': project['id'], 'timeout_ms': 10000,
+                               'steps': [{'action': 'navigate', 'url': '/login'}]})
+    await user.open('/ui-cases')
+    user.find('Guardados').click()
+    user.find('ui-saved-item').click()
+    checkbox = user.find(marker='ui-case-record-step-screenshots').elements.pop()
+    assert checkbox.value is False
+    user.find(marker='ui-case-record-step-screenshots').click()
+    user.find('Guardar').click()
+    await user.should_see('guardado')
+    assert core.get('cases', case['id'])['record_step_screenshots'] is True
+
+    await user.open('/ui-cases')
+    user.find('Guardados').click()
+    user.find('ui-saved-item').click()
+    checkbox = user.find(marker='ui-case-record-step-screenshots').elements.pop()
     assert checkbox.value is True
 
 

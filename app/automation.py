@@ -309,39 +309,51 @@ def execute_ui(case, environment, variables=None, meta=None):
                         action = step['action']
                         outcome = {'index': index, 'action': action}
                         run['steps'].append(outcome)
-                        if action == 'navigate':
-                            page.goto(_resolve_url(base, step['url'], allowed_hosts), wait_until='domcontentloaded')
-                        elif action == 'assert_url':
-                            if step['expected'] not in page.url:
-                                raise AssertionError(f'URL actual «{page.url}» no contiene «{step["expected"]}»')
-                        else:
-                            loc = build_locator(page, step['locator'])
-                            if action == 'click': loc.click()
-                            elif action == 'fill': loc.fill(str(step['value']))
-                            elif action == 'press': loc.press(str(step['value']))
-                            elif action == 'check': loc.check()
-                            elif action == 'uncheck': loc.uncheck()
-                            elif action == 'select_option': loc.select_option(str(step['value']))
-                            elif action in ('wait_visible', 'assert_visible'): loc.wait_for(state='visible')
-                            elif action == 'assert_not_visible': loc.wait_for(state='hidden')
-                            elif action == 'assert_text':
-                                deadline = time.monotonic() + int(case.get('timeout_ms', 10000)) / 1000
-                                text = loc.inner_text()
-                                while step['expected'] not in text and time.monotonic() < deadline:
-                                    time.sleep(0.1)
+                        try:
+                            if action == 'navigate':
+                                page.goto(_resolve_url(base, step['url'], allowed_hosts), wait_until='domcontentloaded')
+                            elif action == 'assert_url':
+                                if step['expected'] not in page.url:
+                                    raise AssertionError(f'URL actual «{page.url}» no contiene «{step["expected"]}»')
+                            else:
+                                loc = build_locator(page, step['locator'])
+                                if action == 'click': loc.click()
+                                elif action == 'fill': loc.fill(str(step['value']))
+                                elif action == 'press': loc.press(str(step['value']))
+                                elif action == 'check': loc.check()
+                                elif action == 'uncheck': loc.uncheck()
+                                elif action == 'select_option': loc.select_option(str(step['value']))
+                                elif action in ('wait_visible', 'assert_visible'): loc.wait_for(state='visible')
+                                elif action == 'assert_not_visible': loc.wait_for(state='hidden')
+                                elif action == 'assert_text':
+                                    deadline = time.monotonic() + int(case.get('timeout_ms', 10000)) / 1000
                                     text = loc.inner_text()
-                                if step['expected'] not in text:
-                                    raise AssertionError(f'Texto esperado «{step["expected"]}» no encontrado en «{text[:80]}»')
-                            elif action == 'assert_value':
-                                expected = str(step['expected'])
-                                deadline = time.monotonic() + int(case.get('timeout_ms', 10000)) / 1000
-                                value = loc.input_value()
-                                while value != expected and time.monotonic() < deadline:
-                                    time.sleep(0.1)
+                                    while step['expected'] not in text and time.monotonic() < deadline:
+                                        time.sleep(0.1)
+                                        text = loc.inner_text()
+                                    if step['expected'] not in text:
+                                        raise AssertionError(f'Texto esperado «{step["expected"]}» no encontrado en «{text[:80]}»')
+                                elif action == 'assert_value':
+                                    expected = str(step['expected'])
+                                    deadline = time.monotonic() + int(case.get('timeout_ms', 10000)) / 1000
                                     value = loc.input_value()
-                                if value != expected:
-                                    raise AssertionError('Valor distinto del esperado')
-                        outcome['passed'] = True
+                                    while value != expected and time.monotonic() < deadline:
+                                        time.sleep(0.1)
+                                        value = loc.input_value()
+                                    if value != expected:
+                                        raise AssertionError('Valor distinto del esperado')
+                            outcome['passed'] = True
+                        finally:
+                            # A demanda (Fase per-step), no en cada corrida: una captura además de la del final,
+                            # tanto si el paso pasó como si fue el que falló — ver qué mostraba la pantalla en
+                            # ese momento exacto es lo que se pidió, y eso incluye al paso que rompió la corrida.
+                            if case.get('record_step_screenshots'):
+                                step_shot = core.ARTIFACTS / f"{run['id']}-step{index}.png"
+                                try:
+                                    page.screenshot(path=str(step_shot))
+                                    outcome['screenshot'] = step_shot.name
+                                except Exception:
+                                    pass
                     run['status'] = 'passed'
                 except Exception as exc:
                     if run['steps']:

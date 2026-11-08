@@ -352,10 +352,20 @@ def build(preset_case_id=None):
         except RuntimeError:
             pass
 
+    def _reveal_run(run_doc, filename, client):
+        """El diálogo (show_run) es más rico, pero si viene de «Hablale al Asistente» el refresh de
+        assistant_chat_view (antes de llegar acá) ya dejó el slot de ese turno apuntando a un elemento borrado,
+        y abrirlo silenciosamente no hace nada (ver _show_run_if_possible). Con client (ver handle_assistant_message)
+        hay una vía que sí funciona ahí: abrir el archivo tal cual en una pestaña nueva — ver Fase B."""
+        if client is not None:
+            open_evidence_in_new_tab(run_doc['id'], filename, client=client)
+        else:
+            _show_run_if_possible(run_doc)
+
     async def do_capture_screenshot(client=None):
         run_doc = await capture_screenshot('.ltw-capture-pane', suite_name.value or 'Chat', core.get_active_project_id(), client=client)
         notify_via_client(client, 'Captura guardada', type='positive')
-        _show_run_if_possible(run_doc)
+        _reveal_run(run_doc, run_doc['screenshot'], client)
 
     async def toggle_recording(client=None):
         if ui_state['recording']:
@@ -364,7 +374,7 @@ def build(preset_case_id=None):
             W['top_actions'].refresh()
             W['bottom_actions'].refresh()
             notify_via_client(client, 'Video guardado', type='positive')
-            _show_run_if_possible(run_doc)
+            _reveal_run(run_doc, run_doc['video'], client)
         else:
             await start_screen_recording('.ltw-capture-pane', client=client)
             ui_state['recording'] = True
@@ -1394,7 +1404,8 @@ def build(preset_case_id=None):
         if any(k in lowered for k in CAPTURE_KEYWORDS):
             try:
                 await do_capture_screenshot(client=the_client)
-                _assistant_say('📸 Captura guardada — quedó en el Historial (y en tu carpeta, si configuraste una).')
+                _assistant_say('📸 Captura guardada y abierta en una pestaña nueva — también queda en Resultados → '
+                                'Historial (y en tu carpeta, si configuraste una).')
             except ValueError as exc:
                 _assistant_say(f'No pude tomar la captura: {exc}')
             return
@@ -1402,7 +1413,8 @@ def build(preset_case_id=None):
             was_recording = ui_state['recording']
             try:
                 await toggle_recording(client=the_client)
-                _assistant_say('🎬 Grabación detenida y guardada.' if was_recording else
+                _assistant_say('🎬 Grabación detenida y guardada, abierta en una pestaña nueva — también queda en '
+                                'Resultados → Historial.' if was_recording else
                                '🎬 Grabando — decime «detené el video» (o tocá el botón) cuando termines.')
             except ValueError as exc:
                 _assistant_say(f'No pude grabar: {exc}')
