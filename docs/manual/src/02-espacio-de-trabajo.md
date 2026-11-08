@@ -45,7 +45,7 @@ Debajo de la barra, la fila **Variables** muestra las `{{variables}}` detectadas
 
 ![Respuesta con el cuerpo JSON](img/11-espacio-respuesta.png)
 
-Al enviar, el centro muestra el **código HTTP** (verde 2xx, ámbar 3xx, rojo 4xx/5xx), el **tiempo** y el tamaño. Si hay pruebas, aparece un distintivo `n/m pruebas`. Si la petición no obtiene respuesta (servicio caído, tiempo agotado) verás el motivo en rojo. **Ver detalle y evidencia** (junto al distintivo de pruebas) abre el mismo detalle que usa el Historial, con las mismas descargas (HTML, PDF, Word, Markdown) y «Enviar a Jira/Azure DevOps» — aunque el Espacio de trabajo **no guarda** sus envíos en el Historial (es para explorar y armar peticiones, no para quedar registrado); solo está disponible para la última petición recién enviada, no para una recuperada del historial de la izquierda.
+Al enviar, el centro muestra el **código HTTP** (verde 2xx, ámbar 3xx, rojo 4xx/5xx), el **tiempo** y el tamaño. Si hay pruebas, aparece un distintivo `n/m pruebas`. Si la petición no obtiene respuesta (servicio caído, tiempo agotado) verás el motivo en rojo. **Ver detalle y evidencia** (junto al distintivo de pruebas) abre el mismo detalle que usa el Historial, con «Ver en pestaña nueva», «Guardar en mi carpeta», las mismas descargas (HTML, PDF, Word, Markdown) y «Enviar a Jira/Azure DevOps» (ver [13.3](#s-13-3)) — aunque el Espacio de trabajo **no guarda** sus envíos en el Historial (es para explorar y armar peticiones, no para quedar registrado); solo está disponible para la última petición recién enviada, no para una recuperada del historial de la izquierda.
 
 Pestañas:
 

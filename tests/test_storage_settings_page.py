@@ -81,6 +81,26 @@ async def test_deactivate_button_returns_to_sqlite_with_confirmation(user: User,
     assert storage_config.load()['server'] == 'srv.database.windows.net'   # dual: los datos de conexión sobreviven
 
 
+async def test_evidence_folder_can_be_configured_once_and_is_restored_on_reopen(user: User, tmp_path):
+    from app import core
+    await user.open('/storage')
+    folder = tmp_path / 'evidencia'
+    folder.mkdir()
+    user.find(marker='evidence-folder-path').type(str(folder))
+    user.find(marker='evidence-folder-save').click()
+    await user.should_see('Carpeta de evidencia guardada')
+    assert core.evidence_folder() == str(folder)
+    await user.open('/storage')
+    await user.should_see(f'Carpeta actual: {folder}')
+
+
+async def test_evidence_folder_rejects_a_path_that_is_not_an_existing_writable_folder(user: User):
+    await user.open('/storage')
+    user.find(marker='evidence-folder-path').type('esto-no-existe')
+    user.find(marker='evidence-folder-save').click()
+    await user.should_see('no es una carpeta existente')
+
+
 @pytest.mark.no_auto_login   # las variables de entorno deben estar puestas *antes* de crear/loguear la cuenta
 async def test_env_var_driven_backend_shows_a_note_and_hides_the_deactivate_button(user: User, monkeypatch, fake_azure_sql):
     from nicegui import app as nicegui_app
@@ -98,3 +118,5 @@ async def test_env_var_driven_backend_shows_a_note_and_hides_the_deactivate_butt
     await user.should_see('Fijado por la variable de entorno LTW_BACKEND')
     with pytest.raises(AssertionError):
         user.find(marker='storage-deactivate')
+
+

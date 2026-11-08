@@ -577,6 +577,45 @@ def test_reset_workspace_can_keep_evidence():
     assert shot.exists()
 
 
+def test_set_evidence_folder_validates_before_saving(tmp_path):
+    with pytest.raises(ValueError):
+        core.set_evidence_folder('')
+    missing = tmp_path / 'no-existe'
+    with pytest.raises(ValueError):
+        core.set_evidence_folder(str(missing))
+    folder = tmp_path / 'destino'
+    folder.mkdir()
+    saved = core.set_evidence_folder(str(folder))
+    assert saved == str(folder)
+    assert core.evidence_folder() == str(folder)
+
+
+def test_save_evidence_file_requires_a_configured_folder_and_avoids_overwriting(tmp_path):
+    with pytest.raises(ValueError):
+        core.save_evidence_file('reporte.html', '<html></html>')
+    folder = tmp_path / 'destino'
+    folder.mkdir()
+    core.set_evidence_folder(str(folder))
+    first = core.save_evidence_file('reporte.html', '<html>uno</html>')
+    assert first == folder / 'reporte.html'
+    assert first.read_text(encoding='utf-8') == '<html>uno</html>'
+    second = core.save_evidence_file('reporte.html', '<html>dos</html>')
+    assert second == folder / 'reporte-1.html'
+    assert second.read_text(encoding='utf-8') == '<html>dos</html>'
+    assert first.read_text(encoding='utf-8') == '<html>uno</html>'    # el primero no se pisó
+
+
+def test_save_evidence_file_sanitizes_slashes_in_the_name_instead_of_treating_them_as_folders(tmp_path):
+    """Un nombre de caso típico («GET /api/users/2») trae / — sin sanear, pathlib los lee como separadores de
+    carpeta y falla con FileNotFoundError (la carpeta intermedia no existe) en vez de guardar el archivo."""
+    folder = tmp_path / 'destino'
+    folder.mkdir()
+    core.set_evidence_folder(str(folder))
+    target = core.save_evidence_file('GET /api/users/2-20261108.html', '<html>ok</html>')
+    assert target.parent == folder                 # nunca una subcarpeta
+    assert target.read_text(encoding='utf-8') == '<html>ok</html>'
+
+
 def test_parse_dataset_file_txt_csv_json():
     columns, rows = core.parse_dataset_file('nombres.txt', b'Ana\nBeto\n\nCaro\n')
     assert columns == ['valor']

@@ -4,11 +4,12 @@ paneles que ya usa `workspace_page.py`: izquierda (conversaciones/flujos guardad
 vivo), derecha (parámetros + el asistente de IA) — calcado a propósito, no un diseño nuevo."""
 import asyncio
 import copy
+import datetime as dt
 import json
 from pathlib import Path
 from nicegui import ui, run
 from .. import core, workspace as ws, evidence_report, llm
-from .common import frame, guard, protected_page, show_run, render_evidence, read_upload, STATUS_LABEL
+from .common import frame, guard, protected_page, show_run, render_evidence, read_upload, open_evidence_in_new_tab, STATUS_LABEL
 from .widgets import kv_rows, dynamic_variable_chips
 
 CONTEXT_FILE_EXTENSIONS = ('.md', '.txt', '.csv')
@@ -137,6 +138,87 @@ def build(preset_case_id=None):
         if existing:
             load_case(existing)
 
+    # ------------------------------------------------------------ contexto adicional (Fase 5, y ahora también
+    # usado por el chat libre con el Asistente — Fase A siguiente): sacado a nivel de build() para que tanto
+    # Parámetros como la pestaña Asistente de IA lo llamen sin duplicar nada. Lee/escribe el widget vivo de la
+    # Historia de usuario a través de W (si Parámetros ya se renderizó — siempre, están todos los tabs montados
+    # de entrada), para no pisar un texto que la persona esté escribiendo a mano ahí mismo.
+    def _context_data_summary():
+        data = d.get('context_data')
+        if not data:
+            return 'Sin datos cargados para esta exploración.'
+        return f'Datos cargados para esta exploración: «{data.get("source", "")}» ({len(data.get("rows") or [])} fila(s))'
+
+    def csv_offer_dialog(filename, columns, rows):
+        with ui.dialog() as dlg, ui.card().classes('w-[480px] max-w-full'):
+            ui.label(f'«{filename}»: {len(rows)} fila(s), columnas: {", ".join(columns)}').classes('text-sm')
+            ui.label('¿Cómo lo usamos?').classes('text-sm text-gray-600')
+            name_input = ui.input('Nombre del Conjunto de datos', value=Path(filename).stem) \
+                .props('outlined dense').classes('w-full').mark('chat-context-csv-name')
+
+            def use_once():
+                d['context_data'] = {'columns': columns, 'rows': rows, 'source': filename}
+                if 'context_data_label' in W:
+                    W['context_data_label'].set_text(_context_data_summary())
+                ui.notify('Datos disponibles para esta exploración (se guardan junto al caso al activar)', type='positive')
+                dlg.close()
+
+            def save_as_dataset():
+                name = (name_input.value or '').strip()
+                if not name:
+                    raise ValueError('Ponele un nombre al Conjunto de datos')
+                core.save_dataset(name, resolve_project(), columns, rows)
+                ui.notify(f'Conjunto de datos «{name}» guardado — reusable en cualquier caso/suite del proyecto', type='positive')
+                dlg.close()
+            with ui.row().classes('justify-end gap-2 w-full pt-2'):
+                ui.button('Cancelar', on_click=dlg.close).props('flat')
+                ui.button('Solo esta exploración', on_click=guard(use_once)).props('no-caps').mark('chat-context-csv-once')
+                ui.button('Guardar como Conjunto de datos', on_click=guard(save_as_dataset)).props('color=primary no-caps').mark('chat-context-csv-save')
+        dlg.open()
+
+    def apply_context_file(filename, raw):
+        """.md/.txt se suman a la Historia de usuario (completan ese mismo campo, no uno nuevo); .csv ofrece,
+        a demanda, usarlo solo para esta exploración o guardarlo como Conjunto de datos — nunca se decide
+        solo. Mismo tope de tamaño que ya usan los Conjuntos de datos. Llamable desde Parámetros o desde el
+        chat del Asistente de IA (Fase A) — por eso no vive adentro de ningún @ui.refreshable puntual."""
+        ext = Path(filename).suffix.lower()
+        if ext not in CONTEXT_FILE_EXTENSIONS:
+            raise ValueError(f'Extensión no soportada «{ext or filename}» — usa .md, .txt o .csv')
+        if len(raw) > core.MAX_DATASET_BYTES:
+            raise ValueError(f'El archivo pesa más de {core.MAX_DATASET_BYTES // 1_000_000} MB')
+        if ext == '.csv':
+            columns, rows = core.parse_dataset_file(filename, raw)
+            csv_offer_dialog(filename, columns, rows)
+            return
+        try:
+            text = raw.decode('utf-8')
+        except UnicodeDecodeError as exc:
+            raise ValueError(f'No se pudo leer «{filename}» como texto (¿no es UTF-8?)') from exc
+        hu_widget = W.get('hu_text')
+        existing = ((hu_widget.value if hu_widget else d.get('hu_text')) or '').strip()
+        new_value = (existing + '\n\n' if existing else '') + text.strip()
+        if hu_widget:
+            hu_widget.set_value(new_value)
+        else:
+            d['hu_text'] = new_value
+        ui.notify(f'«{filename}» sumado a la Historia de usuario / criterios — no olvides «Guardar configuración»', type='positive')
+
+    async def on_context_upload(event):
+        try:
+            raw = await read_upload(event)
+            apply_context_file(event.file.name, raw)
+        except ValueError as exc:
+            ui.notify(str(exc), type='negative', multi_line=True)
+
+    def load_context_from_path(raw_path):
+        raw_path = (raw_path or '').strip()
+        if not raw_path:
+            raise ValueError('Escribí una ruta')
+        path = Path(raw_path)
+        if not path.is_file():
+            raise ValueError(f'No se encontró el archivo «{raw_path}»')
+        apply_context_file(path.name, path.read_bytes())
+
     # ------------------------------------------------------------ parameters (headers + chat mapping) — vive en
     # la pestaña «Parámetros» del panel derecho (ver right_panel más abajo); ya no es un acordeón en el flujo
     # central, pero su contenido es exactamente el mismo.
@@ -178,6 +260,7 @@ def build(preset_case_id=None):
                      'dos vacíos, infiere el objetivo del nombre/notas del caso y de la propia conversación.').classes('text-xs text-gray-500')
             hu_text = ui.textarea('Historia de usuario / criterios de aceptación', value=d.get('hu_text') or '') \
                 .props('outlined dense').classes('w-full').mark('chat-hu-text')
+            W['hu_text'] = hu_text
             active_project_id = core.get_active_project_id()
             features = core.list_project_items('features', active_project_id) if active_project_id else []
             feature_id = ui.select({f['id']: f['name'] for f in features}, label='O ligar a una Funcionalidad', clearable=True,
@@ -190,59 +273,8 @@ def build(preset_case_id=None):
                       'turnos) o guardarlo como Conjunto de datos reusable en cualquier caso/suite después.') \
                 .classes('text-xs text-gray-500')
 
-            def _context_data_summary():
-                data = d.get('context_data')
-                if not data:
-                    return 'Sin datos cargados para esta exploración.'
-                return f'Datos cargados para esta exploración: «{data.get("source", "")}» ({len(data.get("rows") or [])} fila(s))'
             context_data_label = ui.label(_context_data_summary()).classes('text-xs text-gray-600').mark('chat-context-data-summary')
-
-            def csv_offer_dialog(filename, columns, rows):
-                with ui.dialog() as dlg, ui.card().classes('w-[480px] max-w-full'):
-                    ui.label(f'«{filename}»: {len(rows)} fila(s), columnas: {", ".join(columns)}').classes('text-sm')
-                    ui.label('¿Cómo lo usamos?').classes('text-sm text-gray-600')
-                    name_input = ui.input('Nombre del Conjunto de datos', value=Path(filename).stem) \
-                        .props('outlined dense').classes('w-full').mark('chat-context-csv-name')
-
-                    def use_once():
-                        d['context_data'] = {'columns': columns, 'rows': rows, 'source': filename}
-                        context_data_label.set_text(_context_data_summary())
-                        ui.notify('Datos disponibles para esta exploración (se guardan junto al caso al activar)', type='positive')
-                        dlg.close()
-
-                    def save_as_dataset():
-                        name = (name_input.value or '').strip()
-                        if not name:
-                            raise ValueError('Ponele un nombre al Conjunto de datos')
-                        core.save_dataset(name, resolve_project(), columns, rows)
-                        ui.notify(f'Conjunto de datos «{name}» guardado — reusable en cualquier caso/suite del proyecto', type='positive')
-                        dlg.close()
-                    with ui.row().classes('justify-end gap-2 w-full pt-2'):
-                        ui.button('Cancelar', on_click=dlg.close).props('flat')
-                        ui.button('Solo esta exploración', on_click=guard(use_once)).props('no-caps').mark('chat-context-csv-once')
-                        ui.button('Guardar como Conjunto de datos', on_click=guard(save_as_dataset)).props('color=primary no-caps').mark('chat-context-csv-save')
-                dlg.open()
-
-            def apply_context_file(filename, raw):
-                """.md/.txt se suman a la Historia de usuario (completan ese mismo campo, no uno nuevo); .csv
-                ofrece, a demanda, usarlo solo para esta exploración o guardarlo como Conjunto de datos —
-                nunca se decide solo. Mismo tope de tamaño que ya usan los Conjuntos de datos."""
-                ext = Path(filename).suffix.lower()
-                if ext not in CONTEXT_FILE_EXTENSIONS:
-                    raise ValueError(f'Extensión no soportada «{ext or filename}» — usa .md, .txt o .csv')
-                if len(raw) > core.MAX_DATASET_BYTES:
-                    raise ValueError(f'El archivo pesa más de {core.MAX_DATASET_BYTES // 1_000_000} MB')
-                if ext == '.csv':
-                    columns, rows = core.parse_dataset_file(filename, raw)
-                    csv_offer_dialog(filename, columns, rows)
-                    return
-                try:
-                    text = raw.decode('utf-8')
-                except UnicodeDecodeError as exc:
-                    raise ValueError(f'No se pudo leer «{filename}» como texto (¿no es UTF-8?)') from exc
-                existing = (hu_text.value or '').strip()
-                hu_text.set_value((existing + '\n\n' if existing else '') + text.strip())
-                ui.notify(f'«{filename}» sumado a la Historia de usuario / criterios — no olvides «Guardar configuración»', type='positive')
+            W['context_data_label'] = context_data_label
 
             async def on_context_upload(event):
                 try:
@@ -257,13 +289,7 @@ def build(preset_case_id=None):
                 context_path = ui.input('O cargar por ruta local (.md/.txt/.csv)').props('outlined dense').classes('grow').mark('chat-context-path')
 
                 def load_from_path():
-                    raw_path = (context_path.value or '').strip()
-                    if not raw_path:
-                        raise ValueError('Escribí una ruta')
-                    path = Path(raw_path)
-                    if not path.is_file():
-                        raise ValueError(f'No se encontró el archivo «{raw_path}»')
-                    apply_context_file(path.name, path.read_bytes())
+                    load_context_from_path(context_path.value)
                     context_path.set_value('')
                 ui.button('Cargar', icon='upload_file', on_click=guard(load_from_path)).props('outline dense no-caps').mark('chat-context-load-path')
 
@@ -839,8 +865,37 @@ def build(preset_case_id=None):
                 ui.download(content, f'{title.replace(" ", "_")}.{kind}')
                 ui.notify('Evidencia generada', type='positive')
                 dialog.close()
+
+            async def view_in_tab():
+                chosen = [S['runs'][i] for i in indices if checked[i]]
+                if not chosen:
+                    ui.notify('Elegí al menos un turno', type='warning')
+                    return
+                title = (suite_name.value or d.get('name') or 'Conversación').strip()
+                data = evidence_report.build_multi_report_data(title, chosen, llm_verdict=V['verdict'])
+                html = evidence_report.render_evidence_html(data)
+                view_id = core.uid()
+                filename = f'{view_id}-view.html'
+                (core.ARTIFACTS / filename).write_text(html, encoding='utf-8')
+                open_evidence_in_new_tab(view_id, filename)
+                dialog.close()
+
+            async def save_to_folder():
+                chosen = [S['runs'][i] for i in indices if checked[i]]
+                if not chosen:
+                    ui.notify('Elegí al menos un turno', type='warning')
+                    return
+                title = (suite_name.value or d.get('name') or 'Conversación').strip()
+                data = evidence_report.build_multi_report_data(title, chosen, llm_verdict=V['verdict'])
+                html = evidence_report.render_evidence_html(data)
+                stamp = dt.datetime.now().strftime('%Y%m%d-%H%M%S')
+                target = core.save_evidence_file(f'{title.replace(" ", "_")}-{stamp}.html', html)
+                ui.notify(f'Evidencia guardada en {target}', type='positive', multi_line=True)
+                dialog.close()
             with ui.row().classes('items-center gap-2 pt-2'):
                 ui.label('Descargar:').classes('text-sm text-gray-600')
+                ui.button('Ver en pestaña nueva', icon='open_in_new', on_click=guard(view_in_tab)).props('flat dense no-caps').mark('chat-evidence-view-tab')
+                ui.button('Guardar en mi carpeta', icon='folder', on_click=guard(save_to_folder)).props('flat dense no-caps').mark('chat-evidence-save-folder')
                 ui.button('HTML', icon='download', on_click=guard(lambda: download('html'))).props('flat dense no-caps').mark('chat-evidence-all-html')
                 ui.button('PDF', icon='picture_as_pdf', on_click=guard(lambda: download('pdf'))).props('flat dense no-caps')
                 ui.button('Word', icon='description', on_click=guard(lambda: download('docx'))).props('flat dense no-caps')
@@ -1005,12 +1060,20 @@ def build(preset_case_id=None):
         una opción clara (ver más abajo) se trata como un motivo más para CORTAR esa rama, no para esperar para
         siempre a que alguien la apruebe."""
         # Mismo motivo que en run_replay: un hilo nuevo no debe heredar el suite_id de la corrida anterior, o el
-        # guardado automático de acá choca con un alias de paso ya usado («turno1» repetido).
-        S.update(messages=[], runs={}, thread_id='' if new_thread else S['thread_id'], suite_id=None if new_thread else S['suite_id'])
+        # guardado automático de acá choca con un alias de paso ya usado («turno1» repetido). Si NO es un hilo
+        # nuevo («seguir en el hilo actual»), no se toca nada de esto — de lo contrario «seguir» se vería igual
+        # que «empezar de cero», borrando de la pantalla lo que la persona ya venía conversando a mano (el Chat
+        # libre con el Asistente, Fase A, arranca justo así: de corrido o paso a paso sobre la conversación tal
+        # como está, no desde cero).
+        if new_thread:
+            S.update(messages=[], runs={}, thread_id='', suite_id=None)
         W['thread_label'].refresh()
         persist_session()
         ai_run = {'phase': 'preset' if preset_texts else 'ai', 'turn': 0, 'max_turns': max_turns,
-                  'mode': 'play' if start_playing else 'step', 'cancelled': False, 'draft': None, 'stop_reason': None}
+                  'mode': 'play' if start_playing else 'step', 'cancelled': False, 'draft': None, 'stop_reason': None,
+                  # Vivas, no cerradas por valor: el chat libre con el Asistente (Fase A) las edita mientras la
+                  # corrida está en curso, y cada vuelta del bucle de abajo lee la versión más reciente.
+                  'instruction': instruction, 'data_goals': list(data_goals or [])}
         S['ai_run'] = ai_run
         chat_view.refresh()
 
@@ -1022,6 +1085,9 @@ def build(preset_case_id=None):
             ai_run['draft'] = draft
             box.set_value(draft)
             chat_view.refresh()
+            scroll_to_bottom()
+            assistant_chat_view.refresh()   # el ícono rápido «mandar turno sugerido» del mini-chat también depende del draft
+            scroll_assistant_chat_to_bottom()
             count = len(S['messages'])
             while len(S['messages']) == count and not ai_run['cancelled']:
                 await asyncio.sleep(0.2)
@@ -1042,12 +1108,16 @@ def build(preset_case_id=None):
                     break
                 ai_run['turn'] = turn_n + 1
                 chat_view.refresh()
+                # context_data_prompt_note() se recalcula en cada vuelta (no una vez al arrancar): si el chat
+                # del Asistente carga un .csv nuevo a mitad de camino («solo esta exploración»), el turno
+                # siguiente ya lo ve — sin esto, un dato cargado después de iniciar la corrida quedaba sin usar.
+                live_instruction = '\n\n'.join(p for p in (ai_run['instruction'], context_data_prompt_note()) if p)
                 try:
-                    suggestion = await run.io_bound(llm.suggest_next_turn, S['messages'], instruction, data_goals)
+                    suggestion = await run.io_bound(llm.suggest_next_turn, S['messages'], live_instruction, ai_run['data_goals'])
                     if suggestion is None:
                         # run.io_bound devuelve None (no una excepción) si la llamada se canceló — mismo caso
                         # documentado en send_chat_message; reintentar en el mismo hilo es la llamada de respaldo.
-                        suggestion = llm.suggest_next_turn(S['messages'], instruction, data_goals)
+                        suggestion = llm.suggest_next_turn(S['messages'], live_instruction, ai_run['data_goals'])
                 except llm.LLMError as exc:
                     ai_run['stop_reason'] = f'el modelo no pudo sugerir el próximo turno: {exc}'
                     break
@@ -1066,11 +1136,14 @@ def build(preset_case_id=None):
                     if turn_n + 1 < max_turns:
                         await asyncio.sleep(0.6)
                     continue
-                if needs_human:
-                    if unattended:
-                        ai_run['stop_reason'] = 'el bot ofreció opciones y el modelo no eligió ninguna con claridad (corrida sin supervisión: se corta acá)'
-                        break
-                    ai_run['mode'] = 'step'
+                if needs_human and unattended:
+                    ai_run['stop_reason'] = 'el bot ofreció opciones y el modelo no eligió ninguna con claridad (corrida sin supervisión: se corta acá)'
+                    break
+                # No se toca ai_run['mode'] acá: si estaba «de corrido», la pausa es solo para ESTE turno
+                # ambiguo — en cuanto se manda, el turno siguiente retoma «de corrido» solo (antes quedaba en
+                # «paso a paso» para siempre, reportado en vivo: «funciona para un único paso, pero no para que
+                # los haga todos»). Si el usuario pausa a mano mientras espera, eso sí cambia ai_run['mode'] —
+                # ver ai_run_pause — y ESO se respeta.
                 await wait_for_a_sent_turn(draft)
             else:
                 if not ai_run['stop_reason'] and not ai_run['cancelled']:
@@ -1078,6 +1151,7 @@ def build(preset_case_id=None):
         stop_reason = ai_run['stop_reason']
         S['ai_run'] = None
         chat_view.refresh()
+        assistant_chat_view.refresh()
         ui.notify('Conversación conducida por IA detenida.' if ai_run['cancelled'] else f'Conversación conducida por IA terminada: {stop_reason}',
                    type='info' if ai_run['cancelled'] else 'positive')
         pending = [i for i, t in enumerate(S['messages']) if t['who'] == 'user' and not t.get('saved')]
@@ -1103,8 +1177,7 @@ def build(preset_case_id=None):
         if dialog:
             dialog.close()
         base_name = (suite_name.value or 'Conversación de prueba').strip()
-        base_instruction = (tree.get('instructions') or '').strip() or 'Seguí la conversación de forma razonable hacia un cierre.'
-        instruction = '\n\n'.join(p for p in (base_instruction, context_data_prompt_note()) if p)
+        instruction = (tree.get('instructions') or '').strip() or 'Seguí la conversación de forma razonable hacia un cierre.'
         data_goals = tree.get('data_goals') or []
         for branch_path, option in pending:
             preset_texts = [node['message'] for node in branch_path] + [option]
@@ -1164,7 +1237,8 @@ def build(preset_case_id=None):
                       'paso o dejalo correr de corrido.').classes('text-sm text-gray-600')
             if not state['ready']:
                 ui.label(state['problem']).classes('text-xs text-gray-500')
-            instruction = ui.textarea('Instrucción inicial (objetivo, qué probar, opciones preferidas en ciertos puntos…)') \
+            instruction = ui.textarea('Instrucción inicial (objetivo, qué probar, opciones preferidas en ciertos puntos…)',
+                                       value=ASSISTANT_CHAT['pending_instruction']) \
                 .props('outlined dense').classes('w-full').mark('chat-ai-run-instruction')
             data_goals_input = ui.textarea('Objetivo de datos a obtener (opcional, uno por línea — p. ej. «id del lead»)') \
                 .props('outlined dense').classes('w-full').mark('chat-ai-run-data-goals')
@@ -1190,9 +1264,9 @@ def build(preset_case_id=None):
                     raise ValueError('Completa el mapeo del chat en «Parámetros» antes de arrancar de cero')
                 data_goals = [line.strip() for line in (data_goals_input.value or '').splitlines() if line.strip()]
                 start_playing, use_new_thread = not step_mode.value, new_thread.value
-                full_instruction = '\n\n'.join(p for p in (instruction.value.strip(), context_data_prompt_note()) if p)
+                ASSISTANT_CHAT['pending_instruction'] = ''   # ya se consumió acá — no hace falta que siga precargando el próximo diálogo
                 dialog.close()
-                await run_ai_conversation(preset_texts, start_playing, use_new_thread, int(max_turns.value or 1), full_instruction, data_goals)
+                await run_ai_conversation(preset_texts, start_playing, use_new_thread, int(max_turns.value or 1), instruction.value.strip(), data_goals)
             with ui.row().classes('justify-end gap-2 w-full pt-2'):
                 ui.button('Cancelar', on_click=dialog.close).props('flat')
                 ui.button('Iniciar', icon='smart_toy', on_click=guard(start)).props('color=primary no-caps').mark('chat-ai-run-confirm').set_enabled(state['ready'])
@@ -1241,24 +1315,144 @@ def build(preset_case_id=None):
                 ui.label('Pasa' if AI['verdict']['pass'] else 'No pasa').classes('font-medium')
             ui.label(AI['verdict']['reasoning']).classes('text-sm text-gray-700').mark('chat-ai-verdict-reasoning')
 
+    # ------------------------------------------------------------ chat libre con el Asistente de IA: charla DE
+    # VERDAD con el modelo (llm.assistant_reply), no una respuesta fija por palabra clave — puede responder
+    # preguntas, anotar algo para después, o directamente seguir la conversación actual con el bot (un turno
+    # puntual para revisar, o varios de corrido si se lo pedís así). Mini-hilo propio (ASSISTANT_CHAT), separado
+    # de S['messages'] (esa es la charla CON EL BOT, no con el Asistente) — nunca persistido. Reconoce una orden
+    # de captura/video por palabra clave antes de llamar al modelo, sin gastar una llamada solo para clasificar
+    # eso — barato y determinístico (sigue sin acción real detrás: ver BACKLOG.md, Fase D).
+    ASSISTANT_CHAT = {'messages': [], 'pending_instruction': ''}
+    CAPTURE_KEYWORDS = ('captura', 'screenshot')
+    VIDEO_KEYWORDS = ('video', 'grabar', 'grabación', 'grabacion')
+    ASSISTANT_CHAT_MAX_TURNS = 12
+
+    def scroll_assistant_chat_to_bottom():
+        """Mismo truco que scroll_to_bottom() (más arriba) pero apuntado al scroll PROPIO del mini-chat, no al
+        del panel entero — sin esto, cada mensaje nuevo queda fuera de la vista y hay que bajar a mano."""
+        try:
+            ui.run_javascript('const el = document.querySelector(".assistant-chat-scroll"); '
+                               'if (el) el.scrollTo({top: el.scrollHeight, behavior: "smooth"})')
+        except RuntimeError:
+            pass
+
+    def _assistant_say(reply):
+        ASSISTANT_CHAT['messages'].append({'who': 'assistant', 'text': reply})
+        assistant_chat_view.refresh()
+        scroll_assistant_chat_to_bottom()
+
+    async def handle_assistant_message(text):
+        text = (text or '').strip()
+        if not text:
+            return
+        ASSISTANT_CHAT['messages'].append({'who': 'user', 'text': text})
+        assistant_chat_view.refresh()
+        scroll_assistant_chat_to_bottom()
+        lowered = text.lower()
+        if any(k in lowered for k in CAPTURE_KEYWORDS):
+            _assistant_say('Las capturas por instrucción todavía no están disponibles acá — van en una fase siguiente.')
+            return
+        if any(k in lowered for k in VIDEO_KEYWORDS):
+            _assistant_say('Grabar video por instrucción todavía no está disponible acá — va en una fase siguiente.')
+            return
+        state = llm.status()
+        if not state['ready']:
+            _assistant_say(f'No puedo responder todavía: {state["problem"]}')
+            return
+        history = ASSISTANT_CHAT['messages'][:-1]   # sin el mensaje que se acaba de sumar, va aparte como `text`
+        try:
+            result = await run.io_bound(llm.assistant_reply, S['messages'], history, text, bool(S['ai_run']))
+            if result is None:   # cancelada (ver send_chat_message) — reintentar en el mismo hilo de respaldo
+                result = llm.assistant_reply(S['messages'], history, text, bool(S['ai_run']))
+        except llm.LLMError as exc:
+            _assistant_say(f'No pude responder: {exc}')
+            return
+        _assistant_say(result['reply'])
+        instruction = result['instruction'].strip()
+        action = result['action']
+        if action == 'continue' and (S['ai_run'] or S['replay']):
+            action = 'note'   # ya hay algo corriendo acá mismo — no se puede arrancar otra cosa encima
+        if S['ai_run']:
+            if instruction:
+                S['ai_run']['instruction'] = (S['ai_run']['instruction'] + '\n\n' + instruction).strip()
+            if action == 'continue' and result['autopilot'] and S['ai_run']['mode'] != 'play':
+                S['ai_run']['mode'] = 'play'
+                if S['ai_run']['draft']:
+                    await send_chat_message(box)
+        elif action == 'continue':
+            if not d.get('chat'):
+                _assistant_say('Para eso primero hace falta completar el mapeo del chat en «Parámetros».')
+            else:
+                await run_ai_conversation([], result['autopilot'], False, ASSISTANT_CHAT_MAX_TURNS, instruction or text, [])
+        elif instruction:
+            ASSISTANT_CHAT['pending_instruction'] = (ASSISTANT_CHAT['pending_instruction'] + '\n\n' + instruction).strip()
+
+    @ui.refreshable
+    def assistant_chat_view():
+        if ASSISTANT_CHAT['messages']:
+            with ui.column().classes('w-full gap-1 grow assistant-chat-scroll').style('overflow-y:auto;overflow-x:hidden;min-height:0'):
+                for turn in ASSISTANT_CHAT['messages']:
+                    ui.chat_message(turn['text'], sent=(turn['who'] == 'user'), name='Vos' if turn['who'] == 'user' else 'Asistente') \
+                        .classes('text-sm w-full').style('max-width:100%;overflow-wrap:break-word')
+        else:
+            ui.label('Escribile algo al Asistente — pregunta, instrucción, o pedile que siga la conversación.') \
+                .classes('text-xs text-gray-400 grow')
+        if S['ai_run'] and S['ai_run']['draft']:
+            with ui.row().classes('items-center gap-1'):
+                ui.label('Turno sugerido esperando —').classes('text-xs text-gray-500')
+                ui.button(icon='send', on_click=guard(lambda: send_chat_message(box))) \
+                    .props('flat dense round size=sm color=primary').mark('chat-assistant-send-draft') \
+                    .tooltip('Mandar ya el turno sugerido (podés editarlo antes, abajo en la conversación)')
+        with ui.row().classes('w-full items-center gap-1 no-wrap'):
+            assistant_input = ui.input(placeholder='Decile algo al Asistente (pregunta, instrucción, «seguí vos»…)') \
+                .props('outlined dense').classes('grow').mark('chat-assistant-input')
+            assistant_input.on('keydown.enter', guard(lambda: handle_assistant_message(assistant_input.value)))
+            ui.button(icon='send', on_click=guard(lambda: handle_assistant_message(assistant_input.value))) \
+                .props('flat dense round color=primary').mark('chat-assistant-send')
+
+        async def on_assistant_upload(event):
+            try:
+                raw = await read_upload(event)
+                apply_context_file(event.file.name, raw)
+            except ValueError as exc:
+                ui.notify(str(exc), type='negative', multi_line=True)
+        ui.upload(label='Subir archivo (.md/.txt/.csv)', on_upload=on_assistant_upload, auto_upload=True,
+                  max_file_size=core.MAX_DATASET_BYTES).props('accept=.md,.txt,.csv flat bordered dense').classes('w-full').mark('chat-assistant-upload')
+
+    def section_header(title, info, marker=None):
+        """Título + un ícono «i» con la explicación larga como tooltip (al pasar el mouse) — en vez de un
+        párrafo fijo debajo de cada título, que en un panel angosto consume mucho alto todo el tiempo."""
+        with ui.row().classes('items-center gap-1'):
+            ui.label(title).classes('font-medium text-sm')
+            icon = ui.icon('info', size='xs', color='grey').classes('cursor-help').tooltip(info)
+            if marker:
+                icon.mark(marker)
+
     def ai_tab():
         with ui.column().classes('w-full gap-2 p-3'):
-            ui.label('Asistente de IA').classes('font-medium text-sm')
-            ui.label('Evalúa la conversación contra el criterio configurado en «Parámetros» — a demanda, nunca '
-                      'automático después de cada turno.').classes('text-xs text-gray-500')
+            section_header('Asistente de IA', 'Evalúa la conversación contra el criterio configurado en «Parámetros» — '
+                            'a demanda, nunca automático después de cada turno.')
             ai_verdict_view()
             ui.separator().classes('my-1')
-            ui.label('Conversación conducida por IA').classes('font-medium text-sm')
-            ui.label('El modelo escribe cada turno de «vos» siguiendo un objetivo que le des — paso a paso '
-                      '(editable antes de mandarlo) o de corrido.').classes('text-xs text-gray-500')
+            section_header('Conversación conducida por IA', 'El modelo escribe cada turno de «vos» siguiendo un '
+                            'objetivo que le des — paso a paso (editable antes de mandarlo) o de corrido.')
             ui.button('Iniciar conversación conducida por IA', icon='smart_toy', on_click=guard(lambda: ai_conversation_dialog())) \
                 .props('outline dense no-caps').mark('chat-ai-tab-run-open').set_enabled(llm.status()['ready'])
             ui.separator().classes('my-1')
-            ui.label('Árbol de exploración').classes('font-medium text-sm')
-            ui.label('Las opciones que el bot ofreció y no se tomaron en ninguna corrida guardada desde acá — '
-                      'para correrlas todas después, una por una.').classes('text-xs text-gray-500')
+            section_header('Árbol de exploración', 'Las opciones que el bot ofreció y no se tomaron en ninguna '
+                            'corrida guardada desde acá — para correrlas todas después, una por una.')
             ui.button('Ver árbol de exploración', icon='alt_route', on_click=guard(lambda: exploration_tree_dialog())) \
                 .props('outline dense no-caps').mark('chat-tree-open')
+
+    def assistant_chat_tab():
+        with ui.column().classes('w-full gap-2 p-3 h-full'):
+            section_header('Hablale al Asistente',
+                            'Charla libre con el Asistente — responde preguntas, anota instrucciones o datos para '
+                            'después, y puede seguir él mismo la conversación actual con el bot si se lo pedís '
+                            '(un turno puntual para revisar, o varios de corrido). También podés subir un archivo '
+                            'de contexto en cualquier momento, incluso con una Conversación conducida por IA ya en curso.',
+                            marker='chat-assistant-info')
+            assistant_chat_view()
 
     # ------------------------------------------------------------ panel izquierdo: conversaciones y Flujos
     # guardados en el proyecto activo — mismo patrón de pestañas que ya usa workspace_page.py, pero sin
@@ -1374,9 +1568,12 @@ def build(preset_case_id=None):
                     params_view()
                 with ui.tab_panel('Asistente').classes('p-0'):
                     ai_tab()
+                with ui.tab_panel('ChatAsistente').classes('p-0 h-full'):
+                    assistant_chat_tab()
             with ui.tabs().props('vertical dense no-caps').classes('shrink-0').style('width:56px;border-left:1px solid #e5e7eb') as rail:
                 ui.tab('Params', label='', icon='tune').tooltip('Parámetros').mark('chat-rail-Params')
                 ui.tab('Asistente', label='', icon='smart_toy').tooltip('Asistente de IA').mark('chat-rail-Asistente')
+                ui.tab('ChatAsistente', label='', icon='forum').tooltip('Hablale al Asistente').mark('chat-rail-ChatAsistente')
             panels.bind_value_from(rail, 'value')
             rail.set_value('Params')
 

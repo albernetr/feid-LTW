@@ -886,6 +886,40 @@ async def test_show_run_offers_a_model_verdict_for_an_api_case_run(user: User, s
         await user.should_see('La respuesta trae el usuario esperado.')
 
 
+async def test_show_run_can_view_evidence_in_a_new_tab_without_downloading_it(user: User, sample_app):
+    """Fase B: «Ver en pestaña nueva» escribe el HTML en core.ARTIFACTS (lo que /evidence/ sirve inline, sin
+    forzar una descarga) en vez de pasar por ui.download — se prueba la mitad servidor: el archivo queda ahí."""
+    await user.open('/workspace')
+    user.find('ws-url').type(sample_app.url + '/api/users/2')
+    user.find('ws-send').click()
+    await eventually(lambda: any('"name": "user2"' in text for text in code_texts(user)))
+    before = set(core.ARTIFACTS.glob('*-view.html'))
+    user.find(marker='ws-evidence').click()
+    await user.should_see(marker='run-view-evidence-tab', retries=30)
+    user.find(marker='run-view-evidence-tab').click()
+    await eventually(lambda: len(set(core.ARTIFACTS.glob('*-view.html')) - before) == 1)
+    [new_file] = set(core.ARTIFACTS.glob('*-view.html')) - before
+    assert 'user2' in new_file.read_text(encoding='utf-8')   # el JSON va escapado dentro del <pre> (&quot;…&quot;)
+
+
+async def test_show_run_can_save_evidence_to_the_configured_folder(user: User, sample_app, tmp_path):
+    """Fase C: «Guardar en mi carpeta» solo funciona con una carpeta ya configurada (Configuraciones → Base de
+    datos) y nunca pisa un archivo existente — reusa core.save_evidence_file, ya probado aparte en test_core.py."""
+    folder = tmp_path / 'evidencia'
+    folder.mkdir()
+    core.set_evidence_folder(str(folder))
+    await user.open('/workspace')
+    user.find('ws-url').type(sample_app.url + '/api/users/2')
+    user.find('ws-send').click()
+    await eventually(lambda: any('"name": "user2"' in text for text in code_texts(user)))
+    user.find(marker='ws-evidence').click()
+    await user.should_see(marker='run-save-evidence-folder', retries=30)
+    user.find(marker='run-save-evidence-folder').click()
+    await user.should_see('Evidencia guardada en', retries=30)
+    [saved] = list(folder.glob('*.html'))
+    assert 'user2' in saved.read_text(encoding='utf-8')
+
+
 async def test_workspace_history_reload_and_search(user: User, sample_app):
     from app import workspace as ws_logic
     d = ws_logic.new_draft()

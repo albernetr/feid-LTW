@@ -1,6 +1,7 @@
 """Chat: a standalone screen to converse live with a chatbot/conversational API, one turn at a time."""
 import asyncio
 import json
+import pytest
 from app import core, automation, llm
 from app.pages.chat_page import parse_option_labels
 from nicegui.testing.user_interaction import UserInteraction
@@ -291,6 +292,68 @@ async def test_chat_conversation_evidence_covers_every_selected_turn_with_its_re
 
     user.find(marker='chat-evidence-all-html').click()
     await user.should_see('Evidencia generada')
+
+
+async def test_chat_conversation_evidence_can_be_viewed_in_a_new_tab_without_downloading_it(user, chat_app):
+    """Fase B: mismo mecanismo que en show_run, pero para el reporte de TODA la conversación — no hay un único
+    run_id acá, así que usa un id nuevo (core.uid()) solo para nombrar el archivo servido por /evidence/."""
+    project = core.create_project('Evidencia en pestaña')
+    env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                               'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                               'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}},
+                               'assertions': [],
+                               'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                        'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+    core.set_active_project(project['id'])
+    await user.open(f'/chat?case={case["id"]}')
+    user.find(marker='chat-input').type('Hola')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¡Gracias por aceptar!', retries=30)
+
+    user.find(marker='chat-actions-toggle').click()
+    await user.should_see(marker='chat-evidence-all', retries=30)
+    user.find(marker='chat-evidence-all').click()
+    await user.should_see(marker='chat-evidence-view-tab', retries=30)
+    before = set(core.ARTIFACTS.glob('*-view.html'))
+    user.find(marker='chat-evidence-view-tab').click()
+    new_files = set()
+    for _ in range(30):
+        new_files = set(core.ARTIFACTS.glob('*-view.html')) - before
+        if new_files:
+            break
+        await asyncio.sleep(0.1)
+    [new_file] = new_files
+    assert '¡Gracias por aceptar!' in new_file.read_text(encoding='utf-8')
+
+
+async def test_chat_conversation_evidence_can_be_saved_to_the_configured_folder(user, chat_app, tmp_path):
+    """Fase C: mismo mecanismo que en show_run, pero para el reporte de toda la conversación."""
+    folder = tmp_path / 'evidencia'
+    folder.mkdir()
+    core.set_evidence_folder(str(folder))
+    project = core.create_project('Evidencia a carpeta')
+    env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                               'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                               'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}},
+                               'assertions': [],
+                               'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                        'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+    core.set_active_project(project['id'])
+    await user.open(f'/chat?case={case["id"]}')
+    user.find(marker='chat-input').type('Hola')
+    user.find(marker='chat-input').trigger('keydown.enter')
+    await user.should_see('¡Gracias por aceptar!', retries=30)
+
+    user.find(marker='chat-actions-toggle').click()
+    await user.should_see(marker='chat-evidence-all', retries=30)
+    user.find(marker='chat-evidence-all').click()
+    await user.should_see(marker='chat-evidence-save-folder', retries=30)
+    user.find(marker='chat-evidence-save-folder').click()
+    await user.should_see('Evidencia guardada en', retries=30)
+    [saved] = list(folder.glob('*.html'))
+    assert '¡Gracias por aceptar!' in saved.read_text(encoding='utf-8')
 
 
 async def test_chat_saves_and_restores_the_hu_text_and_linked_feature(user, chat_app):
@@ -978,3 +1041,301 @@ async def test_context_data_from_a_csv_reaches_the_ai_conducted_conversation_pro
         await user.should_see('Conversación conducida por IA terminada', retries=30)
         sent = fake.requests[-1]['body']['messages'][-1]['content']
         assert 'Juan Pérez' in sent and 'Datos de prueba disponibles' in sent
+
+
+async def test_ai_conversation_resumes_auto_play_after_a_forced_pause_is_resolved(user, chat_app):
+    """Bug encontrado en vivo: una pausa forzada por falta de opción clara (el bot ofrece opciones y el modelo
+    no elige ninguna) dejaba la corrida en «paso a paso» para siempre — reportado como «funciona para un único
+    paso, pero no para que los haga todos». Mandar ESE turno a mano no debe impedir que el siguiente, si el
+    modo original era «de corrido», se mande solo."""
+    with FakeLLM() as fake:
+        configure_fake_llm(fake)
+        fake.queue(json.dumps({'text': 'Hola', 'option': None, 'done': False, 'collected': {}}))                 # turno 1: sin opciones todavía
+        fake.queue(json.dumps({'text': 'Prefiero no decir', 'option': None, 'done': False, 'collected': {}}))    # turno 2: pausa forzada (el bot YA ofreció Sí/No)
+        fake.queue(json.dumps({'text': 'Juan Pérez', 'option': None, 'done': False, 'collected': {}}))           # turno 3: debería mandarse solo
+        fake.queue(json.dumps({'text': '', 'option': None, 'done': True, 'collected': {}}))                      # corta sola
+        project = core.create_project('IA retoma de corrido')
+        env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+        case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                                   'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                                   'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}}, 'assertions': [],
+                                   'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                            'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta',
+                                            'options_path': '$.conversation.replies[0].options'}})
+        core.set_active_project(project['id'])
+        await user.open(f'/chat?case={case["id"]}')
+        await user.should_see('Hilo:')
+        user.find(marker='chat-rail-Asistente').click()
+        await user.should_see(marker='chat-ai-tab-run-open', retries=30)
+        user.find(marker='chat-ai-tab-run-open').click()
+        await user.should_see(marker='chat-ai-run-instruction', retries=30)
+        user.find(marker='chat-ai-run-instruction').type('Cotizar un seguro.')
+        user.find(marker='chat-ai-run-stepmode').click()          # de corrido
+        user.find(marker='chat-ai-run-confirm').click()
+        await user.should_see('¡Gracias por aceptar!', retries=30)      # turno 1 solo
+        await user.should_see(marker='chat-ai-run-pause', retries=30)   # pausa forzada en el turno 2
+        box = user.find(marker='chat-input').elements.pop()
+        for _ in range(30):
+            if box.value == 'Prefiero no decir':
+                break
+            await asyncio.sleep(0.1)
+        assert box.value == 'Prefiero no decir'
+        user.find(marker='chat-input').trigger('keydown.enter')         # lo mando a mano, como haría una persona real
+        # A partir de acá, turno 3 y el cierre deberían mandarse solos, sin volver a pausar — sin que el test
+        # toque nada más.
+        suites = []
+        for _ in range(50):
+            suites = core.list_project_items('suites', project['id'])
+            if suites:
+                break
+            await asyncio.sleep(0.2)
+        assert len(suites) == 1
+        texts = [core.get('cases', s['case_id'])['body']['message'] for s in core.suite_steps(suites[0])]
+        assert texts == ['Hola', 'Prefiero no decir', 'Juan Pérez']
+
+
+async def test_assistant_chat_continue_preserves_the_manually_typed_conversation_so_far(user, chat_app):
+    """Corrige un bug real descubierto al construir esto: arrancar una Conversación conducida por IA «en el
+    hilo actual» (new_thread=False) borraba igual los turnos ya mostrados en pantalla, aunque el bot siguiera
+    recordando la conversación — lo que la persona ya tipeó a mano tiene que seguir visible cuando el Asistente
+    retoma la conversación, no desaparecer para volver a armarse de cero."""
+    with FakeLLM() as fake:
+        configure_fake_llm(fake)
+        fake.queue(json.dumps({'reply': 'Dale, sigo yo.', 'action': 'continue', 'autopilot': False, 'instruction': 'Seguí.'}))
+        fake.queue(json.dumps({'text': 'Quiero un seguro de vida', 'option': None, 'done': False, 'collected': {}}))
+        project = core.create_project('Asistente preserva lo tipeado')
+        env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+        case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                                   'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                                   'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}}, 'assertions': [],
+                                   'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                            'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+        core.set_active_project(project['id'])
+        await user.open(f'/chat?case={case["id"]}')
+        user.find(marker='chat-input').type('Hola')
+        user.find(marker='chat-input').trigger('keydown.enter')
+        await user.should_see('¡Gracias por aceptar!', retries=30)
+        user.find(marker='chat-rail-ChatAsistente').click()
+        await user.should_see(marker='chat-assistant-input', retries=30)
+        user.find(marker='chat-assistant-input').type('Seguí vos la conversación.')
+        user.find(marker='chat-assistant-send').click()
+        await user.should_see('Dale, sigo yo.', retries=30)
+        await user.should_see(marker='chat-ai-run-pause', retries=30)
+        await user.should_see('¡Gracias por aceptar!')   # el turno manual ya mostrado sigue ahí, no se borró
+        sent = fake.requests[-1]['body']['messages'][-1]['content']
+        assert 'Gracias por aceptar' in sent   # el modelo también ve el turno manual al redactar el siguiente
+
+
+async def test_assistant_chat_updates_the_live_instruction_mid_run(user, chat_app):
+    """Fase A: antes, la instrucción solo se cargaba una vez al arrancar. Mandarle algo nuevo al Asistente de
+    IA mientras la corrida está en curso tiene que llegar al próximo pedido del modelo, sin reiniciar nada."""
+    with FakeLLM() as fake:
+        configure_fake_llm(fake)
+        fake.queue(json.dumps({'text': 'Hola', 'option': None, 'done': False, 'collected': {}}))
+        fake.queue(json.dumps({'reply': 'Instrucción actualizada — el modelo la va a tener en cuenta desde el próximo turno.',
+                               'action': 'note', 'autopilot': False, 'instruction': 'Preguntale también el email.'}))
+        fake.queue(json.dumps({'text': '', 'option': None, 'done': True, 'collected': {}}))
+        project = core.create_project('Asistente chat en vivo')
+        env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+        case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                                   'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                                   'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}}, 'assertions': [],
+                                   'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                            'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+        core.set_active_project(project['id'])
+        await user.open(f'/chat?case={case["id"]}')
+        await user.should_see('Hilo:')
+        user.find(marker='chat-rail-Asistente').click()
+        await user.should_see(marker='chat-ai-tab-run-open', retries=30)
+        user.find(marker='chat-ai-tab-run-open').click()
+        await user.should_see(marker='chat-ai-run-instruction', retries=30)
+        user.find(marker='chat-ai-run-instruction').type('Cotizar un seguro.')
+        user.find(marker='chat-ai-run-confirm').click()           # paso a paso por defecto: pausa antes del turno 1
+        await user.should_see(marker='chat-ai-run-pause', retries=30)
+        box = user.find(marker='chat-input').elements.pop()
+        for _ in range(30):
+            if box.value == 'Hola':
+                break
+            await asyncio.sleep(0.1)
+        assert box.value == 'Hola'
+        # a mitad de camino (antes de mandar el turno 1), le mandamos una instrucción nueva al Asistente
+        user.find(marker='chat-rail-ChatAsistente').click()
+        await user.should_see(marker='chat-assistant-input', retries=30)
+        user.find(marker='chat-assistant-input').type('Preguntale también el email.')
+        user.find(marker='chat-assistant-send').click()
+        await user.should_see('Instrucción actualizada', retries=30)
+        user.find(marker='chat-input').trigger('keydown.enter')   # recién ahora mandamos el turno 1
+        for _ in range(50):
+            if len(fake.requests) >= 2:
+                break
+            await asyncio.sleep(0.2)
+        sent = fake.requests[-1]['body']['messages'][-1]['content']
+        assert 'Preguntale también el email.' in sent
+
+
+async def test_assistant_chat_upload_of_a_csv_reaches_the_very_next_turn(user, chat_app):
+    """Lo mismo que el test anterior, pero con un .csv subido desde el chat del Asistente («solo esta
+    exploración») en vez de una instrucción de texto — el turno siguiente ya tiene que verlo."""
+    from nicegui import ui
+    from nicegui.elements.upload_files import SmallFileUpload
+    with FakeLLM() as fake:
+        configure_fake_llm(fake)
+        fake.queue(json.dumps({'text': 'Hola', 'option': None, 'done': False, 'collected': {}}))
+        fake.queue(json.dumps({'text': '', 'option': None, 'done': True, 'collected': {}}))
+        project = core.create_project('Asistente csv en vivo')
+        env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+        case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                                   'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                                   'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}}, 'assertions': [],
+                                   'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                            'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+        core.set_active_project(project['id'])
+        await user.open(f'/chat?case={case["id"]}')
+        await user.should_see('Hilo:')
+        user.find(marker='chat-rail-Asistente').click()
+        await user.should_see(marker='chat-ai-tab-run-open', retries=30)
+        user.find(marker='chat-ai-tab-run-open').click()
+        await user.should_see(marker='chat-ai-run-instruction', retries=30)
+        user.find(marker='chat-ai-run-instruction').type('Cotizar un seguro.')
+        user.find(marker='chat-ai-run-confirm').click()
+        await user.should_see(marker='chat-ai-run-pause', retries=30)
+        box = user.find(marker='chat-input').elements.pop()
+        for _ in range(30):
+            if box.value == 'Hola':
+                break
+            await asyncio.sleep(0.1)
+        csv_bytes = 'nombre,seguro\nCarlos Mendoza,Vida\n'.encode()
+        user.find(marker='chat-rail-ChatAsistente').click()
+        await user.should_see(marker='chat-assistant-upload', retries=30)
+        upload = user.find(marker='chat-assistant-upload').elements.pop()
+        await upload.handle_uploads([SmallFileUpload(name='clientes.csv', content_type='text/csv', _data=csv_bytes)])
+        await user.should_see(marker='chat-context-csv-once', retries=30)
+        user.find(marker='chat-context-csv-once').click()
+        user.find(marker='chat-input').trigger('keydown.enter')
+        for _ in range(50):
+            if len(fake.requests) >= 2:
+                break
+            await asyncio.sleep(0.2)
+        sent = fake.requests[-1]['body']['messages'][-1]['content']
+        assert 'Carlos Mendoza' in sent and 'Datos de prueba disponibles' in sent
+
+
+async def test_assistant_chat_can_draft_the_next_turn_when_asked_to_continue(user, chat_app):
+    """Antes, pedirle al Asistente que siguiera la conversación actual no hacía nada por sí solo (solo quedaba
+    anotado para una futura «Conversación conducida por IA»). Ahora, si pide avanzar un turno puntual, arranca
+    esa misma mecánica EN EL HILO ACTUAL, en modo paso a paso — el turno sugerido queda editable en la barra,
+    igual que si la hubieras arrancado a mano desde el diálogo."""
+    with FakeLLM() as fake:
+        configure_fake_llm(fake)
+        fake.queue(json.dumps({'reply': 'Dale, te armo el próximo turno.', 'action': 'continue', 'autopilot': False,
+                               'instruction': 'Seguí la conversación de forma razonable.'}))
+        fake.queue(json.dumps({'text': 'Hola', 'option': None, 'done': False, 'collected': {}}))
+        project = core.create_project('Asistente continuar paso a paso')
+        env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+        case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                                   'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                                   'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}}, 'assertions': [],
+                                   'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                            'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+        core.set_active_project(project['id'])
+        await user.open(f'/chat?case={case["id"]}')
+        await user.should_see('Hilo:')
+        user.find(marker='chat-rail-ChatAsistente').click()
+        await user.should_see(marker='chat-assistant-input', retries=30)
+        user.find(marker='chat-assistant-input').type('Seguí vos, mandá el próximo turno.')
+        user.find(marker='chat-assistant-send').click()
+        await user.should_see('Dale, te armo el próximo turno.', retries=30)
+        await user.should_see(marker='chat-ai-run-pause', retries=30)
+        box = user.find(marker='chat-input').elements.pop()
+        for _ in range(30):
+            if box.value == 'Hola':
+                break
+            await asyncio.sleep(0.1)
+        assert box.value == 'Hola'
+        await user.should_see(marker='chat-assistant-send-draft', retries=30)   # ícono rápido para mandar el turno sugerido
+
+
+async def test_assistant_chat_quick_icon_sends_the_pending_draft(user, chat_app):
+    """El ícono rápido en el mini-chat manda el turno sugerido sin tener que ir a la barra de escribir."""
+    with FakeLLM() as fake:
+        configure_fake_llm(fake)
+        fake.queue(json.dumps({'reply': 'Dale.', 'action': 'continue', 'autopilot': False, 'instruction': 'Seguí.'}))
+        fake.queue(json.dumps({'text': 'Hola', 'option': None, 'done': False, 'collected': {}}))
+        fake.queue(json.dumps({'text': '', 'option': None, 'done': True, 'collected': {}}))
+        project = core.create_project('Asistente icono rapido')
+        env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+        case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                                   'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                                   'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}}, 'assertions': [],
+                                   'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                            'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+        core.set_active_project(project['id'])
+        await user.open(f'/chat?case={case["id"]}')
+        await user.should_see('Hilo:')
+        user.find(marker='chat-rail-ChatAsistente').click()
+        await user.should_see(marker='chat-assistant-input', retries=30)
+        user.find(marker='chat-assistant-input').type('Seguí vos.')
+        user.find(marker='chat-assistant-send').click()
+        await user.should_see(marker='chat-assistant-send-draft', retries=30)
+        user.find(marker='chat-assistant-send-draft').click()
+        await user.should_see('¡Gracias por aceptar!', retries=30)   # el turno "Hola" salió y el bot ya contestó
+
+
+async def test_assistant_chat_can_autopilot_the_current_conversation_when_asked_to_take_over(user, chat_app):
+    """Si el mensaje pide explícitamente que el Asistente lleve TODA la conversación («de corrido», «vos
+    solo»…), arranca de corrido en el hilo actual — sin pedir revisar cada turno — siguiendo las restricciones
+    que haya mencionado en el propio mensaje."""
+    with FakeLLM() as fake:
+        configure_fake_llm(fake)
+        fake.queue(json.dumps({'reply': 'Dale, la llevo yo.', 'action': 'continue', 'autopilot': True,
+                               'instruction': 'Cotizá un seguro de vida sin preguntar por el email.'}))
+        fake.queue(json.dumps({'text': 'Hola', 'option': None, 'done': False, 'collected': {}}))
+        fake.queue(json.dumps({'text': '', 'option': None, 'done': True, 'collected': {}}))
+        project = core.create_project('Asistente continuar de corrido')
+        env = core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+        case = core.save('cases', {'name': 'Enviar mensaje', 'type': 'api', 'project_id': project['id'], 'environment_id': env['id'], 'method': 'POST',
+                                   'path': '/api/chat/messages', 'headers': {}, 'query': {},
+                                   'body': {'message': '', 'conversation_id': '', 'attributes': {'consent': True}}, 'assertions': [],
+                                   'chat': {'message_path': '$.message', 'thread_request_path': '$.conversation_id',
+                                            'thread_response_path': '$.thread_id', 'reply_path': '$.respuesta'}})
+        core.set_active_project(project['id'])
+        await user.open(f'/chat?case={case["id"]}')
+        await user.should_see('Hilo:')
+        user.find(marker='chat-rail-ChatAsistente').click()
+        await user.should_see(marker='chat-assistant-input', retries=30)
+        user.find(marker='chat-assistant-input').type('Llevá vos toda la conversación, no preguntes el email.')
+        user.find(marker='chat-assistant-send').click()
+        await user.should_see('Conversación conducida por IA terminada', retries=50)
+        assert any('Cotizá un seguro de vida sin preguntar por el email.' in r['body']['messages'][-1]['content'] for r in fake.requests)
+
+
+async def test_assistant_chat_just_answers_a_question_without_acting(user, chat_app):
+    """Una pregunta (action="chat") solo contesta — no arranca ninguna corrida ni toca la instrucción pendiente."""
+    with FakeLLM() as fake:
+        configure_fake_llm(fake)
+        fake.queue(json.dumps({'reply': 'Todavía no hay turnos en esta conversación.', 'action': 'chat', 'autopilot': False, 'instruction': ''}))
+        project = core.create_project('Asistente solo pregunta')
+        core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+        core.set_active_project(project['id'])
+        await user.open('/chat')
+        user.find(marker='chat-rail-ChatAsistente').click()
+        await user.should_see(marker='chat-assistant-input', retries=30)
+        user.find(marker='chat-assistant-input').type('¿Cómo va la conversación hasta ahora?')
+        user.find(marker='chat-assistant-send').click()
+        await user.should_see('Todavía no hay turnos en esta conversación.', retries=30)
+        with pytest.raises(AssertionError):
+            user.find(marker='chat-ai-run-pause')   # ningún control de corrida: una pregunta no arranca nada
+
+
+async def test_assistant_chat_recognizes_a_capture_command_instead_of_an_instruction(user, chat_app):
+    """Un mensaje con «captura» no se suma como instrucción — se reconoce por palabra clave, sin otra llamada
+    al modelo solo para clasificar."""
+    project = core.create_project('Asistente comando captura')
+    core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    core.set_active_project(project['id'])
+    await user.open('/chat')
+    user.find(marker='chat-rail-ChatAsistente').click()
+    await user.should_see(marker='chat-assistant-input', retries=30)
+    user.find(marker='chat-assistant-input').type('Tomá una captura ahora')
+    user.find(marker='chat-assistant-send').click()
+    await user.should_see('todavía no están disponibles', retries=30)

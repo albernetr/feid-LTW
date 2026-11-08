@@ -563,3 +563,63 @@ def suggest_next_turn(messages, instruction, data_goals=None, config=None):
     collected = data.get('collected')
     return {'text': str(data.get('text') or ''), 'option': (str(data['option']) if data.get('option') else None),
             'done': bool(data['done']), 'collected': collected if isinstance(collected, dict) else {}}
+
+
+# --------------------------------------------------------------------------- chat libre con el Asistente de IA
+# («Hablale al Asistente», Fase A): a diferencia de TURN_SYSTEM (que SOLO redacta el próximo turno de «vos» para
+# el bot), acá el modelo conversa CON la persona que está probando — puede simplemente responder, anotar algo
+# para después, o decidir que le están pidiendo avanzar la conversación actual con el bot ahora mismo (un turno
+# puntual para revisar, o varios seguidos sin pedir revisión). chat_page.py decide qué hacer con cada acción;
+# acá no se manda ni se guarda nada solo.
+
+ASSISTANT_CHAT_SYSTEM = (
+    'Sos el Asistente de IA de Local Test Workspace, dentro del Chat: hablás con la persona que está probando un '
+    'chatbot/API conversacional — no sos el bot que se está probando, sos quien la ayuda a probarlo. Tenés la '
+    'conversación de prueba tal como va hasta ahora y el historial de esta charla con vos. Respondé en español, '
+    'corto y concreto. Responde SOLO con un objeto JSON válido, sin texto antes ni después: '
+    '{"reply": "...", "action": "chat"|"note"|"continue", "autopilot": true|false, "instruction": "..."}. '
+    '"reply": lo que le decís a la persona — confirmá qué vas a hacer, o respondé derecho si solo preguntó algo. '
+    '"action": "chat" si solo te está preguntando o charlando (nada para ejecutar); "note" si te da una '
+    'instrucción, dato o restricción para tener en cuenta más adelante (antes de que arranque una corrida, o para '
+    'una ya en curso) pero no te pide avanzar la conversación con el bot ahora mismo; "continue" si te pide '
+    'explícitamente que sigas, avances, mandes el próximo turno, o lleves vos la conversación actual con el bot. '
+    '"autopilot": solo junto con action="continue" — true si pidió que la lleves toda o varios turnos sin que '
+    'revises cada uno («de corrido», «llevala vos sola/sin pausas», «seguí hasta terminar»); false si pidió un '
+    'solo turno puntual o no lo aclaró (ante la duda, false: un turno a la vez, revisable, es más seguro). '
+    '"instruction": el objetivo/instrucciones/restricciones a seguir, en tus palabras, juntando TODO lo relevante '
+    'de este mensaje y de mensajes previos de este mismo mini-chat que sigan aplicando; vacío si action="chat".')
+
+
+def _assistant_chat_transcript(assistant_messages):
+    who_labels = {'user': 'Vos', 'assistant': 'Asistente'}
+    return '\n'.join(f'{who_labels.get(turn.get("who"), turn.get("who"))}: {turn.get("text", "")}' for turn in assistant_messages)
+
+
+def assistant_chat_messages(conversation_messages, assistant_messages, text, ai_run_active):
+    """(system, user) exactly as they will be sent - the UI shows this before anything leaves the machine.
+    `conversation_messages`: S['messages'] (la charla CON EL BOT). `assistant_messages`: el historial de ESTE
+    mini-chat hasta ahora (sin el mensaje nuevo, que va aparte en `text`). `ai_run_active`: si ya hay una
+    Conversación conducida por IA corriendo (para que el modelo no trate "continue" como redundante sin saberlo)."""
+    parts = [f'Mensaje nuevo de la persona: {text.strip()}',
+             '¿Hay una Conversación conducida por IA corriendo ahora mismo? ' + ('Sí.' if ai_run_active else 'No.')]
+    if assistant_messages:
+        parts.append(f'Charla con vos hasta ahora (este mini-chat, sin contar el mensaje nuevo):\n{_assistant_chat_transcript(assistant_messages)}')
+    parts.append(f'Conversación de prueba con el bot hasta ahora:\n{_transcript(conversation_messages)}' if conversation_messages else
+                 'Conversación de prueba con el bot: todavía no empezó.')
+    return ASSISTANT_CHAT_SYSTEM, redact(_clip('\n\n'.join(parts)))
+
+
+def assistant_reply(conversation_messages, assistant_messages, text, ai_run_active, config=None):
+    """{'reply': str, 'action': 'chat'|'note'|'continue', 'autopilot': bool, 'instruction': str}. Mismo parseo
+    robusto que suggest_next_turn: si la respuesta no es el JSON esperado, LLMError claro."""
+    system, user = assistant_chat_messages(conversation_messages, assistant_messages, text, ai_run_active)
+    raw = ask(system, user, config)
+    try:
+        data = _extract_json(raw)
+    except ValueError as exc:
+        raise LLMError(f'La respuesta del modelo no es el JSON esperado: {exc}') from exc
+    if not isinstance(data, dict) or 'reply' not in data:
+        raise LLMError('La respuesta del modelo no tiene el formato esperado (reply/action).')
+    action = data.get('action') if data.get('action') in ('chat', 'note', 'continue') else 'chat'
+    return {'reply': str(data['reply']), 'action': action, 'autopilot': bool(data.get('autopilot')),
+            'instruction': str(data.get('instruction') or '')}

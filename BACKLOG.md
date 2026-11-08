@@ -78,6 +78,13 @@ Estado: implementado; pendientes marcados abajo
 - [ ] Casos UI y flujos con ambiente propio dentro de `ltw.spec/1`; importar Postman/OpenAPI hacia la spec
 - [ ] Modo «Ejecución» para el product owner, informe compartible y «aceptar nuevo esperado» (pendiente anterior)
 
+## Chat: Asistente de IA en vivo y evidencia
+
+- [x] «Hablale al Asistente»: mini-chat de verdad con el modelo (pestaña propia), siempre disponible — responde preguntas, anota instrucciones/datos/archivos para después, y puede seguir él mismo la conversación actual con el bot (un turno editable con ícono rápido, o de corrido si se lo pedís así), sin perder lo ya conversado
+- [x] Ver evidencia (de un caso o de la conversación) en una pestaña nueva del navegador, sin tener que descargarla primero
+- [x] Guardar evidencia a demanda en una carpeta propia configurada de antemano (además de la descarga ya existente)
+- [ ] Captura de pantalla y video (real en Casos UI vía Playwright; tipo slideshow en Chat/Espacio de trabajo) como evidencia adicional, también disparables por instrucción de texto desde «Hablale al Asistente» (hoy reconoce las palabras «captura»/«video» pero responde que todavía no están disponibles, sin ninguna acción real detrás)
+
 ## Pendiente conocido (fuera de este alcance)
 
 - Importadores Postman/Bruno, OAuth2/Basic, reportes HTML/JUnit, ejecución en paralelo, servicio de Windows para el scheduler.

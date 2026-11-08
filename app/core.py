@@ -2904,6 +2904,53 @@ def execute_api(case, environment, variables=None, persist=True, context=None, e
 
 # --------------------------------------------------------------------------- evidence
 
+EVIDENCE_FOLDER_SETTING = 'evidence_folder'
+
+
+def evidence_folder():
+    return get_setting(EVIDENCE_FOLDER_SETTING)
+
+
+def set_evidence_folder(path):
+    """Valida que sea una carpeta existente y escribible antes de guardarla — se configura una sola vez,
+    desde Configuraciones → Base de datos; después, «Guardar en mi carpeta» solo la lee."""
+    value = (path or '').strip()
+    if not value:
+        raise ValueError('Indica una carpeta')
+    folder = Path(value)
+    if not folder.is_dir():
+        raise ValueError(f'«{value}» no es una carpeta existente')
+    if not os.access(folder, os.W_OK):
+        raise ValueError(f'No se puede escribir en «{value}»')
+    set_setting(EVIDENCE_FOLDER_SETTING, str(folder))
+    return str(folder)
+
+
+def save_evidence_file(filename, content):
+    """Escribe `content` (str o bytes) en la carpeta de evidencia configurada, con un nombre legible — sin
+    pisar un archivo existente (agrega un sufijo numérico si hace falta). Siempre a demanda: nunca se llama
+    sola después de una corrida."""
+    folder = evidence_folder()
+    if not folder:
+        raise ValueError('Todavía no configuraste una carpeta de evidencia (Configuraciones → Base de datos)')
+    folder_path = Path(folder)
+    # `filename` suele venir del nombre de un caso/flujo (p. ej. «GET /api/users/2»): / y \ se tratan como
+    # separadores de carpeta tanto en Windows como en pathlib, así que sin sanear aquí se intentaría escribir
+    # en una subcarpeta que no existe (o, peor, fuera de la carpeta configurada) en vez de guardar un archivo.
+    safe_name = re.sub(r'[\\/:*?"<>|]+', '_', filename).strip() or 'evidencia'
+    stem, suffix = Path(safe_name).stem, Path(safe_name).suffix
+    target = folder_path / safe_name
+    n = 1
+    while target.exists():
+        target = folder_path / f'{stem}-{n}{suffix}'
+        n += 1
+    if isinstance(content, (bytes, bytearray)):
+        target.write_bytes(content)
+    else:
+        target.write_text(content, encoding='utf-8')
+    return target
+
+
 def evidence_path(run_id, filename):
     """Resolves an evidence file only if it lives inside the evidence directory."""
     if not UUID_RE.fullmatch(run_id or ''):

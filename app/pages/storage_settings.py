@@ -5,7 +5,7 @@ SQLite esté activo, listos para reactivar sin volver a escribirlos. El cambio s
 aplicación — nunca se aplica en caliente (ver manual, capítulo 15.4)."""
 import os
 from nicegui import run, ui
-from .. import azure_sql_backend, storage_config, storage_sync
+from .. import azure_sql_backend, core, storage_config, storage_sync
 from .common import frame, guard, confirm, confirm_with_phrase, protected_page, team_config_card
 
 SYNC_TABLE_LABELS = {'projects': 'Proyectos', 'module_groups': 'Grupos de módulos', 'modules': 'Componentes',
@@ -147,5 +147,21 @@ def storage_settings():
                 with ui.row().classes('gap-2'):
                     ui.button('Vista previa', icon='visibility', on_click=guard(do_preview)).props('outline').mark('storage-sync-preview')
                     ui.button('Sincronizar', icon='sync', on_click=guard(open_sync_dialog)).props('color=primary').mark('storage-sync-submit')
+
+        with ui.card().classes('w-full'):
+            ui.label('Carpeta de evidencia').classes('text-lg font-semibold')
+            ui.label('Configurala una sola vez acá; después, «Guardar en mi carpeta» (en el detalle de una corrida o en '
+                      '«Evidencia de la conversación» del Chat) la usa a demanda, nunca sola. También la puede usar «Hablale '
+                      'al Asistente» cuando le pidas guardar algo ahí.').classes('text-sm text-gray-500')
+            current = core.evidence_folder()
+            if current:
+                ui.label(f'Carpeta actual: {current}').classes('text-sm')
+            folder_input = ui.input('Ruta de la carpeta', value=current or '').props('outlined dense').classes('w-full').mark('evidence-folder-path')
+
+            def save_folder():
+                saved = core.set_evidence_folder(folder_input.value)
+                folder_input.set_value(saved)
+                ui.notify('Carpeta de evidencia guardada', type='positive')
+            ui.button('Guardar', icon='save', on_click=guard(save_folder)).props('outline').mark('evidence-folder-save')
 
         team_config_card()

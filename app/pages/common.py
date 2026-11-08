@@ -2,6 +2,7 @@
 import datetime as dt
 import functools
 import json
+import re
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -375,7 +376,8 @@ CONTENT_TYPES = {'html': 'text/html', 'pdf': 'application/pdf', 'md': 'text/mark
 
 
 def _evidence_stem(run_doc):
-    return (run_doc.get('case_name') or run_doc.get('suite_name') or run_doc.get('group_name') or run_doc.get('id') or 'evidencia').replace(' ', '_')
+    raw = run_doc.get('case_name') or run_doc.get('suite_name') or run_doc.get('group_name') or run_doc.get('id') or 'evidencia'
+    return re.sub(r'[\\/:*?"<>|]+', '_', raw).replace(' ', '_')
 
 
 async def render_evidence(data, kind):
@@ -399,6 +401,37 @@ async def _download_evidence(run_doc, kind, llm_verdict=None):
     content, _ = await render_evidence(data, kind)
     ui.download(content, f'{_evidence_stem(run_doc)}.{kind}')
     ui.notify('Evidencia generada', type='positive')
+
+
+def open_evidence_in_new_tab(view_id, filename):
+    """`ui.navigate.to(..., new_tab=True)` igual pasa por `Client.open`, que en el navegador real manda un mensaje
+    al cliente para que abra la pestaña — pero bajo pruebas (NiceGUI testing) `new_tab` se ignora y el harness
+    simula una navegación COMPLETA de página, que falla para una ruta como /evidence/ que no devuelve una página
+    NiceGUI sino un archivo (FileResponse). `window.open` por JS logra lo mismo en el navegador real sin pasar
+    por ese camino — fire-and-forget, no se espera respuesta, así que tampoco bloquea bajo pruebas."""
+    ui.run_javascript(f'window.open({json.dumps(f"/evidence/{view_id}/{filename}")}, "_blank")')
+
+
+async def _save_evidence_to_folder(run_doc, llm_verdict=None):
+    """Guarda el HTML de evidencia en la carpeta configurada en Configuraciones → Base de datos (siempre a
+    demanda, nunca sola al terminar una corrida) — core.save_evidence_file ya evita pisar un archivo existente."""
+    data = evidence_report.build_report_data(run_doc, llm_verdict=llm_verdict)
+    html = evidence_report.render_evidence_html(data)
+    stamp = dt.datetime.now().strftime('%Y%m%d-%H%M%S')
+    target = core.save_evidence_file(f'{_evidence_stem(run_doc)}-{stamp}.html', html)
+    ui.notify(f'Evidencia guardada en {target}', type='positive', multi_line=True)
+
+
+async def _view_evidence_in_tab(run_doc, llm_verdict=None):
+    """Escribe el HTML de evidencia en core.ARTIFACTS (servido por /evidence/) y lo abre en una pestaña nueva,
+    sin pasar por una descarga — el run_id propio del caso identifica el archivo; un run no persistido (p. ej.
+    desde el Chat) usa un id nuevo porque no hace falta que coincida con ninguna fila de 'runs'."""
+    data = evidence_report.build_report_data(run_doc, llm_verdict=llm_verdict)
+    html = evidence_report.render_evidence_html(data)
+    view_id = run_doc.get('id') or core.uid()
+    filename = f'{view_id}-view.html'
+    (core.ARTIFACTS / filename).write_text(html, encoding='utf-8')
+    open_evidence_in_new_tab(view_id, filename)
 
 
 def _send_to_ticket_dialog(run_doc, llm_verdict=None):
@@ -554,6 +587,8 @@ def show_run(run_doc):
         if run_doc.get('id'):   # no exige que esté persistida: build_report_data/_download_evidence solo leen el dict (p. ej. Chat, que nunca guarda en Historial)
             with ui.row().classes('items-center gap-2'):
                 ui.label('Descargar evidencia:').classes('text-sm text-gray-600')
+                ui.button('Ver en pestaña nueva', icon='open_in_new', on_click=guard(lambda: _view_evidence_in_tab(run_doc, V['verdict']))).props('flat dense no-caps').mark('run-view-evidence-tab')
+                ui.button('Guardar en mi carpeta', icon='folder', on_click=guard(lambda: _save_evidence_to_folder(run_doc, V['verdict']))).props('flat dense no-caps').mark('run-save-evidence-folder')
                 ui.button('HTML', icon='download', on_click=guard(lambda: _download_evidence(run_doc, 'html', V['verdict']))).props('flat dense no-caps')
                 ui.button('PDF', icon='picture_as_pdf', on_click=guard(lambda: _download_evidence(run_doc, 'pdf', V['verdict']))).props('flat dense no-caps')
                 ui.button('Word', icon='description', on_click=guard(lambda: _download_evidence(run_doc, 'docx', V['verdict']))).props('flat dense no-caps')
