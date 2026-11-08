@@ -33,12 +33,13 @@ def _clean_steps(steps):
 
 
 def new_draft():
-    return {'id': None, 'name': 'Prueba UI', 'env_id': None, 'timeout_ms': 10000, 'steps': [{'action': 'navigate', 'url': '/'}], 'updated_at': None}
+    return {'id': None, 'name': 'Prueba UI', 'env_id': None, 'timeout_ms': 10000, 'record_video': False,
+            'steps': [{'action': 'navigate', 'url': '/'}], 'updated_at': None}
 
 
 def draft_from_case(case):
     return {'id': case.get('id'), 'name': case.get('name', 'Prueba UI'), 'env_id': case.get('_env_id'), 'timeout_ms': case.get('timeout_ms', 10000),
-            'steps': _clean_steps(case.get('steps')), 'updated_at': case.get('updated_at')}
+            'record_video': bool(case.get('record_video')), 'steps': _clean_steps(case.get('steps')), 'updated_at': case.get('updated_at')}
 
 
 @protected_page('/ui-cases')
@@ -72,6 +73,7 @@ def ui_cases_page(id: str = '', name: str = '', url: str = ''):
             d.update(new_d)
             W['name_input'].set_value(d['name'])
             W['timeout_input'].set_value(d['timeout_ms'])
+            W['record_video_checkbox'].set_value(d.get('record_video', False))
             W['env_select'].set_value(d.get('env_id'))
             refresh_all()
 
@@ -281,6 +283,10 @@ def ui_cases_page(id: str = '', name: str = '', url: str = ''):
                             .on_value_change(lambda e: d.__setitem__('env_id', e.value))
                         W['timeout_input'] = ui.number('Timeout por paso (ms)', value=d['timeout_ms'], min=500, max=120000).props('outlined dense').classes('w-full') \
                             .on_value_change(lambda e: d.__setitem__('timeout_ms', e.value))
+                        W['record_video_checkbox'] = ui.checkbox('Grabar video de esta corrida', value=d.get('record_video', False)) \
+                            .on_value_change(lambda e: d.__setitem__('record_video', e.value)) \
+                            .tooltip('A demanda, no en cada corrida — queda como evidencia junto a la captura y la traza. '
+                                     'No disponible con «Navegador en vivo» ni con la sesión MCP.').mark('ui-case-record-video')
                         _creator = core.get('cases', d['id']) if d['id'] else None
                         if _creator and _creator.get('created_by'):
                             ui.label(f'Creado por: {core.user_display_name(_creator["created_by"])}').classes('text-xs text-gray-500')
@@ -293,7 +299,7 @@ def ui_cases_page(id: str = '', name: str = '', url: str = ''):
                                 raise ValueError('\n'.join(problems))
                             existing = core.get('cases', d['id']) if d['id'] else None
                             item = {'name': d['name'].strip(), 'type': 'ui', 'project_id': pid, 'timeout_ms': int(d['timeout_ms'] or 10000), 'steps': d['steps'],
-                                    'created_by': (existing or {}).get('created_by') or current_user_id()}
+                                    'record_video': bool(d.get('record_video')), 'created_by': (existing or {}).get('created_by') or current_user_id()}
                             if d['id']:
                                 item['id'] = d['id']
                             return item

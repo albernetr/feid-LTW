@@ -1,4 +1,5 @@
 """Shared layout and widgets for every page."""
+import base64
 import datetime as dt
 import functools
 import json
@@ -52,6 +53,14 @@ MINI_CSS = '''<style>
 .ltw-pane .nicegui-code{max-width:100%}
 </style>'''
 
+# Captura de pantalla y video «slideshow» del propio Chat/Espacio de trabajo (Fase D) — nunca Playwright (no hay
+# navegador de prueba del lado del servidor para esas dos pantallas, es la UI misma de LTW), así que se hace en
+# el cliente con html2canvas sobre el panel pedido. Cargado una sola vez acá, en el esqueleto compartido de
+# página — no depende de qué pantalla lo necesite. «-pro»: el html2canvas original (1.4.1) no sabe parsear
+# oklch() — el color que usa Tailwind/Quasar en esta misma pantalla — y tira la captura entera; el fork
+# mantenido lo soporta, es reemplazo directo (mismo global `html2canvas`, confirmado probando ambos en vivo).
+HTML2CANVAS_SCRIPT = '<script src="https://cdn.jsdelivr.net/npm/html2canvas-pro@2.6.3/dist/html2canvas-pro.min.js"></script>'
+
 
 def current_user():
     """El usuario logueado en ESTE navegador (app.storage.user: sesión por navegador, cifrada con
@@ -96,6 +105,7 @@ def frame(title, current, wide=False):
     wide=True is for work screens: the menu collapses to icons (expands on hover) and the content uses the whole window."""
     ui.colors(primary='#2563eb')
     ui.add_head_html(ARIA_SCRIPT)
+    ui.add_head_html(HTML2CANVAS_SCRIPT)
     ui.page_title(f'{title} · Local Test Workspace')
     drawer = ui.left_drawer(value=True, bordered=True).classes('bg-gray-50 pt-4')
     if wide:
@@ -434,6 +444,101 @@ async def _view_evidence_in_tab(run_doc, llm_verdict=None):
     open_evidence_in_new_tab(view_id, filename)
 
 
+# --------------------------------------------------------------------------- capturas y video (Fase D): Chat y
+# Espacio de trabajo no tienen un navegador de prueba propio del lado del servidor para grabar (son la UI misma
+# de LTW) — se hace del lado del CLIENTE con html2canvas sobre el panel pedido. El video es un «slideshow»
+# (fotos sucesivas sobre un <canvas> oculto, grabadas con MediaRecorder vía canvas.captureStream()) — nunca
+# getDisplayMedia, así que no pide permiso de pantalla al navegador. Limitación real, no oculta: no es un video
+# fluido, es una sucesión de capturas — se documenta así en el manual.
+
+def _run_js(client, code, timeout):
+    """`ui.run_javascript` resuelve el cliente «actual» a partir del slot activo de la tarea — si quien llama
+    viene de «Hablale al Asistente», un refresh anterior en ese mismo turno (assistant_chat_view) ya dejó ese
+    slot apuntando a un elemento borrado, y la resolución puede quedarse esperando para siempre (no es un error
+    inmediato — `await client.connected()` nunca se cumple, y el timeout no lo cubre). `client`, si se pasa, es
+    una referencia capturada ANTES de ese refresh (ver handle_assistant_message) y evita tener que resolverla
+    de nuevo acá; sin ella (botón directo, sin refresh de por medio), se resuelve como siempre."""
+    if client is not None:
+        return client.run_javascript(code, timeout=timeout)
+    return ui.run_javascript(code, timeout=timeout)
+
+
+def notify_via_client(client, message, **options):
+    """Mismo motivo que _run_js: `ui.notify` también resuelve el cliente «actual» vía context.client — con un
+    slot ya viejo, ni siquiera el AVISO DE ERROR del propio guard() se llega a mostrar (las dos resoluciones
+    fallan igual, en silencio). Replica lo mínimo de nicegui.functions.notify.notify con un cliente ya resuelto."""
+    if client is None:
+        ui.notify(message, **options)
+        return
+    arg_map = {'close_button': 'closeBtn', 'multi_line': 'multiLine'}
+    payload = {arg_map.get(k, k): v for k, v in options.items() if v is not None}
+    payload['message'] = str(message)
+    client.outbox.enqueue_message('notify', payload, client.id)
+
+
+async def capture_screenshot(selector, case_name, project_id=None, client=None):
+    """Captura el panel que matchee `selector` (CSS) con html2canvas y la guarda como una corrida suelta tipo
+    'screenshot' — show_run la muestra con _evidence(), sin pedirle veredicto (no es un Caso API/UI)."""
+    data_url = await _run_js(client,
+        'const el = document.querySelector(%s); if (!el) return null; '
+        'const canvas = await html2canvas(el); return canvas.toDataURL("image/png");' % json.dumps(selector),
+        15.0)
+    if not data_url:
+        raise ValueError('No se encontró el panel a capturar')
+    content = base64.b64decode(data_url.split(',', 1)[1])
+    run_id = core.uid()
+    (core.ARTIFACTS / f'{run_id}.png').write_bytes(content)
+    return core.save('runs', {'id': run_id, 'type': 'screenshot', 'case_name': case_name, 'project_id': project_id,
+                              'status': 'passed', 'started_at': core.now(), 'screenshot': f'{run_id}.png'})
+
+
+async def start_screen_recording(selector, client=None):
+    """Arranca el «slideshow»: una captura por segundo sobre un <canvas> oculto, grabada con MediaRecorder. El
+    estado (recorder, intervalo, canvas) queda en `window.__ltwVideo` — stop_screen_recording lo retoma más
+    tarde, en otra llamada separada a run_javascript (misma página, el estado de JS sigue vivo entre medio)."""
+    ok = await _run_js(client,
+        'const el = document.querySelector(%s); if (!el) return false; '
+        'if (window.__ltwVideo) return false; '
+        'const w = el.offsetWidth || 800, h = el.offsetHeight || 600; '
+        'const canvas = document.createElement("canvas"); canvas.width = w; canvas.height = h; '
+        'const ctx = canvas.getContext("2d"); '
+        'const stream = canvas.captureStream(2); '
+        'const recorder = new MediaRecorder(stream, {mimeType: "video/webm"}); '
+        'const chunks = []; '
+        'recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); }; '
+        'recorder.start(); '
+        'const tick = async () => { try { '
+        '  const shot = await html2canvas(el); ctx.clearRect(0, 0, w, h); ctx.drawImage(shot, 0, 0, w, h); '
+        '} catch (e) {} }; '
+        'tick(); '
+        'const interval = setInterval(tick, 1000); '
+        'window.__ltwVideo = {recorder, chunks, interval}; '
+        'return true;' % json.dumps(selector), 15.0)
+    if not ok:
+        raise ValueError('No se encontró el panel a grabar, o ya había una grabación en curso')
+
+
+async def stop_screen_recording(case_name, project_id=None, client=None):
+    """Termina el «slideshow» en curso y guarda el .webm como corrida tipo 'video' — mismo tratamiento que
+    capture_screenshot. ValueError claro si no había ninguna grabación arrancada."""
+    b64 = await _run_js(client,
+        'const state = window.__ltwVideo; if (!state) return null; '
+        'clearInterval(state.interval); '
+        'const blob = await new Promise((resolve) => { state.recorder.onstop = () => '
+        '  resolve(new Blob(state.chunks, {type: "video/webm"})); state.recorder.stop(); }); '
+        'delete window.__ltwVideo; '
+        'const buf = await blob.arrayBuffer(); const bytes = new Uint8Array(buf); '
+        'let binary = ""; for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]); '
+        'return btoa(binary);', 20.0)
+    if not b64:
+        raise ValueError('No había ninguna grabación en curso')
+    content = base64.b64decode(b64)
+    run_id = core.uid()
+    (core.ARTIFACTS / f'{run_id}.webm').write_bytes(content)
+    return core.save('runs', {'id': run_id, 'type': 'video', 'case_name': case_name, 'project_id': project_id,
+                              'status': 'passed', 'started_at': core.now(), 'video': f'{run_id}.webm'})
+
+
 def _send_to_ticket_dialog(run_doc, llm_verdict=None):
     pid = core.get_active_project_id()
     items = core.list_project_items('integrations', pid) if pid else []
@@ -521,6 +626,10 @@ def show_run(run_doc):
                     label = automation.STEP_ACTIONS.get(step['action'], {}).get('label', step['action'])
                     ui.label(f'{step["index"] + 1}. {label}')
             _evidence(run_doc)
+        elif run_doc.get('type') in ('screenshot', 'video'):
+            # Capturas/video del propio Chat o Espacio de trabajo (Fase D) — no son una corrida de Caso API/UI,
+            # así que no tienen request/aserciones/steps ni tiene sentido pedirles un veredicto: solo la media.
+            _evidence(run_doc)
         else:
             ui.label(f'HTTP {run_doc.get("http_status", "—")} · {run_doc.get("duration_ms", "—")} ms').classes('text-gray-600')
             if run_doc.get('request'):
@@ -552,10 +661,10 @@ def show_run(run_doc):
             if run_doc.get('response'):
                 with ui.expansion('Respuesta').classes('w-full'):
                     ui.code(run_doc['response'].get('body', '')[:5000], language='json').classes('w-full')
-        if run_doc.get('type') not in ('suite', 'suite_group'):
+        if run_doc.get('type') in ('api', 'ui'):
             # Veredicto con argumento (Fase 6): mismo mecanismo que ya usa Chat (llm.judge_conversation), pero
-            # sobre UN run de Caso API/UI (llm.judge_run) — no aplica a una fila de suite/grupo, que son listas
-            # de sub-runs, cada uno con su propio «Ver detalle» para pedirlo ahí.
+            # sobre UN run de Caso API/UI (llm.judge_run) — no aplica a una fila de suite/grupo (listas de
+            # sub-runs, cada uno con su propio «Ver detalle» para pedirlo ahí) ni a una captura/video sueltos.
             context_text, context_source = _resolve_run_verdict_context(run_doc)
 
             async def ask_verdict():
@@ -584,7 +693,7 @@ def show_run(run_doc):
                 if not state['ready']:
                     ui.label(state['problem']).classes('text-xs text-gray-500')
             verdict_view()
-        if run_doc.get('id'):   # no exige que esté persistida: build_report_data/_download_evidence solo leen el dict (p. ej. Chat, que nunca guarda en Historial)
+        if run_doc.get('id') and run_doc.get('type') not in ('screenshot', 'video'):   # no exige que esté persistida: build_report_data/_download_evidence solo leen el dict (p. ej. Chat, que nunca guarda en Historial)
             with ui.row().classes('items-center gap-2'):
                 ui.label('Descargar evidencia:').classes('text-sm text-gray-600')
                 ui.button('Ver en pestaña nueva', icon='open_in_new', on_click=guard(lambda: _view_evidence_in_tab(run_doc, V['verdict']))).props('flat dense no-caps').mark('run-view-evidence-tab')
@@ -600,7 +709,8 @@ def show_run(run_doc):
 
 
 def _evidence(run):
-    for key, label, icon in (('screenshot', 'Descargar captura', 'image'), ('trace', 'Descargar traza (Playwright)', 'timeline')):
+    for key, label, icon in (('screenshot', 'Descargar captura', 'image'), ('trace', 'Descargar traza (Playwright)', 'timeline'),
+                              ('video', 'Descargar video', 'videocam')):
         if run.get(key):
             def download(_, k=key):
                 try:
@@ -608,5 +718,16 @@ def _evidence(run):
                 except (ValueError, FileNotFoundError) as exc:
                     ui.notify(str(exc), type='warning')
             ui.button(label, icon=icon, on_click=download).props('flat dense')
+            if key == 'video':
+                def save_video_to_folder(_, k=key):
+                    try:
+                        content = core.evidence_path(run['id'], run[k]).read_bytes()
+                        target = core.save_evidence_file(f'{_evidence_stem(run)}.webm', content)
+                        ui.notify(f'Video guardado en {target}', type='positive', multi_line=True)
+                    except (ValueError, FileNotFoundError) as exc:
+                        ui.notify(str(exc), type='warning')
+                ui.button('Guardar video en mi carpeta', icon='folder', on_click=save_video_to_folder).props('flat dense')
     if run.get('screenshot'):
         ui.image(f'/evidence/{run["id"]}/{run["screenshot"]}').classes('w-full border')
+    if run.get('video'):
+        ui.video(f'/evidence/{run["id"]}/{run["video"]}').classes('w-full border')

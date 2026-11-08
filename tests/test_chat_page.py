@@ -1,6 +1,7 @@
 """Chat: a standalone screen to converse live with a chatbot/conversational API, one turn at a time."""
 import asyncio
 import json
+import re
 import pytest
 from app import core, automation, llm
 from app.pages.chat_page import parse_option_labels
@@ -1327,15 +1328,55 @@ async def test_assistant_chat_just_answers_a_question_without_acting(user, chat_
             user.find(marker='chat-ai-run-pause')   # ningún control de corrida: una pregunta no arranca nada
 
 
-async def test_assistant_chat_recognizes_a_capture_command_instead_of_an_instruction(user, chat_app):
+async def test_assistant_chat_recognizes_a_capture_command_and_triggers_the_real_action(user, chat_app):
     """Un mensaje con «captura» no se suma como instrucción — se reconoce por palabra clave, sin otra llamada
-    al modelo solo para clasificar."""
+    al modelo solo para clasificar — y dispara la MISMA acción que el ícono de la cámara (Fase D)."""
     project = core.create_project('Asistente comando captura')
     core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
     core.set_active_project(project['id'])
     await user.open('/chat')
+    user.javascript_rules[re.compile('.*toDataURL')] = lambda m: 'data:image/png;base64,ZmFrZS1wbmc='
     user.find(marker='chat-rail-ChatAsistente').click()
     await user.should_see(marker='chat-assistant-input', retries=30)
     user.find(marker='chat-assistant-input').type('Tomá una captura ahora')
     user.find(marker='chat-assistant-send').click()
-    await user.should_see('todavía no están disponibles', retries=30)
+    await user.should_see('Captura guardada', retries=30)
+    [run] = [r for r in core.list_items('runs') if r['type'] == 'screenshot']
+    assert core.evidence_path(run['id'], run['screenshot']).read_bytes() == b'fake-png'
+
+
+async def test_assistant_chat_recognizes_a_video_command_and_toggles_recording(user, chat_app):
+    """«Grabá un video» arranca la grabación; un segundo pedido con «video»/«grabar» la detiene y la guarda."""
+    project = core.create_project('Asistente comando video')
+    core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    core.set_active_project(project['id'])
+    await user.open('/chat')
+    user.javascript_rules[re.compile('.*captureStream')] = lambda m: True
+    user.javascript_rules[re.compile('.*arrayBuffer')] = lambda m: 'ZmFrZS13ZWJt'
+    user.find(marker='chat-rail-ChatAsistente').click()
+    await user.should_see(marker='chat-assistant-input', retries=30)
+    user.find(marker='chat-assistant-input').type('Grabá un video de esto')
+    user.find(marker='chat-assistant-send').click()
+    await user.should_see('Grabando', retries=30)
+    user.find(marker='chat-assistant-input').type('Ya está, detené el video')
+    user.find(marker='chat-assistant-send').click()
+    await user.should_see('Grabación detenida y guardada', retries=30)
+    [run] = [r for r in core.list_items('runs') if r['type'] == 'video']
+    assert core.evidence_path(run['id'], run['video']).read_bytes() == b'fake-webm'
+
+
+async def test_chat_capture_screenshot_button_saves_a_run_and_opens_its_detail(user, chat_app):
+    """El ícono de la cámara (acciones de la conversación) guarda la captura como una corrida suelta y abre su
+    detalle — igual que cualquier otra evidencia del Historial, pero sin pedirle veredicto (no es un Caso)."""
+    project = core.create_project('Captura con icono')
+    core.save('environments', {'name': 'bot', 'project_id': project['id'], 'base_url': chat_app.url, 'variables': {}, 'auth': {'type': 'none'}})
+    core.set_active_project(project['id'])
+    await user.open('/chat')
+    user.javascript_rules[re.compile('.*toDataURL')] = lambda m: 'data:image/png;base64,ZmFrZS1wbmc='
+    user.find(marker='chat-actions-toggle').click()
+    await user.should_see(marker='chat-capture-screenshot', retries=30)
+    user.find(marker='chat-capture-screenshot').click()
+    await user.should_see('Captura guardada', retries=30)
+    await user.should_see('Descargar captura', retries=30)   # el detalle (show_run) se abrió solo
+    with pytest.raises(AssertionError):
+        user.find(marker='run-ask-verdict')                  # no es un Caso API/UI: sin botón de veredicto

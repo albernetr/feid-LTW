@@ -83,7 +83,8 @@ Estado: implementado; pendientes marcados abajo
 - [x] «Hablale al Asistente»: mini-chat de verdad con el modelo (pestaña propia), siempre disponible — responde preguntas, anota instrucciones/datos/archivos para después, y puede seguir él mismo la conversación actual con el bot (un turno editable con ícono rápido, o de corrido si se lo pedís así), sin perder lo ya conversado
 - [x] Ver evidencia (de un caso o de la conversación) en una pestaña nueva del navegador, sin tener que descargarla primero
 - [x] Guardar evidencia a demanda en una carpeta propia configurada de antemano (además de la descarga ya existente)
-- [ ] Captura de pantalla y video (real en Casos UI vía Playwright; tipo slideshow en Chat/Espacio de trabajo) como evidencia adicional, también disparables por instrucción de texto desde «Hablale al Asistente» (hoy reconoce las palabras «captura»/«video» pero responde que todavía no están disponibles, sin ninguna acción real detrás)
+- [x] Video real (Playwright) en Casos UI — a demanda por caso (`record_video`, apagado por defecto), evidencia incluso en una corrida que falla
+- [x] Captura de pantalla y video tipo slideshow del propio Chat/Espacio de trabajo (html2canvas + MediaRecorder sobre un canvas oculto — nunca `getDisplayMedia`, no pide permiso de pantalla), también disparables por instrucción de texto desde «Hablale al Asistente» («captura»/«screenshot», «video»/«grabar»/«grabación» — misma acción que los íconos, no una ruta aparte). Limitación conocida, documentada en el manual: el video de Chat/Espacio de trabajo es una sucesión de fotos, no una grabación fluida
 
 ## Pendiente conocido (fuera de este alcance)
 

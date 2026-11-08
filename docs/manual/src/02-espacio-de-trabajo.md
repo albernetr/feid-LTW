@@ -34,6 +34,7 @@ Botones de la fila superior (a la derecha del nombre):
 | 📄+ **Nueva petición** | Limpia el editor. |
 | 📶 **Conectividad** | Comprueba DNS, TCP, TLS (si es https) y un GET sobre la URL; el resultado se muestra en la pestaña **Conectividad** de la respuesta. No guarda nada. |
 | ⌨ **Copiar como curl** | Copia el comando `curl` equivalente al portapapeles. |
+| 📷 **Capturar pantalla** / 🎥 **Capturar video** | Evidencia de la pantalla misma del Espacio de trabajo, como corrida suelta en el Historial — ver [13.6](#s-13-6). |
 
 > El **navegador real** (solo navegar, o navegar grabando para crear un caso UI) no está aquí: vive en **Casos UI**, porque no tiene que ver con construir una petición de API. Ver el capítulo 9.
 

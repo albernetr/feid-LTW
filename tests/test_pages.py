@@ -1,5 +1,6 @@
 """Smoke tests of every page through NiceGUI's in-process user simulation."""
 import json
+import re
 import pytest
 from nicegui.testing import User
 from app import core
@@ -920,6 +921,51 @@ async def test_show_run_can_save_evidence_to_the_configured_folder(user: User, s
     assert 'user2' in saved.read_text(encoding='utf-8')
 
 
+async def test_show_run_offers_a_video_player_and_a_save_button_when_a_run_has_one(user: User, tmp_path):
+    """Fase D: un run de Caso UI con video (automation.execute_ui, record_video=True) muestra un reproductor
+    y «Guardar video en mi carpeta», igual que ya hacen la captura y la traza."""
+    from nicegui import ui
+    project = core.create_project('Video en historial')
+    core.set_active_project(project['id'])
+    run_id = core.uid()
+    (core.ARTIFACTS / f'{run_id}.webm').write_bytes(b'fake-webm-bytes')
+    run = core.save('runs', {'id': run_id, 'type': 'ui', 'case_name': 'Con video', 'project_id': project['id'], 'status': 'passed',
+                             'started_at': core.now(), 'video': f'{run_id}.webm', 'steps': []})
+    folder = tmp_path / 'evidencia'
+    folder.mkdir()
+    core.set_evidence_folder(str(folder))
+
+    await user.open('/runs')
+    user.find(kind=ui.table).trigger('rowClick', [None, {'id': run['id']}, 0])
+    await user.should_see('Descargar video', retries=30)
+    user.find('Guardar video en mi carpeta').click()
+    await user.should_see('Video guardado en', retries=30)
+    [saved] = list(folder.glob('*.webm'))
+    assert saved.read_bytes() == b'fake-webm-bytes'
+
+
+async def test_workspace_can_capture_a_screenshot_and_record_a_slideshow_video(user: User):
+    """Fase D: los dos íconos junto a «Conectividad» capturan/graban el propio Espacio de trabajo con
+    html2canvas (no hay navegador de prueba del lado del servidor acá) — se simula la respuesta del cliente."""
+    core.create_project('Captura workspace')
+    await user.open('/workspace')
+    user.javascript_rules[re.compile('.*toDataURL')] = lambda m: 'data:image/png;base64,ZmFrZS1wbmc='
+    user.find(marker='ws-capture-screenshot').click()
+    await user.should_see('Captura guardada', retries=30)
+    [shot] = [r for r in core.list_items('runs') if r['type'] == 'screenshot']
+    assert core.evidence_path(shot['id'], shot['screenshot']).read_bytes() == b'fake-png'
+    await user.should_see('Descargar captura', retries=30)   # show_run se abrió solo
+
+    user.javascript_rules[re.compile('.*captureStream')] = lambda m: True
+    user.javascript_rules[re.compile('.*arrayBuffer')] = lambda m: 'ZmFrZS13ZWJt'
+    user.find(marker='ws-record-video').click()
+    await user.should_see('Grabando', retries=30)
+    user.find(marker='ws-record-video').click()
+    await user.should_see('Video guardado', retries=30)
+    [vid] = [r for r in core.list_items('runs') if r['type'] == 'video']
+    assert core.evidence_path(vid['id'], vid['video']).read_bytes() == b'fake-webm'
+
+
 async def test_workspace_history_reload_and_search(user: User, sample_app):
     from app import workspace as ws_logic
     d = ws_logic.new_draft()
@@ -1043,6 +1089,30 @@ async def test_ui_case_step_locator_keeps_its_iframe_selector_on_reload(user: Us
     user.find('Guardados').click()
     user.find('ui-saved-item').click()
     await user.should_see('#caja')             # el selector del iframe quedó visible en el paso recargado
+
+
+async def test_ui_case_record_video_checkbox_is_saved_and_restored(user: User):
+    """Fase D: «Grabar video de esta corrida» es un campo más del caso, apagado por defecto — viaja con el
+    resto al guardar/recargar, igual que el iframe del locator (test anterior)."""
+    project = core.create_project('Video en caso UI')
+    core.set_active_project(project['id'])
+    case = core.save('cases', {'name': 'Con video', 'type': 'ui', 'project_id': project['id'], 'timeout_ms': 10000,
+                               'steps': [{'action': 'navigate', 'url': '/login'}]})
+    await user.open('/ui-cases')
+    user.find('Guardados').click()
+    user.find('ui-saved-item').click()
+    checkbox = user.find(marker='ui-case-record-video').elements.pop()
+    assert checkbox.value is False                     # apagado por defecto
+    user.find(marker='ui-case-record-video').click()
+    user.find('Guardar').click()
+    await user.should_see('guardado')
+    assert core.get('cases', case['id'])['record_video'] is True
+
+    await user.open('/ui-cases')
+    user.find('Guardados').click()
+    user.find('ui-saved-item').click()
+    checkbox = user.find(marker='ui-case-record-video').elements.pop()
+    assert checkbox.value is True
 
 
 async def test_saved_cases_are_unified_across_both_workspaces(user: User):

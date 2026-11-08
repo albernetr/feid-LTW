@@ -2,8 +2,11 @@
 import datetime as dt
 import json
 import os
+import shutil
+import tempfile
 import threading
 import time
+from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from . import core, logs, recorder
@@ -236,6 +239,7 @@ def execute_ui(case, environment, variables=None, meta=None):
            'started_at': core.now(), 'steps': [], **(meta or {})}
     browser = None
     live_mode = False
+    video_dir = None
     try:
         steps = core.substitute(case.get('steps', []), variables, secrets_used)
         missing = core.find_unresolved(steps)
@@ -281,7 +285,15 @@ def execute_ui(case, environment, variables=None, meta=None):
                     # arrancar ya logueado — sin eso, un login detrás de SSO/MFA no se puede completar solo: la
                     # aprobación por push al teléfono no la puede scriptear ninguna herramienta.
                     session_state = core.get_ui_session(environment['id']) if environment.get('id') else None
-                    context = browser.new_context(accept_downloads=False, storage_state=session_state)
+                    # Video a demanda (Fase D): nunca en cada corrida, solo si el caso lo pide explícitamente.
+                    # Playwright escribe el .webm en una carpeta temporal propia y solo lo deja listo para leer
+                    # una vez cerrado el contexto (page.video.path(), más abajo) — se mueve de ahí a ARTIFACTS.
+                    video_dir = tempfile.mkdtemp(prefix='ltw-video-') if case.get('record_video') else None
+                    context_kwargs = {'accept_downloads': False, 'storage_state': session_state}
+                    if video_dir:
+                        context_kwargs['record_video_dir'] = video_dir
+                        context_kwargs['record_video_size'] = {'width': 1280, 'height': 720}
+                    context = browser.new_context(**context_kwargs)
                     context.tracing.start(screenshots=True, snapshots=True)
                     page = context.new_page()
                 page.set_default_timeout(int(case.get('timeout_ms', 10000)))
@@ -358,6 +370,16 @@ def execute_ui(case, environment, variables=None, meta=None):
                     else:
                         context.tracing.stop()
                     context.close()
+                    if video_dir:
+                        try:
+                            video_src = Path(page.video.path())   # recién se termina de escribir al cerrar el contexto
+                            dest = core.ARTIFACTS / f"{run['id']}.webm"
+                            if video_src.exists():
+                                shutil.move(str(video_src), str(dest))
+                                run['video'] = dest.name
+                        except Exception:
+                            pass
+                        shutil.rmtree(video_dir, ignore_errors=True)
                     browser.close()
                 browser = None
     except Exception as exc:
@@ -366,6 +388,8 @@ def execute_ui(case, environment, variables=None, meta=None):
         if browser and not live_mode:
             try: browser.close()
             except Exception: pass
+        if video_dir:
+            shutil.rmtree(video_dir, ignore_errors=True)
     run = core.scrub(run, secrets_used)
     run['finished_at'] = core.now()
     logs.event('run.finished', run_id=run['id'], case=run['case_name'], status=run['status'], type='ui')

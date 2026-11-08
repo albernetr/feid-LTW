@@ -4,7 +4,7 @@ import json
 import os
 from nicegui import app, ui, run
 from .. import core, workspace as ws, agent, llm
-from .common import frame, guard, confirm, fmt_time, protected_page, show_run
+from .common import frame, guard, confirm, fmt_time, protected_page, show_run, capture_screenshot, start_screen_recording, stop_screen_recording
 from .suites import run_suite
 from .widgets import kv_rows, assertion_rows, method_badge, status_chip
 
@@ -59,7 +59,7 @@ def build(preset_case_id=None, prefill=None):
     active_project = core.get_active_project_id()
     d = ws.new_draft()
     S = {'result': None, 'run': None, 'entry': None, 'previous': None, 'resp_tab': 'Cuerpo', 'view': 'Texto', 'conn': None, 'mine': True, 'q': '',
-         'volatile': [], 'batch_rows': [{'name': 'fila 1', 'values': {}}], 'batch': {}, 'recording': None, 'spec_text': ''}
+         'volatile': [], 'batch_rows': [{'name': 'fila 1', 'values': {}}], 'batch': {}, 'recording': None, 'spec_text': '', 'screen_recording': False}
     W = {}
     try:
         layout = app.storage.browser
@@ -333,6 +333,43 @@ def build(preset_case_id=None, prefill=None):
                 ui.button(icon='note_add', on_click=lambda: load_draft(ws.new_draft())).props('flat round dense').tooltip('Nueva petición')
                 ui.button('Conectividad', icon='network_check', on_click=guard(probe_connectivity)).props('flat dense no-caps').tooltip('Probar conectividad de esta URL (DNS/TCP/TLS/HTTP)')
                 ui.button(icon='terminal', on_click=guard(copy_curl)).props('flat round dense').tooltip('Copiar como curl')
+
+                def _show_run_if_possible(run_doc):
+                    """Mismo motivo que scroll_to_bottom() en chat_page.py: si el refresh de capture_row (justo
+                    arriba) invalidó el slot desde donde se llamó, abrir el diálogo tira RuntimeError — la
+                    captura/video ya quedó guardada igual, no vale la pena que eso tire abajo el resto."""
+                    try:
+                        show_run(run_doc)
+                    except RuntimeError:
+                        pass
+
+                async def do_capture_screenshot():
+                    run_doc = await capture_screenshot('.ltw-capture-pane', d.get('name') or 'Espacio de trabajo', core.get_active_project_id())
+                    ui.notify('Captura guardada', type='positive')
+                    _show_run_if_possible(run_doc)
+
+                async def toggle_recording():
+                    if S['screen_recording']:
+                        run_doc = await stop_screen_recording(d.get('name') or 'Espacio de trabajo', core.get_active_project_id())
+                        S['screen_recording'] = False
+                        W['capture_row'].refresh()
+                        ui.notify('Video guardado', type='positive')
+                        _show_run_if_possible(run_doc)
+                    else:
+                        await start_screen_recording('.ltw-capture-pane')
+                        S['screen_recording'] = True
+                        W['capture_row'].refresh()
+                        ui.notify('Grabando — tocá de nuevo para detener', type='info')
+
+                @ui.refreshable
+                def capture_row():
+                    ui.button(icon='photo_camera', on_click=guard(do_capture_screenshot)).props('flat round dense').mark('ws-capture-screenshot') \
+                        .tooltip('Capturar pantalla del espacio de trabajo (como evidencia)')
+                    ui.button(icon='stop_circle' if S['screen_recording'] else 'videocam', on_click=guard(toggle_recording)) \
+                        .props(f'flat round dense color={"negative" if S["screen_recording"] else ""}').mark('ws-record-video') \
+                        .tooltip('Detener grabación' if S['screen_recording'] else 'Capturar video (sucesión de fotos) del espacio de trabajo')
+                W['capture_row'] = capture_row
+                capture_row()
             with ui.row().classes('w-full items-center gap-2 no-wrap px-3'):
                 W['env'] = ui.select({'': 'URL completa', **{e['id']: f'{projects_by_id.get(e.get("project_id"), "sin proyecto")} · {e["name"]}' for e in all_envs}},
                                      label='Ambiente').props('outlined dense options-dense').classes('w-40').bind_value(d, 'env_id')
@@ -901,14 +938,14 @@ def build(preset_case_id=None, prefill=None):
                 if S['panel_hidden']:
                     # Sin panel de detalle (Params/Headers/Body/Pruebas/Variables/Lote/Guardar/Agente): la
                     # petición y la respuesta ocupan todo el ancho — útil cuando solo queres leer la respuesta.
-                    with ui.element('div').classes('ltw-pane relative').style('display:flex;flex-direction:column'):
+                    with ui.element('div').classes('ltw-pane ltw-capture-pane relative').style('display:flex;flex-direction:column'):
                         center()
                         ui.button(icon='chevron_left', on_click=toggle_panel).props('round dense flat color=primary') \
                             .classes('absolute top-2 right-2 z-10 bg-white shadow-2').tooltip('Mostrar el panel de detalle (Params, Body, Pruebas, Agente…)')
                 else:
                     with ui.splitter(value=right_w, limits=(35, 85), on_change=lambda e: layout.__setitem__('ws_right', e.value)).classes('w-full').style('height:100%') as inner:
                         with inner.before:
-                            with ui.element('div').classes('ltw-pane').style('display:flex;flex-direction:column'):
+                            with ui.element('div').classes('ltw-pane ltw-capture-pane').style('display:flex;flex-direction:column'):
                                 center()
                         with inner.after:
                             with ui.element('div').classes('ltw-pane relative').style('overflow:hidden'):

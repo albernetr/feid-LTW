@@ -226,6 +226,15 @@ La extensión elige el formato (`.html`, `.pdf`, `.md`, `.json`). Código de sal
 
 > **Qué no hace.** El resumen refleja lo que **se ejecutó**: si nadie ejecuta las pruebas (o el scheduler está detenido), el semáforo no sabe lo que pasa. Cuanto más regulares sean las ejecuciones programadas, más fiable es la tendencia.
 
+## 13.6 Capturas y video del propio Chat o Espacio de trabajo
+
+Chat y Espacio de trabajo no tienen un navegador de prueba propio del lado del servidor para grabar (son la UI misma de LTW, no un sitio que estés probando) — así que la captura se hace del lado del **navegador**, con el mismo panel que ves en pantalla. Dos íconos, siempre disponibles: en Chat, dentro de «Acciones de la conversación» (el **+**, arriba y abajo); en Espacio de trabajo, junto a «Conectividad».
+
+- 📷 **Capturar pantalla**: una foto del panel (la conversación o la petición/respuesta), guardada al toque como una corrida suelta — queda en el Historial, con su propio detalle (imagen, descargar, y «Guardar en mi carpeta» si configuraste una — ver [13.3](#s-13-3)), sin pedirle un veredicto al modelo (no es un Caso API/UI).
+- 🎥 **Capturar video**: arranca una sucesión de capturas (una por segundo) que se van grabando como un **.webm** — tocá el mismo ícono de nuevo para detener y guardarlo, con el mismo tratamiento que la captura suelta (reproductor, descargar, guardar en tu carpeta). **Limitación real, no oculta: no es un video fluido** — es una sucesión de fotos, no una grabación continua de pantalla (no se pide permiso de «compartir pantalla» al navegador: nunca hace falta, porque nunca se graba la pantalla real, solo ese panel).
+
+Las dos acciones también se pueden pedir por texto, desde **«Hablale al Asistente»** (ver [10.5](#s-10-5)): un mensaje con «captura»/«screenshot» dispara la foto; uno con «video»/«grabar»/«grabación» arranca o detiene la grabación — la MISMA acción que el ícono, no una ruta aparte.
+
 ---
 
 # 14. Importar / Exportar

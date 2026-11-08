@@ -146,6 +146,25 @@ def test_ui_case_with_real_chromium(world):
     assert 'sin resolver' in automation.execute_ui(unresolved, world['env'])['error']
 
 
+def test_ui_case_records_a_video_only_when_asked(world):
+    """Fase D: a demanda por caso (`record_video`), nunca en cada corrida — ni siquiera para un caso que falla."""
+    steps = [{'action': 'navigate', 'url': '/clientes'}, {'action': 'assert_visible', 'locator': {'by': 'role', 'role': 'heading', 'name': 'Clientes'}}]
+    plain = core.save('cases', {'name': 'sin video', 'type': 'ui', 'steps': steps})
+    assert 'video' not in automation.execute_ui(plain, world['env'])
+
+    recorded = core.save('cases', {'name': 'con video', 'type': 'ui', 'record_video': True, 'steps': steps})
+    run = automation.execute_ui(recorded, world['env'])
+    assert run['status'] == 'passed', run
+    video_path = core.evidence_path(run['id'], run['video'])
+    assert video_path.suffix == '.webm' and video_path.stat().st_size > 1000
+
+    failing = core.save('cases', {'name': 'con video falla', 'type': 'ui', 'record_video': True, 'timeout_ms': 800, 'steps': [
+        {'action': 'navigate', 'url': '/clientes'}, {'action': 'assert_visible', 'locator': {'by': 'text', 'value': 'No existe'}}]})
+    bad = automation.execute_ui(failing, world['env'])
+    assert bad['status'] == 'failed'
+    assert core.evidence_path(bad['id'], bad['video']).stat().st_size > 1000   # evidencia también en una corrida que falla
+
+
 def test_trusted_hosts_allows_navigating_to_an_additional_host(world):
     """`localhost` y `127.0.0.1` son hosts DISTINTOS para el chequeo (aunque el mismo servidor responda a los
     dos) — sirve para probar `trusted_hosts` (SSO/MFA como PingID) sin levantar un segundo dominio real."""

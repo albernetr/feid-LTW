@@ -7,9 +7,10 @@ import copy
 import datetime as dt
 import json
 from pathlib import Path
-from nicegui import ui, run
+from nicegui import ui, run, context
 from .. import core, workspace as ws, evidence_report, llm
-from .common import frame, guard, protected_page, show_run, render_evidence, read_upload, open_evidence_in_new_tab, STATUS_LABEL
+from .common import (frame, guard, protected_page, show_run, render_evidence, read_upload, open_evidence_in_new_tab,
+                     capture_screenshot, start_screen_recording, stop_screen_recording, notify_via_client, STATUS_LABEL)
 from .widgets import kv_rows, dynamic_variable_chips
 
 CONTEXT_FILE_EXTENSIONS = ('.md', '.txt', '.csv')
@@ -334,12 +335,42 @@ def build(preset_case_id=None):
     # hilo) y abajo (pegadas a la barra de envío) — antes vivían en una sola fila a mitad de pantalla, que se
     # perdía de vista apenas la conversación crecía; reportado en vivo («quiero las acciones arriba y abajo, al
     # nivel de la barra de envío»). Detrás de un «+» para no ocupar espacio cuando no se están usando.
-    ui_state = {'actions_expanded': False}
+    ui_state = {'actions_expanded': False, 'recording': False}
 
     def toggle_actions():
         ui_state['actions_expanded'] = not ui_state['actions_expanded']
         W['top_actions'].refresh()
         W['bottom_actions'].refresh()
+
+    def _show_run_if_possible(run_doc):
+        """Mismo motivo que scroll_to_bottom() (más arriba): si quien llama viene de «Hablale al Asistente», el
+        turno ya refrescó assistant_chat_view antes de llegar acá — el slot de ese momento ya no existe y abrir
+        el diálogo tira RuntimeError. No vale la pena que eso tire abajo la captura/grabación ya guardada; el
+        ícono de la cámara/video (sin ese refresh de por medio) sí la abre siempre."""
+        try:
+            show_run(run_doc)
+        except RuntimeError:
+            pass
+
+    async def do_capture_screenshot(client=None):
+        run_doc = await capture_screenshot('.ltw-capture-pane', suite_name.value or 'Chat', core.get_active_project_id(), client=client)
+        notify_via_client(client, 'Captura guardada', type='positive')
+        _show_run_if_possible(run_doc)
+
+    async def toggle_recording(client=None):
+        if ui_state['recording']:
+            run_doc = await stop_screen_recording(suite_name.value or 'Chat', core.get_active_project_id(), client=client)
+            ui_state['recording'] = False
+            W['top_actions'].refresh()
+            W['bottom_actions'].refresh()
+            notify_via_client(client, 'Video guardado', type='positive')
+            _show_run_if_possible(run_doc)
+        else:
+            await start_screen_recording('.ltw-capture-pane', client=client)
+            ui_state['recording'] = True
+            W['top_actions'].refresh()
+            W['bottom_actions'].refresh()
+            notify_via_client(client, 'Grabando — tocá de nuevo para detener', type='info')
 
     def conversation_action_buttons(suffix=''):
         ui.button(icon='playlist_add_check', on_click=guard(lambda: save_all_pending(suite_name.value))) \
@@ -354,6 +385,12 @@ def build(preset_case_id=None):
         ui.button(icon='movie', on_click=guard(lambda: replay_from_suite_dialog())) \
             .props('flat dense round size=sm color=grey-8').mark(f'chat-replay-suite{suffix}') \
             .tooltip('Retomar un Flujo guardado')
+        ui.button(icon='photo_camera', on_click=guard(do_capture_screenshot)) \
+            .props('flat dense round size=sm color=grey-8').mark(f'chat-capture-screenshot{suffix}') \
+            .tooltip('Capturar pantalla de la conversación (como evidencia)')
+        ui.button(icon='stop_circle' if ui_state['recording'] else 'videocam', on_click=guard(toggle_recording)) \
+            .props(f'flat dense round size=sm color={"negative" if ui_state["recording"] else "grey-8"}').mark(f'chat-record-video{suffix}') \
+            .tooltip('Detener grabación' if ui_state['recording'] else 'Capturar video (sucesión de fotos) de la conversación')
 
     @ui.refreshable
     def top_actions():
@@ -1345,15 +1382,30 @@ def build(preset_case_id=None):
         text = (text or '').strip()
         if not text:
             return
+        # Capturado ANTES de cualquier refresh de assistant_chat_view (unas líneas más abajo): run_javascript
+        # (dentro de do_capture_screenshot/toggle_recording) resuelve el cliente «actual» a partir del slot de
+        # la tarea, y ese refresh deja el slot original apuntando a un botón ya borrado — pasar esta referencia
+        # ya resuelta evita que la captura/grabación se quede esperando para siempre sin ningún error visible.
+        the_client = context.client
         ASSISTANT_CHAT['messages'].append({'who': 'user', 'text': text})
         assistant_chat_view.refresh()
         scroll_assistant_chat_to_bottom()
         lowered = text.lower()
         if any(k in lowered for k in CAPTURE_KEYWORDS):
-            _assistant_say('Las capturas por instrucción todavía no están disponibles acá — van en una fase siguiente.')
+            try:
+                await do_capture_screenshot(client=the_client)
+                _assistant_say('📸 Captura guardada — quedó en el Historial (y en tu carpeta, si configuraste una).')
+            except ValueError as exc:
+                _assistant_say(f'No pude tomar la captura: {exc}')
             return
         if any(k in lowered for k in VIDEO_KEYWORDS):
-            _assistant_say('Grabar video por instrucción todavía no está disponible acá — va en una fase siguiente.')
+            was_recording = ui_state['recording']
+            try:
+                await toggle_recording(client=the_client)
+                _assistant_say('🎬 Grabación detenida y guardada.' if was_recording else
+                               '🎬 Grabando — decime «detené el video» (o tocá el botón) cuando termines.')
+            except ValueError as exc:
+                _assistant_say(f'No pude grabar: {exc}')
             return
         state = llm.status()
         if not state['ready']:
@@ -1587,7 +1639,7 @@ def build(preset_case_id=None):
             with outer.after:
                 with ui.splitter(value=72, limits=(35, 90)).classes('w-full').style('height:100%') as inner:
                     with inner.before:
-                        with ui.element('div').classes('ltw-pane').style('display:flex;flex-direction:column'):
+                        with ui.element('div').classes('ltw-pane ltw-capture-pane').style('display:flex;flex-direction:column'):
                             suite_name, box = center_panel()
                     with inner.after:
                         with ui.element('div').classes('ltw-pane'):
