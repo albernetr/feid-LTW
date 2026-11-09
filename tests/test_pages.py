@@ -1431,3 +1431,81 @@ async def test_spec_assistant_refine_keyword_updates_the_open_form(user: User):
         await user.should_see('Refiné el caso de prueba', retries=30)
         await user.should_see('sesión iniciada con saldo suficiente')
         assert core.get('test_case_specs', spec['id'])['preconditions'] == 'sesión iniciada'   # no se guardó solo
+
+
+# --------------------------------------------------------------------------- Importar texto/archivo/imagen/URL (Fase 3)
+
+async def test_story_import_from_pasted_text_previews_then_confirms(user: User):
+    from app import llm
+    from sample_app.fake_llm import FakeLLM
+    project = core.create_project('Importar texto')
+    core.set_active_project(project['id'])
+    with FakeLLM() as fake:
+        llm.save_config({'preset': 'local', 'protocol': 'openai', 'base_url': fake.url + '/v1', 'model': 'modelo-demo', 'auth': 'none'})
+        fake.queue(json.dumps({'story': {'title': 'Pagar con tarjeta', 'as_a': 'cliente', 'i_want': 'pagar', 'so_that': 'comprar',
+                                        'criteria': ['veo confirmación']},
+                              'test_cases': [{'title': 'Pago válido', 'preconditions': '', 'steps': [], 'priority': 'high', 'type': 'functional'}]}))
+        await user.open('/stories')
+        user.find(marker='stories-import').click()
+        await user.should_see(marker='story-import-text', retries=30)
+        user.find(marker='story-import-text').type('El cliente debe poder pagar con tarjeta de crédito.')
+        user.find(marker='story-import-generate').click()
+        await user.should_see('Vista previa', retries=30)
+        await user.should_see('Pagar con tarjeta')
+        assert core.list_items('user_stories') == []   # todavía no se guardó nada
+        user.find(marker='story-import-confirm').click()
+        await user.should_see('Importado: 1 historia + 1 caso(s) de prueba', retries=30)
+        [story] = core.list_items('user_stories')
+        assert story['source'] == 'import' and story['criteria'][0]['text'] == 'veo confirmación'
+        [spec] = core.list_items('test_case_specs')
+        assert spec['source'] == 'import' and spec['story_id'] == story['id']
+
+
+async def test_story_import_fetches_text_from_a_url_into_the_textarea(user: User):
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from threading import Thread
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write('Como cliente quiero recuperar mi contraseña.'.encode('utf-8'))
+        def log_message(self, *args):
+            pass
+    server = HTTPServer(('127.0.0.1', 0), Handler)
+    Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        project = core.create_project('Importar URL')
+        core.set_active_project(project['id'])
+        await user.open('/stories')
+        user.find(marker='stories-import').click()
+        await user.should_see(marker='story-import-url', retries=30)
+        user.find(marker='story-import-url').type(f'http://127.0.0.1:{server.server_port}/')
+        user.find(marker='story-import-fetch-url').click()
+        await eventually(lambda: user.find(marker='story-import-text').elements.pop().value == 'Como cliente quiero recuperar mi contraseña.')
+    finally:
+        server.shutdown(); server.server_close()
+
+
+async def test_story_import_from_an_image_sends_it_as_a_vision_attachment(user: User):
+    import base64
+    from nicegui.elements.upload_files import SmallFileUpload
+    from app import llm
+    from sample_app.fake_llm import FakeLLM
+    project = core.create_project('Importar imagen')
+    core.set_active_project(project['id'])
+    with FakeLLM() as fake:
+        llm.save_config({'preset': 'local', 'protocol': 'openai', 'base_url': fake.url + '/v1', 'model': 'modelo-demo', 'auth': 'none'})
+        fake.queue(json.dumps({'story': {'title': 'Desde imagen', 'criteria': []}, 'test_cases': []}))
+        await user.open('/stories')
+        user.find(marker='stories-import').click()
+        await user.should_see(marker='story-import-image', retries=30)
+        upload = user.find(marker='story-import-image').elements.pop()
+        await upload.handle_uploads([SmallFileUpload(name='diagrama.png', content_type='image/png', _data=b'fake-png-bytes')])
+        await user.should_see('Imagen cargada', retries=30)
+        user.find(marker='story-import-generate').click()
+        await user.should_see('Vista previa', retries=30)
+        sent = fake.requests[-1]['body']['messages'][-1]['content']
+        image_block = next(b for b in sent if b['type'] != 'text')
+        assert base64.b64encode(b'fake-png-bytes').decode('ascii') in image_block['image_url']['url']

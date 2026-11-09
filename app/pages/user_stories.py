@@ -1,14 +1,112 @@
+import base64
+from pathlib import Path
 from nicegui import ui, run
 from .. import core, llm
-from .common import frame, guard, confirm, empty_state, require_project, fmt_time, status_badge, protected_page
+from .common import frame, guard, confirm, empty_state, require_project, fmt_time, status_badge, read_upload, protected_page
 
 STATUS_LABELS = {'draft': 'Borrador', 'ready': 'Lista', 'done': 'Terminada'}
 STORY_STATUSES = ('draft', 'ready', 'done')
+IMPORT_TEXT_EXTENSIONS = ('.md', '.txt', '.csv', '.json')
 
 # Hilos del Asistente de IA embebido, uno por historia (o 'new' para el borrador sin guardar todavía) — en
 # memoria, nunca persistido, mismo espíritu que ASSISTANT_CHAT de chat_page.py pero separado por registro: acá
 # se navega de una historia a otra todo el tiempo, y un solo hilo global mostraría la charla equivocada.
 ASSISTANT_THREADS = {}
+
+
+def _open_import_dialog(pid):
+    """Texto pegado, un archivo (.md/.txt/.csv/.json) o una imagen, y/o una URL — se combinan en una sola fuente
+    para generate_from_source(); el resultado (HU + Casos de prueba candidatos) se revisa acá mismo antes de
+    confirmar. Nada se guarda hasta «Confirmar importación» — mismo espíritu que portable.py (preview primero)."""
+    source = {'image_b64': None, 'image_media_type': None, 'image_name': None}
+    bundle = {'result': None}
+
+    with ui.dialog() as dialog, ui.card().classes('w-full').style('max-width:640px'):
+        ui.label('Importar desde texto, archivo, imagen o URL').classes('text-lg font-semibold')
+        ui.label('Arma un borrador de Historia de usuario + Casos de prueba — lo revisás acá antes de que se guarde algo.').classes('text-sm text-gray-500')
+
+        text_area = ui.textarea('Texto fuente (pegalo, o cargalo con el archivo/URL de abajo)').props('outlined autogrow').classes('w-full').mark('story-import-text')
+
+        async def on_text_file(event):
+            # Nunca guard(): on_upload necesita el evento, y guard() jamás lo reenvía (su (*args, **kwargs)
+            # hace que NiceGUI crea que no espera argumentos) — mismo try/except que ya usa chat_page.py
+            # para su propio subidor de contexto.
+            try:
+                ext = Path(event.file.name).suffix.lower()
+                if ext not in IMPORT_TEXT_EXTENSIONS:
+                    raise ValueError(f'Extensión no soportada «{ext or event.file.name}» — usa .md, .txt, .csv o .json')
+                raw = await read_upload(event)
+                try:
+                    text_area.set_value(raw.decode('utf-8'))
+                except UnicodeDecodeError as exc:
+                    raise ValueError(f'No se pudo leer «{event.file.name}» como texto (¿no es UTF-8?)') from exc
+            except Exception as exc:
+                ui.notify(str(exc) or type(exc).__name__, type='negative', multi_line=True)
+        ui.upload(label='Archivo de texto (.md/.txt/.csv/.json)', on_upload=on_text_file, auto_upload=True) \
+            .props('flat bordered accept=".md,.txt,.csv,.json"').classes('w-full')
+
+        image_label = ui.label('').classes('text-xs text-gray-500')
+
+        async def on_image(event):
+            try:
+                raw = await read_upload(event)
+                source['image_b64'] = base64.b64encode(raw).decode('ascii')
+                source['image_media_type'] = event.file.content_type or 'image/png'
+                source['image_name'] = event.file.name
+                image_label.set_text(f'Imagen cargada: {event.file.name}')
+            except Exception as exc:
+                ui.notify(str(exc) or type(exc).__name__, type='negative', multi_line=True)
+        ui.upload(label='O una imagen (captura, diagrama, HU escrita a mano)', on_upload=on_image, auto_upload=True) \
+            .props('flat bordered accept="image/*"').classes('w-full').mark('story-import-image')
+
+        with ui.row().classes('w-full gap-2 items-center'):
+            url_input = ui.input('O una URL').props('outlined dense').classes('grow').mark('story-import-url')
+
+            async def fetch_url():
+                text = await run.io_bound(core.fetch_url_text, url_input.value)
+                text_area.set_value(text)
+                ui.notify('Texto traído de la URL', type='positive')
+            ui.button('Traer texto', on_click=guard(fetch_url)).props('outline dense').mark('story-import-fetch-url')
+
+        preview_box = ui.column().classes('w-full gap-2')
+
+        @ui.refreshable
+        def preview_view():
+            if not bundle['result']:
+                return
+            story, cases = bundle['result']['story'], bundle['result']['test_cases']
+            with ui.card().classes('w-full bg-blue-50').props('flat'):
+                ui.label('Vista previa').classes('font-semibold')
+                ui.label(f'Historia: {story["title"]}').classes('text-sm font-medium')
+                for c in story['criteria']:
+                    ui.label(f'• {c["text"]}').classes('text-xs text-gray-600 ml-3')
+                if cases:
+                    ui.label(f'{len(cases)} caso(s) de prueba:').classes('text-sm font-medium mt-2')
+                    for tc in cases:
+                        ui.label(f'• {tc["title"]}').classes('text-xs text-gray-600 ml-3')
+
+                def confirm_import():
+                    saved_story = core.create_user_story(story['title'], pid, story['as_a'], story['i_want'], story['so_that'],
+                                                          None, 'medium', story['criteria'], source='import')
+                    for tc in cases:
+                        core.create_test_case_spec(tc['title'], pid, story_id=saved_story['id'], preconditions=tc['preconditions'],
+                                                   steps=tc['steps'], priority=tc['priority'], type=tc['type'], source='import')
+                    dialog.close()
+                    ui.notify(f'Importado: 1 historia + {len(cases)} caso(s) de prueba', type='positive')
+                    ui.navigate.to(f'/stories/edit?id={saved_story["id"]}')
+                ui.button('Confirmar importación', icon='check', on_click=guard(confirm_import)).props('color=primary').mark('story-import-confirm')
+        preview_view()
+
+        async def generate():
+            result = await run.io_bound(llm.generate_from_source, text_area.value, source['image_b64'], source['image_media_type'] or 'image/png')
+            if not result['valid']:
+                raise ValueError('; '.join(result['errors']) or 'El modelo no devolvió una propuesta válida')
+            bundle['result'] = result
+            preview_view.refresh()
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Cancelar', on_click=dialog.close).props('flat')
+            ui.button('Generar propuesta', icon='auto_awesome', on_click=guard(generate)).props('color=primary').mark('story-import-generate')
+    dialog.open()
 
 
 @protected_page('/stories')
@@ -18,7 +116,9 @@ def stories_list():
             return
         pid = core.get_active_project_id()
         ui.label('Lo que se quiere lograr y por qué, antes de escribir ningún caso de prueba. Cada una puede ligarse a una Funcionalidad.').classes('text-sm text-gray-500')
-        ui.button('Nueva historia', icon='add', on_click=lambda: ui.navigate.to('/stories/edit')).props('color=primary')
+        with ui.row().classes('gap-2'):
+            ui.button('Nueva historia', icon='add', on_click=lambda: ui.navigate.to('/stories/edit')).props('color=primary')
+            ui.button('Importar', icon='upload_file', on_click=lambda: _open_import_dialog(pid)).props('outline color=primary').mark('stories-import')
 
         items = core.list_project_items('user_stories', pid)
         if not items:

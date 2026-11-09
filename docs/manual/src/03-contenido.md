@@ -168,6 +168,10 @@ Tanto el editor de una Historia (`/stories/edit`) como el de un Caso de prueba (
 
 En el detalle de una Historia ya guardada, la sección **Matriz de pruebas** lista sus Casos de prueba con, si alguno ya está ligado a un Caso API/UI automatizado, el estado de su última corrida (Pasó/Falló/…) — para los que no, su propio estado (Borrador/Listo). Un resumen («N/M automatizados pasan») muestra de un vistazo cuánto de lo automatizado está en verde.
 
+### Importar desde texto, archivo, imagen o URL
+
+El botón **Importar** (`/stories`) arma un borrador de Historia de usuario + Casos de prueba a partir de una fuente — pegá texto, subí un archivo (`.md`/`.txt`/`.csv`/`.json`), subí una **imagen** (una captura, un diagrama, una Historia escrita a mano o en pizarra — necesita un modelo con visión), o pegá una **URL** («Traer texto» descarga la página y limpia el HTML a texto legible). Las distintas fuentes se combinan en el mismo cuadro de texto antes de generar. **Generar propuesta** arma la Historia completa y sus Casos de prueba candidatos en un solo paso — se ven en una vista previa, igual que en Importar/Exportar: nada se guarda hasta **Confirmar importación**.
+
 ---
 
 # 8. Casos API

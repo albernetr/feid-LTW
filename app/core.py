@@ -1518,6 +1518,54 @@ def import_openapi_url(url, project_id=None, client=None):
     return import_openapi(fetched['raw'], project_id, source_url=fetched['source_url'])
 
 
+MAX_URL_TEXT_BYTES = 2_000_000
+
+
+def _html_to_text(html):
+    """Liviano a propósito: saca <script>/<style>, tags y entidades comunes, colapsa espacios — alcanza para
+    darle al modelo texto legible de una página, no reemplaza un parser HTML completo."""
+    html = re.sub(r'<(script|style)\b[^>]*>.*?</\1>', ' ', html, flags=re.I | re.S)
+    html = re.sub(r'<[^>]+>', ' ', html)
+    for entity, char in (('&nbsp;', ' '), ('&amp;', '&'), ('&lt;', '<'), ('&gt;', '>'), ('&quot;', '"'), ('&#39;', "'")):
+        html = html.replace(entity, char)
+    return re.sub(r'\s+', ' ', html).strip()
+
+
+def fetch_url_text(url, client=None):
+    """Trae el texto visible de UNA URL cualquiera (HTML limpiado de tags, o el cuerpo tal cual si ya es texto
+    plano/markdown) — para «importar desde una URL» en Especificación. Mismo cliente y mismo espíritu de límites
+    que fetch_openapi, pero sin su búsqueda de contrato: una sola petición, a la URL dada tal cual."""
+    url = (url or '').strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+        raise ValueError('URL inválida: debe empezar por http:// o https://')
+    own = client is None
+    client = client or _httpx_client(timeout=20, follow_redirects=True, trust_env=False,
+                                     headers={'User-Agent': 'local-test-workspace', 'Accept': 'text/html,text/plain,text/markdown;q=0.9,*/*;q=0.5'})
+    try:
+        try:
+            with client.stream('GET', url) as response:
+                if response.status_code >= 400:
+                    raise ValueError(f'La URL respondió HTTP {response.status_code}')
+                content_type = response.headers.get('content-type', '')
+                body = b''
+                for chunk in response.iter_bytes():
+                    body += chunk
+                    if len(body) > MAX_URL_TEXT_BYTES:
+                        raise ValueError(f'La página supera el límite de {MAX_URL_TEXT_BYTES // 1_000_000} MB.')
+                text = body.decode('utf-8', 'replace')
+        except httpx.HTTPError as exc:
+            raise ValueError(f'No se pudo traer la URL: {exc}') from exc
+    finally:
+        if own:
+            client.close()
+    if 'html' in content_type or text.lstrip().startswith('<'):
+        text = _html_to_text(text)
+    if not text.strip():
+        raise ValueError('La URL no devolvió texto para importar.')
+    return text.strip()
+
+
 def contract_tags(raw):
     """Las etiquetas distintas que un contrato declara en sus operaciones, para poder elegir cuáles importar
     antes de guardar nada (p. ej. un contrato con 500 operaciones del que solo interesan 10)."""

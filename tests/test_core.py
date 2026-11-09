@@ -74,6 +74,51 @@ def test_openapi_rejects_too_deep_ref_chain():
         core.parse_openapi(raw)
 
 
+def _text_server(body, content_type, status=200):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(status)
+            self.send_header('Content-Type', content_type)
+            self.end_headers()
+            self.wfile.write(body.encode('utf-8'))
+        def log_message(self, *args):
+            pass
+    server = HTTPServer(('127.0.0.1', 0), Handler)
+    Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_fetch_url_text_strips_html_tags_and_scripts():
+    server = _text_server('<html><head><script>var x=1;</script></head><body><h1>Pagar con tarjeta</h1>'
+                          '<p>Como cliente quiero pagar &amp; completar la compra.</p></body></html>', 'text/html; charset=utf-8')
+    try:
+        text = core.fetch_url_text(f'http://127.0.0.1:{server.server_port}/')
+        assert 'Pagar con tarjeta' in text and 'Como cliente quiero pagar & completar la compra.' in text
+        assert '<h1>' not in text and 'var x=1' not in text
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def test_fetch_url_text_returns_plain_text_as_is():
+    server = _text_server('# Historia\n\nComo cliente quiero pagar.', 'text/markdown; charset=utf-8')
+    try:
+        text = core.fetch_url_text(f'http://127.0.0.1:{server.server_port}/doc.md')
+        assert text == '# Historia\n\nComo cliente quiero pagar.'
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def test_fetch_url_text_rejects_an_invalid_url_or_an_error_response():
+    with pytest.raises(ValueError, match='URL inválida'):
+        core.fetch_url_text('not-a-url')
+    server = _text_server('not found', 'text/plain', status=404)
+    try:
+        with pytest.raises(ValueError, match='HTTP 404'):
+            core.fetch_url_text(f'http://127.0.0.1:{server.server_port}/missing')
+    finally:
+        server.shutdown(); server.server_close()
+
+
 def test_ensure_environment_for_module_creates_then_reuses():
     project = core.create_project('P')
     raw = 'openapi: 3.0.3\ninfo: {title: X, version: "1"}\nservers: [{url: https://api.example.com/v1}]\npaths: {}\n'

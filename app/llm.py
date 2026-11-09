@@ -178,11 +178,21 @@ def _headers(config, key):
     return headers
 
 
-def _payload(config, system, user, max_tokens):
+def _payload(config, system, user, max_tokens, image_b64=None, image_media_type='image/png'):
+    """Con `image_b64`, el mensaje del usuario pasa de texto plano a un array de bloques (texto + imagen) — ambos
+    protocolos ya soportan esta forma en su API de chat, solo cambia el nombre del bloque de imagen."""
+    user_content = user
+    if image_b64:
+        if config['protocol'] == 'anthropic':
+            user_content = [{'type': 'text', 'text': user},
+                            {'type': 'image', 'source': {'type': 'base64', 'media_type': image_media_type, 'data': image_b64}}]
+        else:
+            user_content = [{'type': 'text', 'text': user},
+                            {'type': 'image_url', 'image_url': {'url': f'data:{image_media_type};base64,{image_b64}'}}]
     if config['protocol'] == 'anthropic':
-        return {'model': config['model'], 'max_tokens': max_tokens, 'system': system, 'messages': [{'role': 'user', 'content': user}]}
+        return {'model': config['model'], 'max_tokens': max_tokens, 'system': system, 'messages': [{'role': 'user', 'content': user_content}]}
     return {'model': config['model'], 'max_tokens': max_tokens, 'temperature': 0.2, 'stream': False,
-            'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]}
+            'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user_content}]}
 
 
 def _text_of(config, data):
@@ -217,10 +227,11 @@ def _explain_http_error(response, config):
     return f'El servicio respondió HTTP {code}. {detail}'
 
 
-def ask(system, user, config=None, max_tokens=MAX_OUTPUT_TOKENS, check=True, key_override=None):
+def ask(system, user, config=None, max_tokens=MAX_OUTPUT_TOKENS, check=True, key_override=None, image_b64=None, image_media_type='image/png'):
     """One round trip to the configured model. check=False skips the cloud gate (only for the harmless connection test).
     key_override: use this key instead of the one stored for the active connection — for testing a registered model's
-    own key before (or without) activating it."""
+    own key before (or without) activating it. image_b64: an optional image attachment (base64, no data: prefix) —
+    needs a vision-capable model; neither protocol needs a different endpoint for it, just a richer message."""
     config = config or get_config()
     state = status(config)
     if check and not state['ready']:
@@ -229,7 +240,7 @@ def ask(system, user, config=None, max_tokens=MAX_OUTPUT_TOKENS, check=True, key
         raise LLMError(state['problem'])
     key = key_override if key_override is not None else (core.secret_get(KEY_SECRET) if config['auth'] != 'none' else None)
     headers = _headers(config, key)
-    payload = _payload(config, system, user, max_tokens)
+    payload = _payload(config, system, user, max_tokens, image_b64, image_media_type)
     try:
         response = httpx.post(_endpoint(config), headers=headers, json=payload, timeout=config['timeout'])
         for _ in range(3):  # newer OpenAI-family (reasoning) models reject params older ones accept, and can spend the
@@ -833,3 +844,63 @@ def spec_chat_reply(history, text, context=None, config=None):
         raise LLMError('Escribí algo para el Asistente.')
     system, user = spec_chat_messages(history, text, context)
     return ask(system, user, config)
+
+
+# --------------------------------------------------------------------------- importar: texto y/o imagen -> HU +
+# Casos de prueba, en un solo round-trip (Fase 3). `image_b64` nunca pasa por redact()/_clip() (no es texto) —
+# va aparte, directo a ask().
+
+GENERATE_FROM_SOURCE_SYSTEM = (
+    'Eres un analista de QA/negocio. Te paso una fuente — texto y/o una imagen (una captura de pantalla, un '
+    'diagrama, una Historia de Usuario escrita a mano o en su propio formato, una página pegada, etc.) — con '
+    'información de un requerimiento, y extraés de ahí una Historia de Usuario completa y sus Casos de prueba. '
+    'Responde SOLO con un objeto JSON válido, sin texto antes ni después: {"story": {"title": "...", '
+    '"as_a": "...", "i_want": "...", "so_that": "...", "criteria": ["...", "..."]}, "test_cases": '
+    '[{"title": "...", "preconditions": "...", "steps": [{"action": "...", "expected": "..."}], '
+    '"priority": "low"|"medium"|"high"|"critical", "type": "functional"|"regression"|"smoke"|"exploratory"}]}. '
+    'Interpretá la fuente tal cual es — no inventes requerimientos que no estén ahí; si ya es una Historia de '
+    'Usuario en su propio formato, respetá su contenido real, solo reordenalo a esta forma. Generá entre 1 y 6 '
+    'Casos de prueba razonables (puede ser una lista vacía si la fuente no da para ninguno). Responde en español.')
+
+
+def generate_from_source_messages(text=None, has_image=False):
+    parts = []
+    if (text or '').strip():
+        parts.append(f'Texto fuente:\n{text.strip()}')
+    if has_image:
+        parts.append('Hay una imagen adjunta con información relevante (una captura, un diagrama, una Historia '
+                     'escrita a mano, etc.) — analizala como parte de la fuente.')
+    if not parts:
+        raise LLMError('Pasá un texto, una imagen, o ambos.')
+    return GENERATE_FROM_SOURCE_SYSTEM, redact(_clip('\n\n'.join(parts)))
+
+
+def _validate_source_bundle(data):
+    if not isinstance(data, dict) or not isinstance(data.get('story'), dict):
+        return ['Falta "story"']
+    errors = _validate_story_draft(data['story'])
+    if 'test_cases' in data and not isinstance(data['test_cases'], list):
+        errors.append('"test_cases" debe ser una lista')
+    return errors
+
+
+def generate_from_source(text=None, image_b64=None, image_media_type='image/png', config=None, attempts=2):
+    """{'story': {...}|None, 'test_cases': [...], 'valid': bool, 'errors': [...], 'raw': str, 'attempts': int}.
+    Necesita un modelo con visión si se pasa `image_b64` — si el modelo configurado no la soporta, el servicio
+    responde con un error HTTP que ask() ya convierte en LLMError con su propio mensaje."""
+    system, user = generate_from_source_messages(text, bool(image_b64))
+    raw, errors, story, cases = '', [], None, []
+    for attempt in range(1, attempts + 1):
+        raw = ask(system, user, config, image_b64=image_b64, image_media_type=image_media_type)
+        try:
+            data = _extract_json(raw)
+            errors = _validate_source_bundle(data)
+            if not errors:
+                story = _clean_story_draft(data['story'])
+                cases = [_clean_test_case_draft(tc) for tc in (data.get('test_cases') or []) if isinstance(tc, dict)]
+        except ValueError as exc:
+            errors = [f'JSON no válido: {exc}']
+        if not errors:
+            return {'story': story, 'test_cases': cases, 'valid': True, 'errors': [], 'raw': raw, 'attempts': attempt}
+        user = _retry_prompt(user, errors)
+    return {'story': None, 'test_cases': [], 'valid': False, 'errors': errors, 'raw': raw, 'attempts': attempts}

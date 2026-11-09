@@ -403,3 +403,48 @@ def test_spec_chat_reply_is_plain_text_and_carries_context(fake):
     assert 'Pagar' in sent
     with pytest.raises(llm.LLMError):
         llm.spec_chat_reply([], '   ')
+
+
+# --------------------------------------------------------------------------- importar: texto y/o imagen (Fase 3)
+
+def test_generate_from_source_requires_text_or_image(fake):
+    configure(fake)
+    with pytest.raises(llm.LLMError, match='texto, una imagen'):
+        llm.generate_from_source()
+
+
+def test_generate_from_source_from_text_only_builds_a_plain_string_message(fake):
+    configure(fake)
+    fake.queue(json.dumps({'story': {'title': 'Pagar', 'criteria': ['veo confirmación']}, 'test_cases': [{'title': 'Caso 1'}]}))
+    result = llm.generate_from_source(text='El cliente debe poder pagar con tarjeta.')
+    assert result['valid'] and result['story']['title'] == 'Pagar' and len(result['test_cases']) == 1
+    sent = fake.requests[-1]['body']['messages'][-1]['content']
+    assert isinstance(sent, str) and 'pagar con tarjeta' in sent   # sin imagen: el contenido sigue siendo texto plano
+
+
+def test_generate_from_source_with_an_image_sends_a_vision_content_block(fake):
+    configure(fake)
+    fake.queue(json.dumps({'story': {'title': 'Pagar'}, 'test_cases': []}))
+    image_b64 = 'ZmFrZS1wbmc='   # 'fake-png' en base64, el contenido real no importa para este test
+    result = llm.generate_from_source(image_b64=image_b64)
+    assert result['valid'] and result['story']['title'] == 'Pagar' and result['test_cases'] == []
+    sent = fake.requests[-1]['body']['messages'][-1]['content']
+    assert isinstance(sent, list)
+    image_block = next(b for b in sent if b['type'] != 'text')
+    assert image_block['type'] == 'image_url' and image_b64 in image_block['image_url']['url']   # protocolo openai por default
+
+
+def test_generate_from_source_with_an_image_uses_the_anthropic_block_shape(fake):
+    configure(fake, protocol='anthropic', auth='none')
+    fake.queue(json.dumps({'story': {'title': 'Pagar'}, 'test_cases': []}))
+    llm.generate_from_source(text='algo', image_b64='ZmFrZS1wbmc=', image_media_type='image/jpeg')
+    sent = fake.requests[-1]['body']['messages'][-1]['content']
+    image_block = next(b for b in sent if b['type'] != 'text')
+    assert image_block == {'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/jpeg', 'data': 'ZmFrZS1wbmc='}}
+
+
+def test_generate_from_source_rejects_a_bundle_without_a_valid_story(fake):
+    configure(fake)
+    fake.queue('no es json', json.dumps({'story': {}}))
+    result = llm.generate_from_source(text='algo')
+    assert not result['valid'] and result['attempts'] == 2
