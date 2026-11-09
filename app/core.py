@@ -16,6 +16,7 @@ import socket
 import sqlite3
 import ssl
 import sys
+import threading
 import time
 import uuid
 import zipfile
@@ -58,7 +59,8 @@ ARTIFACTS = ROOT / 'evidence'
 SECRET_SERVICE = 'local-test-workspace'
 SENSITIVE_HEADERS = ('authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization')
 SENSITIVE_NAME = re.compile(r'token|password|passwd|secret|key|authorization|cookie', re.I)
-TABLES = ('projects', 'module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'datasets', 'suite_groups', 'integrations')
+TABLES = ('projects', 'module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'datasets', 'suite_groups', 'integrations',
+          'user_stories', 'test_case_specs', 'spec_templates')
 ALL_TABLES = TABLES + ('settings', 'runs', 'taps', 'interfaces', 'lab_history', 'llm_profiles', 'sequences', 'users', 'exploration_trees')
 UUID_RE = re.compile(r'^[0-9a-fA-F-]{8,64}$')
 
@@ -120,16 +122,33 @@ def _open(**kwargs):
         con.close()
 
 
+_SEEDED_TEMPLATES_FOR = set()   # str(DB), or 'azure' — which backends already got their default spec_templates this process
+_seed_lock = threading.Lock()
+
+
 def initialize():
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     if azure_sql_backend.enabled():
         azure_sql_backend.initialize(ALL_TABLES)
-        return
-    ROOT.mkdir(parents=True, exist_ok=True)
-    with _open() as con:
-        con.execute('PRAGMA journal_mode=' + ('DELETE' if on_network_drive(DB) else 'WAL'))
-        for table in ALL_TABLES:
-            con.execute(f'CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
+        key = 'azure'
+    else:
+        ROOT.mkdir(parents=True, exist_ok=True)
+        with _open() as con:
+            con.execute('PRAGMA journal_mode=' + ('DELETE' if on_network_drive(DB) else 'WAL'))
+            for table in ALL_TABLES:
+                con.execute(f'CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
+        key = str(DB)
+    # initialize() runs at the top of EVERY list_items/get/save/delete call — seed_default_spec_templates()
+    # itself goes through those same calls, so re-checking "are the defaults there" on every single one of them
+    # would mean an extra query per operation, forever. This cache (keyed by backend/DB, since tests swap DB
+    # paths via monkeypatch) makes the check — and the reentrant initialize() calls from inside the seed
+    # itself — a no-op after the first time for that database. reset_workspace() clears the sqlite key since
+    # it deletes and recreates the file.
+    if key not in _SEEDED_TEMPLATES_FOR:
+        with _seed_lock:
+            if key not in _SEEDED_TEMPLATES_FOR:
+                _SEEDED_TEMPLATES_FOR.add(key)
+                seed_default_spec_templates()
 
 
 def reset_workspace(remove_evidence=True):
@@ -149,6 +168,7 @@ def reset_workspace(remove_evidence=True):
                     'cualquier otra ventana o proceso de la aplicación, y vuelve a intentar.') from exc
     if remove_evidence and ARTIFACTS.exists():
         shutil.rmtree(ARTIFACTS, ignore_errors=True)
+    _SEEDED_TEMPLATES_FOR.discard(str(DB))   # the file is gone — the fresh one needs the defaults seeded again
     initialize()
 
 
@@ -299,6 +319,9 @@ def create_project(name, description=''):
     project = save('projects', {'name': name, 'description': description.strip(), 'version': 1})
     if get_active_project_id() is None:
         set_active_project(project['id'])
+    for template in list_items('spec_templates'):
+        if template.get('project_id') is None and template.get('is_builtin'):
+            adopt_template(template['id'], project['id'])
     return project
 
 
@@ -320,19 +343,23 @@ def project_stats(project_id):
         raise ValueError('Proyecto inexistente')
     return {
         table: sum(item.get('project_id') == project_id for item in list_items(table))
-        for table in ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps', 'datasets', 'suite_groups', 'integrations')
+        for table in ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps', 'datasets', 'suite_groups', 'integrations',
+                       'user_stories', 'test_case_specs')
     }
 
 
 PROJECT_RESOURCE_LABELS = {'module_groups': 'módulo(s)', 'modules': 'componente(s)', 'environments': 'ambiente(s)', 'cases': 'caso(s)',
                            'features': 'funcionalidad(es)', 'suites': 'flujo(s)', 'schedules': 'programación(es)', 'taps': 'tap(s) de observación',
-                           'datasets': 'conjunto(s) de datos', 'suite_groups': 'suite(s)', 'integrations': 'integración(es)'}
+                           'datasets': 'conjunto(s) de datos', 'suite_groups': 'suite(s)', 'integrations': 'integración(es)',
+                           'user_stories': 'historia(s) de usuario', 'test_case_specs': 'caso(s) de prueba (especificación)'}
 
 
 def _purge_project_history(project_id):
     """Removes a project's runs and observed interfaces (with the runs' evidence files). Not counted as
     'blocking' content in project_stats (a user doesn't consciously manage history the way they manage
-    modules/cases), but leaving it behind as an orphan once the project is gone serves no one either."""
+    modules/cases), but leaving it behind as an orphan once the project is gone serves no one either. Adopted/
+    own plantillas are the same story: auto-sembradas al crear el proyecto, nadie las gestiona a mano como para
+    que bloqueen el borrado — pero sí hay que limpiarlas (nunca las globales, project_id=None, esas son de todos)."""
     for run in list_items('runs'):
         if run.get('project_id') != project_id:
             continue
@@ -345,6 +372,9 @@ def _purge_project_history(project_id):
     for interface in list_items('interfaces'):
         if interface.get('project_id') == project_id:
             delete('interfaces', interface['id'])
+    for template in list_items('spec_templates'):
+        if template.get('project_id') == project_id:
+            delete('spec_templates', template['id'])
     for tree in list_items('exploration_trees'):
         if tree.get('project_id') == project_id:
             delete('exploration_trees', tree['id'])
@@ -364,7 +394,8 @@ def delete_project(project_id):
         set_active_project(None)
 
 
-CASCADE_TABLES = ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps', 'datasets', 'suite_groups', 'integrations')
+CASCADE_TABLES = ('module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'taps', 'datasets', 'suite_groups', 'integrations',
+                  'user_stories', 'test_case_specs')
 
 
 def delete_project_cascade(project_id):
@@ -531,6 +562,256 @@ def feature_health(feature_id):
     rows = [{'suite': s, 'last_run': last_run_for_suite(s['id'])} for s in suites]
     passing = sum(1 for r in rows if r['last_run'] and r['last_run']['status'] == 'passed')
     return {'rows': rows, 'passing': passing, 'total': len(rows)}
+
+
+# --------------------------------------------------------------------------- especificación: historias de usuario,
+# casos de prueba (documento de planificación, antes de automatizar) y plantillas (biblioteca global + propias por
+# proyecto). Nunca viven dentro de `cases` (eso es lo ejecutable) — `test_case_specs` solo se enlaza, opcionalmente,
+# a un `cases` una vez automatizado (`linked_case_id`).
+
+PRIORITIES = ('low', 'medium', 'high', 'critical')
+PRIORITY_LABELS = {'low': 'Baja', 'medium': 'Media', 'high': 'Alta', 'critical': 'Crítica'}
+STORY_SOURCES = ('manual', 'ai', 'import')
+
+
+def create_user_story(title, project_id, as_a='', i_want='', so_that='', feature_id=None, priority='medium', criteria=None, source='manual'):
+    title = (title or '').strip()
+    if not title:
+        raise ValueError('El título de la historia de usuario es obligatorio')
+    if feature_id and get('features', feature_id) is None:
+        raise ValueError('Funcionalidad inexistente')
+    item = {'title': title, 'as_a': (as_a or '').strip(), 'i_want': (i_want or '').strip(), 'so_that': (so_that or '').strip(),
+            'priority': priority if priority in PRIORITIES else 'medium', 'status': 'draft',
+            'criteria': _clean_criteria(criteria), 'source': source if source in STORY_SOURCES else 'manual', 'project_id': project_id}
+    if feature_id:
+        item['feature_id'] = feature_id
+    return save('user_stories', item)
+
+
+def update_user_story(story_id, title, as_a='', i_want='', so_that='', feature_id=None, priority='medium', criteria=None, status=None):
+    story = get('user_stories', story_id)
+    if story is None:
+        raise ValueError('Historia de usuario inexistente')
+    title = (title or '').strip()
+    if not title:
+        raise ValueError('El título de la historia de usuario es obligatorio')
+    if feature_id and get('features', feature_id) is None:
+        raise ValueError('Funcionalidad inexistente')
+    story.update({'title': title, 'as_a': (as_a or '').strip(), 'i_want': (i_want or '').strip(), 'so_that': (so_that or '').strip(),
+                  'priority': priority if priority in PRIORITIES else 'medium', 'criteria': _clean_criteria(criteria)})
+    story['feature_id'] = feature_id or None
+    if status:
+        story['status'] = status
+    return save('user_stories', story)
+
+
+def delete_user_story(story_id):
+    if get('user_stories', story_id) is None:
+        raise ValueError('Historia de usuario inexistente')
+    linked = [t for t in list_items('test_case_specs') if t.get('story_id') == story_id]
+    if linked:
+        raise ValueError(f'No se puede eliminar: tiene {len(linked)} caso(s) de prueba ligado(s). Desvincúlalos primero.')
+    delete('user_stories', story_id)
+
+
+def _clean_criteria(criteria):
+    """Normaliza la lista de criterios de aceptación: cada uno con su propio id y estado, sin texto vacío."""
+    result = []
+    for entry in (criteria or []):
+        text = (entry.get('text') if isinstance(entry, dict) else str(entry)).strip()
+        if not text:
+            continue
+        result.append({'id': (entry.get('id') if isinstance(entry, dict) else None) or uid(), 'text': text,
+                       'status': (entry.get('status') if isinstance(entry, dict) else None) or 'pending'})
+    return result
+
+
+TEST_CASE_TYPES = ('functional', 'regression', 'smoke', 'exploratory')
+TEST_CASE_STATUSES = ('draft', 'ready', 'automated')
+
+
+def create_test_case_spec(title, project_id, story_id=None, feature_id=None, preconditions='', steps=None,
+                          priority='medium', type='functional', linked_case_id=None, source='manual'):
+    title = (title or '').strip()
+    if not title:
+        raise ValueError('El título del caso de prueba es obligatorio')
+    if story_id and get('user_stories', story_id) is None:
+        raise ValueError('Historia de usuario inexistente')
+    if feature_id and get('features', feature_id) is None:
+        raise ValueError('Funcionalidad inexistente')
+    if linked_case_id and get('cases', linked_case_id) is None:
+        raise ValueError('Caso API/UI inexistente')
+    item = {'title': title, 'preconditions': (preconditions or '').strip(), 'steps': _clean_test_steps(steps),
+            'priority': priority if priority in PRIORITIES else 'medium', 'type': type if type in TEST_CASE_TYPES else 'functional',
+            'status': 'automated' if linked_case_id else 'draft', 'source': source if source in STORY_SOURCES else 'manual', 'project_id': project_id}
+    for key, value in (('story_id', story_id), ('feature_id', feature_id), ('linked_case_id', linked_case_id)):
+        if value:
+            item[key] = value
+    return save('test_case_specs', item)
+
+
+def update_test_case_spec(spec_id, title, story_id=None, feature_id=None, preconditions='', steps=None,
+                          priority='medium', type='functional', linked_case_id=None, status=None):
+    spec = get('test_case_specs', spec_id)
+    if spec is None:
+        raise ValueError('Caso de prueba inexistente')
+    title = (title or '').strip()
+    if not title:
+        raise ValueError('El título del caso de prueba es obligatorio')
+    if story_id and get('user_stories', story_id) is None:
+        raise ValueError('Historia de usuario inexistente')
+    if feature_id and get('features', feature_id) is None:
+        raise ValueError('Funcionalidad inexistente')
+    if linked_case_id and get('cases', linked_case_id) is None:
+        raise ValueError('Caso API/UI inexistente')
+    spec.update({'title': title, 'preconditions': (preconditions or '').strip(), 'steps': _clean_test_steps(steps),
+                'priority': priority if priority in PRIORITIES else 'medium', 'type': type if type in TEST_CASE_TYPES else 'functional'})
+    spec['story_id'] = story_id or None
+    spec['feature_id'] = feature_id or None
+    spec['linked_case_id'] = linked_case_id or None
+    if status in TEST_CASE_STATUSES:
+        spec['status'] = status
+    elif linked_case_id:
+        spec['status'] = 'automated'
+    elif spec.get('status') == 'automated':
+        spec['status'] = 'draft'   # ya no está ligado a un Caso ejecutable: "automatizado" dejaría de ser cierto
+    return save('test_case_specs', spec)
+
+
+def delete_test_case_spec(spec_id):
+    if get('test_case_specs', spec_id) is None:
+        raise ValueError('Caso de prueba inexistente')
+    delete('test_case_specs', spec_id)
+
+
+def _clean_test_steps(steps):
+    result = []
+    for entry in (steps or []):
+        action = (entry.get('action', '') if isinstance(entry, dict) else '').strip()
+        expected = (entry.get('expected', '') if isinstance(entry, dict) else '').strip()
+        if not action and not expected:
+            continue
+        result.append({'action': action, 'expected': expected})
+    return result
+
+
+# --------------------------------------------------------------------------- plantillas (biblioteca global +
+# propias por proyecto): `project_id=None` = global. `body` es una lista ordenada de secciones/campos
+# `{'field': clave, 'label': etiqueta}` — nunca un motor de plantillas tipo Jinja, no hace falta para esto.
+
+TEMPLATE_KINDS = ('input', 'output')
+TEMPLATE_APPLIES_TO = ('user_story', 'test_case', 'report')
+
+DEFAULT_SPEC_TEMPLATES = [
+    {'name': 'Historia de usuario (INVEST)', 'kind': 'input', 'applies_to': 'user_story',
+     'description': 'Formato clásico Como/Quiero/Para, con sus criterios de aceptación.',
+     'body': [{'field': 'as_a', 'label': 'Como (rol)'}, {'field': 'i_want', 'label': 'Quiero (acción o funcionalidad)'},
+              {'field': 'so_that', 'label': 'Para (beneficio o razón)'}, {'field': 'criteria', 'label': 'Criterios de aceptación'}]},
+    {'name': 'Criterios de aceptación (Gherkin)', 'kind': 'input', 'applies_to': 'user_story',
+     'description': 'Dado/Cuando/Entonces, para criterios de aceptación ejecutables.',
+     'body': [{'field': 'given', 'label': 'Dado (contexto inicial)'}, {'field': 'when', 'label': 'Cuando (acción)'},
+              {'field': 'then', 'label': 'Entonces (resultado esperado)'}]},
+    {'name': 'Caso de prueba (ISTQB)', 'kind': 'input', 'applies_to': 'test_case',
+     'description': 'Precondición, pasos y resultado esperado, con prioridad.',
+     'body': [{'field': 'preconditions', 'label': 'Precondición'}, {'field': 'steps', 'label': 'Pasos de ejecución'},
+              {'field': 'expected', 'label': 'Resultado esperado'}, {'field': 'priority', 'label': 'Prioridad'}]},
+    {'name': 'Formato libre', 'kind': 'input', 'applies_to': 'user_story',
+     'description': 'Un solo campo de texto libre, para cuando la HU ya viene en un formato propio (de la organización o de otra herramienta) y no hace falta forzarla a Como/Quiero/Para.',
+     'body': [{'field': 'content', 'label': 'Contenido (formato libre)'}]},
+    {'name': 'Reporte ejecutivo', 'kind': 'output', 'applies_to': 'report',
+     'description': 'Resumen corto para quien no necesita el detalle completo.',
+     'body': [{'field': 'summary', 'label': 'Resumen'}, {'field': 'coverage', 'label': 'Cobertura'}, {'field': 'risks', 'label': 'Riesgos'}]},
+    {'name': 'Especificación detallada', 'kind': 'output', 'applies_to': 'report',
+     'description': 'Documento completo: historia, criterios, casos de prueba y trazabilidad.',
+     'body': [{'field': 'story', 'label': 'Historia de usuario'}, {'field': 'criteria', 'label': 'Criterios de aceptación'},
+              {'field': 'test_cases', 'label': 'Casos de prueba'}, {'field': 'traceability', 'label': 'Trazabilidad'}]},
+    {'name': 'Matriz de trazabilidad', 'kind': 'output', 'applies_to': 'report',
+     'description': 'HU → Criterios → Casos de prueba → estado de ejecución, en una sola tabla.',
+     'body': [{'field': 'matrix', 'label': 'Matriz HU → Criterios → Casos → Estado'}]},
+]
+
+
+def seed_default_spec_templates():
+    """Idempotente: solo crea las que falten (por nombre, entre las globales `is_builtin`) — se puede llamar en
+    cada `initialize()` sin duplicar nada."""
+    existing = {t['name'] for t in list_items('spec_templates') if t.get('project_id') is None and t.get('is_builtin')}
+    for tpl in DEFAULT_SPEC_TEMPLATES:
+        if tpl['name'] in existing:
+            continue
+        save('spec_templates', {'name': tpl['name'], 'description': tpl['description'], 'kind': tpl['kind'],
+                                'applies_to': tpl['applies_to'], 'body': tpl['body'], 'is_builtin': True, 'project_id': None})
+
+
+def create_spec_template(name, kind, applies_to, body=None, project_id=None, description=''):
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('El nombre de la plantilla es obligatorio')
+    if kind not in TEMPLATE_KINDS:
+        raise ValueError('Tipo de plantilla inválido')
+    if applies_to not in TEMPLATE_APPLIES_TO:
+        raise ValueError('«Aplica a» inválido')
+    item = {'name': name, 'description': (description or '').strip(), 'kind': kind, 'applies_to': applies_to,
+            'body': _clean_template_body(body), 'is_builtin': False, 'project_id': project_id}
+    return save('spec_templates', item)
+
+
+def update_spec_template(template_id, name, description='', body=None):
+    template = get('spec_templates', template_id)
+    if template is None:
+        raise ValueError('Plantilla inexistente')
+    if template.get('project_id') is None:
+        raise ValueError('Las plantillas globales no se editan directamente — adoptala a tu proyecto para personalizarla')
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('El nombre de la plantilla es obligatorio')
+    template.update({'name': name, 'description': (description or '').strip(), 'body': _clean_template_body(body)})
+    return save('spec_templates', template)
+
+
+def delete_spec_template(template_id):
+    template = get('spec_templates', template_id)
+    if template is None:
+        raise ValueError('Plantilla inexistente')
+    if template.get('project_id') is None:
+        raise ValueError('Las plantillas globales no se eliminan desde un proyecto')
+    delete('spec_templates', template_id)
+
+
+def _clean_template_body(body):
+    result = []
+    for entry in (body or []):
+        field = (entry.get('field', '') if isinstance(entry, dict) else '').strip()
+        label = (entry.get('label', '') if isinstance(entry, dict) else '').strip()
+        if not field and not label:
+            continue
+        result.append({'field': field or label.lower().replace(' ', '_'), 'label': label or field})
+    return result
+
+
+def promote_template(template_id):
+    """Copia una plantilla propia de un proyecto a la biblioteca global, para que otros proyectos la adopten."""
+    template = get('spec_templates', template_id)
+    if template is None:
+        raise ValueError('Plantilla inexistente')
+    if template.get('project_id') is None:
+        raise ValueError('Esta plantilla ya es global')
+    return save('spec_templates', {'name': template['name'], 'description': template.get('description', ''), 'kind': template['kind'],
+                                   'applies_to': template['applies_to'], 'body': template.get('body', []), 'is_builtin': False,
+                                   'project_id': None, 'promoted_from': template_id})
+
+
+def adopt_template(template_id, project_id):
+    """Clona una plantilla global a un proyecto, para personalizarla ahí sin tocar el original."""
+    template = get('spec_templates', template_id)
+    if template is None:
+        raise ValueError('Plantilla inexistente')
+    if template.get('project_id') is not None:
+        raise ValueError('Solo se pueden adoptar plantillas globales')
+    if project_id is None:
+        raise ValueError('Proyecto inexistente')
+    return save('spec_templates', {'name': template['name'], 'description': template.get('description', ''), 'kind': template['kind'],
+                                   'applies_to': template['applies_to'], 'body': template.get('body', []), 'is_builtin': False,
+                                   'project_id': project_id, 'cloned_from': template_id})
 
 
 def suite_steps(suite):

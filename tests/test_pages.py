@@ -7,7 +7,7 @@ from app import core
 from app.pages.common import NAV, NAV_GROUPS
 
 ROUTES = ['/', '/resumen', '/projects', '/projects/edit', '/workspace', '/lab', '/observer', '/observer/interface', '/modules', '/modules/edit', '/environments', '/environments/edit', '/cases', '/cases/edit', '/ui-cases',
-          '/suites', '/schedules', '/runs', '/portable']
+          '/suites', '/schedules', '/runs', '/portable', '/stories', '/stories/edit', '/test-specs', '/test-specs/edit', '/spec-templates', '/spec-templates/edit']
 
 
 async def test_every_page_renders_without_a_project(user: User):
@@ -1204,3 +1204,105 @@ async def test_home_shows_the_maturity_disclaimer(user: User):
     await user.should_see(maturity.DISCLAIMER[:40])
     for level in maturity.LEVELS:
         await user.should_see(level['label'])
+
+
+# --------------------------------------------------------------------------- especificación: HU, casos de prueba, plantillas
+
+async def test_user_story_can_be_created_linked_to_a_feature_and_deleted(user: User):
+    project = core.create_project('Historias UI')
+    core.set_active_project(project['id'])
+    core.create_feature('Checkout', project['id'])
+
+    await user.open('/stories')
+    user.find('Nueva historia').click()
+    await user.should_see(marker='story-title')
+    user.find(marker='story-title').type('Pagar con tarjeta')
+    user.find(marker='story-feature').click()
+    await user.should_see('Checkout')
+    user.find('Checkout').click()
+    user.find(marker='story-add-criterion').click()
+    await user.should_see(marker='story-criterion-text')
+    user.find(marker='story-criterion-text').type('Veo la confirmación del pago')
+    user.find(marker='story-save').click()
+    await user.should_see('Historia creada')
+    [story] = core.list_items('user_stories')
+    assert story['title'] == 'Pagar con tarjeta' and story.get('feature_id')
+    assert len(story['criteria']) == 1
+
+    await user.open('/stories')
+    user.find(marker='stories-table').trigger('rowClick', [None, {'id': story['id']}, 0])
+    await user.should_see(marker='story-delete')
+    user.find(marker='story-delete').click()
+    user.find(marker='confirm-dialog-accept').click()
+    await user.should_see('Historia eliminada')
+    assert core.list_items('user_stories') == []
+
+
+async def test_test_case_spec_can_be_created_from_a_story_and_linked_to_an_automated_case(user: User):
+    project = core.create_project('Casos de prueba UI')
+    core.set_active_project(project['id'])
+    story = core.create_user_story('Pagar con tarjeta', project['id'])
+    env = core.save('environments', {'name': 'e', 'project_id': project['id'], 'base_url': 'http://x', 'auth': {'type': 'none'}, 'variables': {}})
+    api_case = core.save('cases', {'name': 'ChargeAPI', 'method': 'POST', 'path': '/pay', 'project_id': project['id'], 'environment_id': env['id'],
+                                   'headers': {}, 'query': {}, 'body': None, 'assertions': [], 'variables': {}, 'extract': [], 'timeout': 10})
+
+    await user.open(f'/test-specs/edit?story_id={story["id"]}')
+    await user.should_see(marker='spec-title')
+    assert user.find(marker='spec-story').elements.pop().value == story['id']   # preloaded from the query param
+    user.find(marker='spec-title').type('Pagar con tarjeta válida')
+    user.find(marker='spec-linked-case').click()
+    await user.should_see('ChargeAPI')
+    user.find('ChargeAPI').click()
+    user.find(marker='spec-add-step').click()
+    await user.should_see(marker='spec-step-action')
+    user.find(marker='spec-step-action').type('Ir a pago')
+    user.find(marker='spec-step-expected').type('Veo el formulario')
+    user.find(marker='spec-save').click()
+    await user.should_see('Caso de prueba creado')
+    [spec] = core.list_items('test_case_specs')
+    assert spec['title'] == 'Pagar con tarjeta válida' and spec['story_id'] == story['id']
+    assert spec['linked_case_id'] == api_case['id'] and spec['status'] == 'automated'
+
+    await user.open(f'/stories/edit?id={story["id"]}')
+    await user.should_see('Pagar con tarjeta válida')                 # ligado, se ve desde la historia también
+
+
+async def test_spec_templates_come_preseeded_and_support_adopt_and_promote(user: User):
+    project = core.create_project('Plantillas UI')
+    core.set_active_project(project['id'])
+
+    await user.open('/spec-templates')
+    await user.should_see('Historia de usuario (INVEST)')              # global, por defecto
+    await user.should_see('Especificación detallada')
+    local_before = len([t for t in core.list_items('spec_templates') if t.get('project_id') == project['id']])
+
+    user.find('Adoptar').click()
+    await user.should_see('adoptada a este proyecto')
+    local_after = len([t for t in core.list_items('spec_templates') if t.get('project_id') == project['id']])
+    assert local_after == local_before + 1
+
+    await user.open('/spec-templates/edit')
+    user.find(marker='template-name').type('Mi plantilla propia')
+    user.find(marker='template-save').click()
+    await user.should_see('Plantilla creada')
+    mine = next(t for t in core.list_items('spec_templates') if t['name'] == 'Mi plantilla propia')
+    assert mine['project_id'] == project['id']
+
+    await user.open(f'/spec-templates/edit?id={mine["id"]}')
+    user.find(marker='template-promote').click()
+    await user.should_see('Copia publicada')
+    promoted = next(t for t in core.list_items('spec_templates') if t.get('promoted_from') == mine['id'])
+    assert promoted['project_id'] is None
+
+
+async def test_builtin_templates_cannot_be_edited_or_deleted_from_the_ui(user: User):
+    project = core.create_project('Plantilla protegida')
+    core.set_active_project(project['id'])
+    builtin = next(t for t in core.list_items('spec_templates') if t.get('project_id') is None)
+
+    await user.open(f'/spec-templates/edit?id={builtin["id"]}')
+    await user.should_see('solo lectura')
+    with pytest.raises(AssertionError):
+        user.find(marker='template-save')
+    with pytest.raises(AssertionError):
+        user.find(marker='template-delete')

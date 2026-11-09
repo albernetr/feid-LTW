@@ -147,6 +147,14 @@ Un **Módulo** (`/module-groups`) agrupa Componentes por dominio o propiedad té
 
 Una **Funcionalidad** (`/features`) es una capacidad de negocio que puede cruzar varios Componentes y Módulos a la vez (p. ej. «Checkout» usa Pagos, Inventario y Notificaciones) — un eje distinto e independiente del Módulo. Se valida con una o más **Suites/flujos** ligadas a ella (al editar una suite, el campo «Funcionalidad»); su detalle muestra cada suite con el estado de su última corrida y un resumen agregado («3/4 pasan»).
 
+## 7.6 Especificación: Historias de usuario, Casos de prueba y Plantillas
+
+Antes de ejecutar nada, LTW tiene una sección propia para lo que normalmente se escribe primero:
+
+- **Historias de usuario** (`/stories`): título, Como/Quiero/Para y sus **Criterios de aceptación** (uno por línea, cada uno con su propio estado Pendiente/Cumplido), ligada opcionalmente a una Funcionalidad.
+- **Casos de prueba** (`/test-specs`): el plan de un caso — precondición, pasos y resultado esperado — como documento propio, **separado** de un Caso API/UI ejecutable. Se liga opcionalmente a una Historia de usuario, a una Funcionalidad, y a un Caso API/UI ya automatizado (campo «Caso API/UI automatizado»); sin ese enlace sigue siendo un caso 100% manual, con su propio estado (Borrador/Listo/Automatizado).
+- **Plantillas** (`/spec-templates`): una **biblioteca global** (compartida entre proyectos, con 4 plantillas de entrada — Historia de usuario INVEST, Criterios Gherkin, Caso de prueba ISTQB, y **Formato libre** para cuando la HU ya viene en un formato propio de la organización — y 3 de salida ya incluidas por defecto) más las **propias de cada proyecto**. Cada proyecto nuevo adopta automáticamente las globales por defecto al crearse. **Adoptar** clona una plantilla global al proyecto activo para poder editarla sin tocar el original; **Promover** publica una copia de una plantilla propia en la biblioteca global para que otros proyectos la adopten. Una plantilla global es de solo lectura hasta que se adopta.
+
 ---
 
 # 8. Casos API

@@ -355,7 +355,7 @@ def test_safe_delete_also_purges_orphaned_history_and_its_evidence():
     run = core.save('runs', {'type': 'api', 'project_id': project['id'], 'status': 'passed', 'screenshot': 'suelto.png'})
     interface = core.save('interfaces', {'module': 'M', 'method': 'GET', 'project_id': project['id']})
     assert core.project_stats(project['id']) == {'module_groups': 0, 'modules': 0, 'environments': 0, 'cases': 0, 'features': 0, 'suites': 0, 'schedules': 0, 'taps': 0,
-                                                  'datasets': 0, 'suite_groups': 0, 'integrations': 0}
+                                                  'datasets': 0, 'suite_groups': 0, 'integrations': 0, 'user_stories': 0, 'test_case_specs': 0}
 
     core.delete_project(project['id'])
 
@@ -711,3 +711,141 @@ def test_exporting_an_environment_never_carries_the_session_timestamp():
     core.save_ui_session(env['id'], {'cookies': [], 'origins': []})
     sanitized = core._sanitize_for_export('environments', core.get('environments', env['id']))
     assert 'ui_session_saved_at' not in sanitized
+
+
+# --------------------------------------------------------------------------- especificación: HU, casos de prueba, plantillas
+
+def test_initialize_seeds_seven_default_global_templates_idempotently():
+    templates = [t for t in core.list_items('spec_templates') if t.get('project_id') is None]
+    assert len(templates) == 7
+    assert {t['kind'] for t in templates} == {'input', 'output'}
+    assert all(t['is_builtin'] for t in templates)
+    core.initialize()   # llamar de nuevo no duplica nada
+    assert len([t for t in core.list_items('spec_templates') if t.get('project_id') is None]) == 7
+
+
+def test_new_project_automatically_adopts_the_seven_default_templates():
+    project = core.create_project('Adopta plantillas')
+    adopted = [t for t in core.list_items('spec_templates') if t.get('project_id') == project['id']]
+    assert len(adopted) == 7
+    assert all(not t['is_builtin'] for t in adopted)
+    assert all(t.get('cloned_from') for t in adopted)
+
+
+def test_create_user_story_requires_a_title_and_an_existing_feature():
+    project = core.create_project('HU')
+    with pytest.raises(ValueError):
+        core.create_user_story('  ', project['id'])
+    with pytest.raises(ValueError):
+        core.create_user_story('Pagar', project['id'], feature_id='no-existe')
+    feature = core.create_feature('Checkout', project['id'])
+    story = core.create_user_story('Pagar con tarjeta', project['id'], as_a='cliente', i_want='pagar', so_that='completar la compra',
+                                   feature_id=feature['id'], criteria=[{'text': 'veo confirmación'}, {'text': '  '}, 'texto suelto'])
+    assert story['feature_id'] == feature['id']
+    assert [c['text'] for c in story['criteria']] == ['veo confirmación', 'texto suelto']   # el criterio vacío se descarta
+    assert all(c['status'] == 'pending' for c in story['criteria'])
+
+
+def test_update_user_story_can_clear_the_feature_link_and_change_status():
+    project = core.create_project('HU2')
+    feature = core.create_feature('Checkout', project['id'])
+    story = core.create_user_story('Pagar', project['id'], feature_id=feature['id'])
+    updated = core.update_user_story(story['id'], 'Pagar (editado)', feature_id=None, status='ready')
+    assert updated['feature_id'] is None
+    assert updated['status'] == 'ready'
+    with pytest.raises(ValueError):
+        core.update_user_story('no-existe', 'x')
+
+
+def test_delete_user_story_blocks_while_a_test_case_spec_is_linked():
+    project = core.create_project('HU3')
+    story = core.create_user_story('Pagar', project['id'])
+    spec = core.create_test_case_spec('Pagar con tarjeta válida', project['id'], story_id=story['id'])
+    with pytest.raises(ValueError):
+        core.delete_user_story(story['id'])
+    core.delete_test_case_spec(spec['id'])
+    core.delete_user_story(story['id'])
+    assert core.get('user_stories', story['id']) is None
+
+
+def test_create_test_case_spec_requires_existing_links_and_cleans_empty_steps():
+    project = core.create_project('CP')
+    with pytest.raises(ValueError):
+        core.create_test_case_spec('x', project['id'], story_id='no-existe')
+    with pytest.raises(ValueError):
+        core.create_test_case_spec('x', project['id'], linked_case_id='no-existe')
+    spec = core.create_test_case_spec('Pagar', project['id'], steps=[{'action': 'ir a pago', 'expected': 'veo el formulario'}, {'action': '', 'expected': ''}])
+    assert len(spec['steps']) == 1
+    assert spec['status'] == 'draft'
+
+
+def test_test_case_spec_linked_to_a_case_is_automated_by_default():
+    project = core.create_project('CP2')
+    env = core.save('environments', {'name': 'e', 'project_id': project['id'], 'base_url': 'http://x', 'auth': {'type': 'none'}, 'variables': {}})
+    api_case = core.save('cases', {'name': 'Ping', 'method': 'GET', 'path': '/ping', 'project_id': project['id'], 'environment_id': env['id'],
+                                   'headers': {}, 'query': {}, 'body': None, 'assertions': [], 'variables': {}, 'extract': [], 'timeout': 10})
+    spec = core.create_test_case_spec('Ping responde', project['id'], linked_case_id=api_case['id'])
+    assert spec['status'] == 'automated'
+    unlinked = core.update_test_case_spec(spec['id'], 'Ping responde', linked_case_id=None)
+    assert unlinked['linked_case_id'] is None
+    assert unlinked['status'] == 'draft'
+
+
+def test_spec_template_crud_validates_kind_and_applies_to():
+    project = core.create_project('PT')
+    with pytest.raises(ValueError):
+        core.create_spec_template('x', 'bogus', 'user_story', project_id=project['id'])
+    with pytest.raises(ValueError):
+        core.create_spec_template('x', 'input', 'bogus', project_id=project['id'])
+    template = core.create_spec_template('Mi HU', 'input', 'user_story', body=[{'field': 'x', 'label': ' '}, {'field': '', 'label': ''}], project_id=project['id'])
+    assert template['body'] == [{'field': 'x', 'label': 'x'}]   # etiqueta vacía se completa desde la clave
+
+
+def test_global_templates_are_read_only_and_only_local_ones_can_be_deleted():
+    project = core.create_project('PT2')
+    builtin = next(t for t in core.list_items('spec_templates') if t.get('project_id') is None)
+    with pytest.raises(ValueError):
+        core.update_spec_template(builtin['id'], 'nuevo nombre')
+    with pytest.raises(ValueError):
+        core.delete_spec_template(builtin['id'])
+    local = core.create_spec_template('Mía', 'input', 'test_case', project_id=project['id'])
+    core.update_spec_template(local['id'], 'Mía renombrada', body=[{'field': 'a', 'label': 'A'}])
+    core.delete_spec_template(local['id'])
+    assert core.get('spec_templates', local['id']) is None
+
+
+def test_promote_and_adopt_template_round_trip():
+    project = core.create_project('Promo')
+    local = core.create_spec_template('Mi plantilla', 'input', 'user_story', body=[{'field': 'x', 'label': 'X'}], project_id=project['id'])
+    with pytest.raises(ValueError):
+        core.adopt_template(local['id'], project['id'])   # no es global todavía
+    promoted = core.promote_template(local['id'])
+    assert promoted['project_id'] is None and promoted['promoted_from'] == local['id']
+    with pytest.raises(ValueError):
+        core.promote_template(promoted['id'])   # ya es global
+
+    project2 = core.create_project('Promo2')
+    adopted = core.adopt_template(promoted['id'], project2['id'])
+    assert adopted['project_id'] == project2['id'] and adopted['cloned_from'] == promoted['id']
+    assert core.update_spec_template(adopted['id'], 'Editada en el proyecto 2')['name'] == 'Editada en el proyecto 2'
+
+
+def test_safe_delete_project_is_not_blocked_by_its_auto_adopted_templates_and_cleans_them_up():
+    """Las 7 plantillas que cada proyecto adopta solas al crearse no deberían exigir borrarlas a mano — mismo
+    espíritu que runs/interfaces en _purge_project_history (no bloquean, pero no quedan huérfanas)."""
+    project = core.create_project('Borrado limpio')
+    adopted_ids = [t['id'] for t in core.list_items('spec_templates') if t.get('project_id') == project['id']]
+    assert len(adopted_ids) == 7
+    core.delete_project(project['id'])   # no debe levantar ValueError por las plantillas
+    assert all(core.get('spec_templates', tid) is None for tid in adopted_ids)
+    assert len([t for t in core.list_items('spec_templates') if t.get('project_id') is None]) == 7   # las globales, intactas
+
+
+def test_deleting_a_project_is_blocked_by_stories_and_specs_then_cascade_removes_them():
+    project = core.create_project('CascadaHU')
+    story = core.create_user_story('HU', project['id'])
+    with pytest.raises(ValueError):
+        core.delete_project(project['id'])
+    core.delete_project_cascade(project['id'])
+    assert core.get('user_stories', story['id']) is None
+    assert core.get('projects', project['id']) is None

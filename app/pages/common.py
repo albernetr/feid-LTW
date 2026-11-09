@@ -14,6 +14,7 @@ from .. import core, automation, evidence_report, integrations, llm
 NAV = [
     ('Inicio', '/', 'home'), ('Resumen', '/resumen', 'monitor_heart'), ('Espacio de trabajo', '/workspace', 'space_dashboard'), ('Proyectos', '/projects', 'folder_open'),
     ('Módulos', '/module-groups', 'account_tree'), ('Componentes', '/modules', 'widgets'), ('Ambientes', '/environments', 'dns'),
+    ('Historias de usuario', '/stories', 'auto_stories'), ('Casos de prueba', '/test-specs', 'checklist'), ('Plantillas', '/spec-templates', 'description'),
     ('Casos API', '/cases', 'http'), ('Casos UI', '/ui-cases', 'web'), ('Funcionalidades', '/features', 'flag'),
     ('Flujos', '/suites', 'playlist_play'), ('Suites', '/suite-groups', 'folder_special'), ('Chat', '/chat', 'forum'), ('Observador', '/observer', 'visibility'), ('Programaciones', '/schedules', 'schedule'),
     ('Modelos de IA', '/models', 'smart_toy'), ('Variables y secuencias', '/sequences', 'numbers'), ('Conjuntos de datos', '/datasets', 'dataset'),
@@ -25,6 +26,7 @@ NAV = [
 # y autoritativa (test_manual.py la recorre tal cual); esto solo decide cómo se presenta en el drawer.
 NAV_GROUPS = [
     ('Proyecto', 'folder_open', ('/projects', '/module-groups', '/modules', '/environments')),
+    ('Especificación', 'auto_stories', ('/stories', '/test-specs', '/spec-templates')),
     ('Pruebas', 'science', ('/cases', '/ui-cases', '/features', '/suites', '/suite-groups', '/chat')),
     ('Automatización', 'smart_toy', ('/observer', '/schedules', '/sequences', '/datasets', '/integrations')),
     ('Resultados', 'history', ('/runs', '/portable')),

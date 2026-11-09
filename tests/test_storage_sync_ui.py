@@ -30,7 +30,8 @@ async def test_sync_merge_requires_simple_confirmation_and_writes_new_rows(user:
     user.find(marker='storage-sync-submit').click()
     await user.should_see('¿Sincronizar')
     user.find(marker='confirm-dialog-accept').click()
-    await user.should_see('Sincronizado: 2 registro(s) escritos.', retries=10)   # 1 proyecto + 1 caso (_seed_case crea los dos)
+    # 1 proyecto + 1 caso (_seed_case crea los dos) + 7 plantillas globales + 7 que el proyecto adopta solo al crearse
+    await user.should_see('Sincronizado: 16 registro(s) escritos.', retries=10)
     assert len(fake_azure_sql.get('cases', {})) == 1
 
 
@@ -44,7 +45,8 @@ async def test_sync_replace_requires_the_confirmation_phrase(user: User, fake_az
     await user.should_see('Escribe CONFIRMAR')
     user.find(marker='confirm-phrase-input').type('CONFIRMAR')
     user.find(marker='confirm-phrase-accept').click()
-    await user.should_see('Sincronizado: 2 registro(s) escritos.', retries=10)   # 1 proyecto + 1 caso
+    # 1 proyecto + 1 caso + 7 plantillas globales + 7 que el proyecto adopta solo al crearse
+    await user.should_see('Sincronizado: 16 registro(s) escritos.', retries=10)
 
 
 async def test_sync_azure_to_sqlite_direction_writes_into_the_local_database(user: User, fake_azure_sql):

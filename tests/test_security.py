@@ -102,7 +102,8 @@ def test_export_scopes_include_dependencies_only(tmp_path):
             return {n: z.read(n).decode() for n in z.namelist() if n != 'manifest.json'}
 
     listed = read(core.export_workspace(tmp_path / 'p.zip', project_id=a['id']))
-    assert len(listed) == 5 and not any('other' in body for body in listed.values())
+    # 5 own records (project/module/environment/case/suite) + the 7 spec_templates every project auto-adopts on creation
+    assert len(listed) == 12 and not any('other' in body for body in listed.values())
     listed = read(core.export_workspace(tmp_path / 's.zip', suite_ids=[suite['id']]))
     assert {n.split('/')[0] for n in listed} == {'projects', 'modules', 'environments', 'cases', 'suites'}
     assert json.loads(listed[f'environments/{env["id"]}.json'])['variables'] == {'region': 'eu'}

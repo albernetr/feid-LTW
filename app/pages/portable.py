@@ -72,10 +72,13 @@ def portable():
                 preview_box.clear()
                 with preview_box:
                     ui.label(f'Vista previa ({preview["scope"]}) — estrategia: {strategy.value}').classes('font-semibold')
-                    labels = {'projects': 'Proyectos', 'modules': 'Componentes', 'environments': 'Ambientes', 'cases': 'Casos', 'suites': 'Flujos', 'schedules': 'Programaciones'}
+                    labels = {'projects': 'Proyectos', 'module_groups': 'Módulos', 'modules': 'Componentes', 'environments': 'Ambientes', 'cases': 'Casos',
+                             'features': 'Funcionalidades', 'suites': 'Flujos', 'schedules': 'Programaciones', 'datasets': 'Conjuntos de datos',
+                             'suite_groups': 'Suites', 'integrations': 'Integraciones', 'user_stories': 'Historias de usuario',
+                             'test_case_specs': 'Casos de prueba', 'spec_templates': 'Plantillas'}
                     for table, counts in preview['summary'].items():
                         if counts['total']:
-                            ui.label(f'{labels[table]}: {counts["total"]} ({counts["new"]} nuevos, {counts["existing"]} existentes)')
+                            ui.label(f'{labels.get(table, table)}: {counts["total"]} ({counts["new"]} nuevos, {counts["existing"]} existentes)')
                     for warning in preview['warnings']:
                         with ui.row().classes('items-center gap-2'):
                             ui.icon('warning', color='warning')
