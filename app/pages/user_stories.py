@@ -1,8 +1,10 @@
 import base64
+import re
+import tempfile
 from pathlib import Path
 from nicegui import ui, run
-from .. import core, llm
-from .common import frame, guard, confirm, empty_state, require_project, fmt_time, status_badge, read_upload, protected_page
+from .. import core, llm, spec_report
+from .common import frame, guard, confirm, empty_state, require_project, fmt_time, status_badge, read_upload, open_evidence_in_new_tab, protected_page
 
 STATUS_LABELS = {'draft': 'Borrador', 'ready': 'Lista', 'done': 'Terminada'}
 STORY_STATUSES = ('draft', 'ready', 'done')
@@ -12,6 +14,62 @@ IMPORT_TEXT_EXTENSIONS = ('.md', '.txt', '.csv', '.json')
 # memoria, nunca persistido, mismo espíritu que ASSISTANT_CHAT de chat_page.py pero separado por registro: acá
 # se navega de una historia a otra todo el tiempo, y un solo hilo global mostraría la charla equivocada.
 ASSISTANT_THREADS = {}
+
+
+async def _render_spec_download(data, kind):
+    """Mismo espíritu que render_evidence de common.py, para los reportes de la Especificación."""
+    if kind == 'pdf':
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / 'r.pdf'
+            await run.io_bound(spec_report.render_spec_pdf, spec_report.render_spec_html(data), target)
+            return target.read_bytes()
+    if kind == 'docx':
+        return await run.io_bound(spec_report.render_spec_docx, data)
+    if kind == 'md':
+        return spec_report.render_spec_markdown(data).encode('utf-8')
+    return spec_report.render_spec_html(data).encode('utf-8')
+
+
+def _stem(text):
+    return re.sub(r'[\\/:*?"<>|]+', '_', text).replace(' ', '_')
+
+
+async def _preview_story_report(story, template):
+    html_text = spec_report.render_spec_html(spec_report.build_story_report_data(story, template))
+    filename = f'{story["id"]}-spec-preview.html'
+    (core.ARTIFACTS / filename).write_text(html_text, encoding='utf-8')
+    open_evidence_in_new_tab(story['id'], filename)
+
+
+async def _download_story_report(story, template, kind):
+    content = await _render_spec_download(spec_report.build_story_report_data(story, template), kind)
+    ui.download(content, f'{_stem(story["title"])}.{kind}')
+    ui.notify('Reporte generado', type='positive')
+
+
+def _output_templates(pid):
+    return [t for t in core.list_items('spec_templates') if t.get('kind') == 'output' and t.get('applies_to') == 'report'
+            and (t.get('project_id') is None or t.get('project_id') == pid)]
+
+
+def _open_export_matrix_dialog(pid):
+    templates = _output_templates(pid)
+    with ui.dialog() as dialog, ui.card().classes('w-96'):
+        ui.label('Exportar matriz de trazabilidad').classes('text-lg font-semibold')
+        ui.label('Toda la Especificación del proyecto: Historias, Criterios y Casos de prueba, con su estado.').classes('text-sm text-gray-500')
+        default_tpl = next((t['id'] for t in templates if 'trazabilidad' in t['name'].lower()), templates[0]['id'] if templates else None)
+        template_select = ui.select({t['id']: t['name'] for t in templates}, value=default_tpl, label='Plantilla de salida').props('outlined dense').classes('w-full').mark('matrix-export-template')
+        kind_select = ui.select({'html': 'HTML', 'pdf': 'PDF', 'docx': 'Word', 'md': 'Markdown'}, value='html', label='Formato').props('outlined dense').classes('w-full')
+
+        async def do_export():
+            data = spec_report.build_test_matrix_report_data(pid, core.get('spec_templates', template_select.value) if template_select.value else None)
+            content = await _render_spec_download(data, kind_select.value)
+            ui.download(content, f'matriz_trazabilidad.{kind_select.value}')
+            dialog.close()
+        with ui.row().classes('w-full justify-end gap-2 mt-2'):
+            ui.button('Cancelar', on_click=dialog.close).props('flat')
+            ui.button('Exportar', icon='download', on_click=guard(do_export)).props('color=primary').mark('matrix-export-confirm')
+    dialog.open()
 
 
 def _open_import_dialog(pid):
@@ -119,6 +177,7 @@ def stories_list():
         with ui.row().classes('gap-2'):
             ui.button('Nueva historia', icon='add', on_click=lambda: ui.navigate.to('/stories/edit')).props('color=primary')
             ui.button('Importar', icon='upload_file', on_click=lambda: _open_import_dialog(pid)).props('outline color=primary').mark('stories-import')
+            ui.button('Exportar matriz', icon='table_view', on_click=lambda: _open_export_matrix_dialog(pid)).props('outline color=primary').mark('stories-export-matrix')
 
         items = core.list_project_items('user_stories', pid)
         if not items:
@@ -346,6 +405,25 @@ def story_detail(id: str = ''):
 
         if not current:
             return
+
+        output_templates = _output_templates(pid)
+        with ui.card().classes('w-full'):
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('description', color='primary')
+                ui.label('Exportar').classes('font-semibold')
+            if not output_templates:
+                ui.label('No hay plantillas de salida disponibles.').classes('text-sm text-gray-400')
+            else:
+                default_tpl = next((t['id'] for t in output_templates if 'detallada' in t['name'].lower()), output_templates[0]['id'])
+                export_template = ui.select({t['id']: t['name'] for t in output_templates}, value=default_tpl,
+                                            label='Plantilla de salida').props('outlined dense').classes('w-64').mark('story-export-template')
+                with ui.row().classes('items-center gap-2'):
+                    tpl = lambda: core.get('spec_templates', export_template.value)   # noqa: E731
+                    ui.button('Vista previa', icon='open_in_new', on_click=guard(lambda: _preview_story_report(current, tpl()))).props('flat dense no-caps').mark('story-export-preview')
+                    ui.button('HTML', icon='download', on_click=guard(lambda: _download_story_report(current, tpl(), 'html'))).props('flat dense no-caps')
+                    ui.button('PDF', icon='picture_as_pdf', on_click=guard(lambda: _download_story_report(current, tpl(), 'pdf'))).props('flat dense no-caps')
+                    ui.button('Word', icon='description', on_click=guard(lambda: _download_story_report(current, tpl(), 'docx'))).props('flat dense no-caps').mark('story-export-docx')
+                    ui.button('Markdown', icon='code', on_click=guard(lambda: _download_story_report(current, tpl(), 'md'))).props('flat dense no-caps')
 
         coverage = core.story_coverage(current['id'])
         with ui.card().classes('w-full'):

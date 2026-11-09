@@ -126,3 +126,30 @@ Cada fallo es **autosuficiente**:
 ## Versionado
 
 El número del formato (`/1`) solo cambia con cambios incompatibles. Se pueden **añadir** campos a `ltw.report/1` y `ltw.failure/1` sin cambiar la versión: ignora los que no conozcas.
+
+## Especificación: Historias de usuario y Casos de prueba (`ltw.spec_bundle/1`)
+
+Aparte del protocolo de arriba (que es para **casos ejecutables**: API/UI, pensados para correr y fallar), hay un segundo protocolo, independiente, para la sección **Especificación** (`/stories`, `/test-specs`): Historias de usuario con sus Criterios de aceptación, y Casos de prueba como documento de planificación (precondición, pasos, resultado esperado) — existan o no todavía como un Caso ejecutable. Útil para que un agente externo (p. ej. uno que lee requisitos o tickets) alimente o lea esta sección sin pasar por la UI.
+
+```json
+{
+  "format": "ltw.spec_bundle/1",
+  "project": "Integración",
+  "stories": [
+    {"title": "Recuperar contraseña por email", "as_a": "usuario registrado",
+     "i_want": "poder recuperar el acceso a mi cuenta si olvido la contraseña",
+     "so_that": "no perder el acceso a mis datos", "priority": "high",
+     "criteria": [{"text": "Dado un email válido, se envía un enlace de recuperación", "status": "pending"}],
+     "test_cases": [{"title": "Solicitar recuperación con email válido", "preconditions": "Cuenta activa",
+                      "steps": [{"action": "Ingresar el email", "expected": "Se confirma el envío"}],
+                      "priority": "high", "type": "functional"}]}
+  ]
+}
+```
+
+- **Idempotente**: upsert por **título**, dentro del proyecto — las Historias por su propio título, los Casos de prueba por su título dentro de la Historia a la que pertenecen (el mismo título puede repetirse en otra Historia sin pisarla). Reenviar un bundle corregido actualiza en lugar de duplicar.
+- `GET /agent/v1/specs/schema` — el JSON Schema de `ltw.spec_bundle/1`.
+- `POST /agent/v1/specs/import[?project=NOMBRE]` — body: el bundle → crea/actualiza Historias y Casos de prueba; responde `{format, project, stories: [título…], test_cases: [título…]}` (o `422` con `errors[]` si el bundle no valida).
+- `GET /agent/v1/specs/export?project=NOMBRE` — devuelve el bundle actual de ese proyecto (todas sus Historias y Casos de prueba), en el mismo formato — para que un agente lea lo que ya existe antes de enriquecerlo.
+
+Mismo guard que el resto de la API (`127.0.0.1` + `Authorization: Bearer <token>`, mostrado en **Espacio de trabajo → Agente**). Esto **no** reemplaza `ltw.spec/1`: ese sigue siendo el protocolo para casos ejecutables (API/UI) con sus aserciones; este es solo para el documento de planificación de la Especificación.

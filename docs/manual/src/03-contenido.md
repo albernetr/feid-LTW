@@ -172,6 +172,16 @@ En el detalle de una Historia ya guardada, la sección **Matriz de pruebas** lis
 
 El botón **Importar** (`/stories`) arma un borrador de Historia de usuario + Casos de prueba a partir de una fuente — pegá texto, subí un archivo (`.md`/`.txt`/`.csv`/`.json`), subí una **imagen** (una captura, un diagrama, una Historia escrita a mano o en pizarra — necesita un modelo con visión), o pegá una **URL** («Traer texto» descarga la página y limpia el HTML a texto legible). Las distintas fuentes se combinan en el mismo cuadro de texto antes de generar. **Generar propuesta** arma la Historia completa y sus Casos de prueba candidatos en un solo paso — se ven en una vista previa, igual que en Importar/Exportar: nada se guarda hasta **Confirmar importación**.
 
+### Reportes de salida y previsualizador de plantillas
+
+En el detalle de una Historia ya guardada, la tarjeta **Exportar** elige una plantilla de **salida** (de las adoptadas en el proyecto o de la biblioteca global — p. ej. «Reporte ejecutivo», «Especificación detallada» o «Matriz de trazabilidad») y genera el documento en **HTML, PDF, Word o Markdown**: la plantilla decide qué secciones entran y en qué orden (Historia, Criterios, Casos de prueba, Trazabilidad, un resumen con riesgos, etc.), resueltas siempre contra los datos reales de esa Historia. **Vista previa** abre el mismo documento en una pestaña nueva sin descargar nada. Desde `/stories`, **Exportar matriz** genera el mismo tipo de documento pero para **todo el proyecto**: cada Historia con sus Casos de prueba y, si ya están automatizados, el estado de su última corrida.
+
+En `/spec-templates/edit`, el botón **Vista previa** renderiza la plantilla que se está editando (de entrada o de salida, guardada o todavía en borrador) contra datos de ejemplo — así se puede ver el resultado final antes de guardar o adoptar nada.
+
+### API para agentes: `ltw.spec_bundle/1`
+
+Aparte del protocolo de casos ejecutables (ver «Protocolo para agentes» en `AGENTS.md`), la Especificación tiene su propio protocolo, pensado para que un agente externo (p. ej. uno que lee requisitos o tickets) la alimente o la lea sin pasar por la UI: `GET /agent/v1/specs/schema` (el esquema), `POST /agent/v1/specs/import[?project=NOMBRE]` (crea o actualiza Historias y Casos de prueba, por título — idempotente) y `GET /agent/v1/specs/export?project=NOMBRE` (devuelve lo que ya existe). Mismo guard que el resto de la API local (`127.0.0.1` + el token de **Espacio de trabajo → Agente**). El detalle completo, con un ejemplo de bundle, está en `AGENTS.md`.
+
 ---
 
 # 8. Casos API

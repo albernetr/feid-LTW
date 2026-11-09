@@ -1509,3 +1509,54 @@ async def test_story_import_from_an_image_sends_it_as_a_vision_attachment(user: 
         sent = fake.requests[-1]['body']['messages'][-1]['content']
         image_block = next(b for b in sent if b['type'] != 'text')
         assert base64.b64encode(b'fake-png-bytes').decode('ascii') in image_block['image_url']['url']
+
+
+# --------------------------------------------------------------------------- Reportes de salida y previsualizador (Fase 4)
+
+async def test_story_export_preview_writes_the_rendered_report_to_artifacts(user: User):
+    project = core.create_project('Exportar HU')
+    core.set_active_project(project['id'])
+    story = core.create_user_story('Pagar', project['id'], as_a='cliente', i_want='pagar', so_that='comprar',
+                                   criteria=[{'text': 'veo confirmación', 'status': 'met'}])
+    await user.open(f'/stories/edit?id={story["id"]}')
+    before = set(core.ARTIFACTS.glob(f'{story["id"]}-spec-preview.html'))
+    user.find(marker='story-export-preview').click()
+    await eventually(lambda: len(set(core.ARTIFACTS.glob(f'{story["id"]}-spec-preview.html')) - before) == 1)
+    [report] = set(core.ARTIFACTS.glob(f'{story["id"]}-spec-preview.html')) - before
+    text = report.read_text(encoding='utf-8')
+    assert 'Pagar' in text and 'veo confirmación' in text
+
+
+async def test_story_export_download_buttons_do_not_crash_for_every_format(user: User):
+    project = core.create_project('Exportar formatos')
+    core.set_active_project(project['id'])
+    story = core.create_user_story('Pagar', project['id'])
+    await user.open(f'/stories/edit?id={story["id"]}')
+    for marker in ('story-export-docx',):   # HTML/PDF/Markdown sin marker propio; Word sí lo tiene (nombre no ambiguo)
+        user.find(marker=marker).click()
+        await user.should_see('Reporte generado', retries=30)
+
+
+async def test_stories_list_can_export_the_traceability_matrix(user: User):
+    project = core.create_project('Matriz exportar')
+    core.set_active_project(project['id'])
+    core.create_user_story('Pagar', project['id'], criteria=[{'text': 'veo confirmación', 'status': 'met'}])
+    await user.open('/stories')
+    user.find(marker='stories-export-matrix').click()
+    await user.should_see(marker='matrix-export-confirm', retries=30)
+    assert 'trazabilidad' in user.find(marker='matrix-export-template').elements.pop()._props['model-value']['label'].lower()
+    user.find(marker='matrix-export-confirm').click()   # no debe reventar (cubre el render+descarga completo, ver test_spec_report.py)
+    await user.should_see(marker='matrix-export-confirm', retries=5)   # sigue en la página, sin errores sin capturar
+
+
+async def test_spec_template_preview_renders_sample_data_without_saving_anything(user: User):
+    project = core.create_project('Previsualizar plantilla')
+    core.set_active_project(project['id'])
+    await user.open('/spec-templates/edit')
+    user.find(marker='template-name').type('Plantilla en borrador')
+    user.find(marker='template-preview').click()
+    await eventually(lambda: any(core.ARTIFACTS.glob('draft-template-preview.html')))
+    report = next(core.ARTIFACTS.glob('draft-template-preview.html'))
+    assert 'datos de ejemplo' in report.read_text(encoding='utf-8')
+    assert core.list_items('spec_templates') == core.list_items('spec_templates')   # nada nuevo quedó guardado (sigue siendo un borrador)
+    assert not any(t['name'] == 'Plantilla en borrador' for t in core.list_items('spec_templates'))

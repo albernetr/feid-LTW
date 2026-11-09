@@ -1,6 +1,6 @@
 from nicegui import ui
-from .. import core
-from .common import frame, guard, confirm, empty_state, require_project, protected_page
+from .. import core, spec_report
+from .common import frame, guard, confirm, empty_state, require_project, open_evidence_in_new_tab, protected_page
 
 KIND_LABELS = {'input': 'Entrada', 'output': 'Salida'}
 APPLIES_LABELS = {'user_story': 'Historia de usuario', 'test_case': 'Caso de prueba', 'report': 'Reporte'}
@@ -99,6 +99,14 @@ def spec_template_detail(id: str = ''):
             body_rows()
             if not disabled:
                 ui.button('Agregar campo', icon='add', on_click=lambda: (d['body'].append({'field': '', 'label': ''}), body_rows.refresh())).props('outline dense color=primary').mark('template-add-field')
+
+            def preview():
+                draft = {'name': name.value or 'Vista previa', 'applies_to': applies_to.value, 'body': d['body']}
+                html_text = spec_report.render_spec_html(spec_report.build_template_preview(draft))
+                filename = f'{(current or {}).get("id", "draft")}-template-preview.html'
+                (core.ARTIFACTS / filename).write_text(html_text, encoding='utf-8')
+                open_evidence_in_new_tab((current or {}).get('id', 'draft'), filename)
+            ui.button('Vista previa', icon='visibility', on_click=guard(preview)).props('outline dense color=primary mt-2').mark('template-preview')
 
             if is_global:
                 def adopt():

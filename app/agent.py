@@ -142,6 +142,87 @@ def spec_digest(spec):
     return hashlib.sha256(json.dumps(spec, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
+# --------------------------------------------------------------------------- ltw.spec_bundle/1: Especificación
+# (Historias de usuario + Casos de prueba como documento de planificación) — protocolo propio, separado del de
+# arriba: ese es para casos EJECUTABLES (API/UI) con aserciones; este es para el documento de planificación de
+# la sección Especificación (/stories, /test-specs), exista o no todavía un Caso ejecutable detrás.
+
+FORMAT_SPEC_BUNDLE = 'ltw.spec_bundle/1'
+
+_SPEC_CRITERION = {'type': 'object', 'required': ['text'], 'additionalProperties': False,
+                   'properties': {'text': {'type': 'string', 'minLength': 1}, 'status': {'enum': ['pending', 'met']}}}
+_SPEC_STEP = {'type': 'object', 'additionalProperties': False, 'properties': {'action': {'type': 'string'}, 'expected': {'type': 'string'}}}
+_SPEC_TEST_CASE = {'type': 'object', 'required': ['title'], 'additionalProperties': False, 'properties': {
+    'title': {'type': 'string', 'minLength': 1, 'maxLength': 200}, 'preconditions': {'type': 'string'},
+    'steps': {'type': 'array', 'items': _SPEC_STEP}, 'priority': {'enum': list(core.PRIORITIES)}, 'type': {'enum': list(core.TEST_CASE_TYPES)}}}
+_SPEC_STORY = {'type': 'object', 'required': ['title'], 'additionalProperties': False, 'properties': {
+    'title': {'type': 'string', 'minLength': 1, 'maxLength': 200}, 'as_a': {'type': 'string'}, 'i_want': {'type': 'string'}, 'so_that': {'type': 'string'},
+    'priority': {'enum': list(core.PRIORITIES)}, 'criteria': {'type': 'array', 'items': _SPEC_CRITERION}, 'test_cases': {'type': 'array', 'items': _SPEC_TEST_CASE}}}
+SPEC_BUNDLE_SCHEMA = {
+    '$schema': 'https://json-schema.org/draft/2020-12/schema', '$id': 'https://local-test-workspace/ltw.spec_bundle.1.schema.json',
+    'title': 'ltw.spec_bundle/1', 'type': 'object', 'required': ['format', 'stories'], 'additionalProperties': False,
+    'properties': {'format': {'const': FORMAT_SPEC_BUNDLE}, 'project': {'type': 'string'}, 'stories': {'type': 'array', 'items': _SPEC_STORY}}}
+
+
+def validate_spec_bundle(bundle):
+    import jsonschema
+    if not isinstance(bundle, dict):
+        return {'valid': False, 'errors': [{'path': '$', 'message': 'El bundle debe ser un objeto JSON'}]}
+    errors = [{'path': _path(error), 'message': error.message[:300]}
+              for error in sorted(jsonschema.Draft202012Validator(SPEC_BUNDLE_SCHEMA).iter_errors(bundle), key=lambda e: list(map(str, e.absolute_path)))]
+    return {'valid': not errors, 'errors': errors}
+
+
+def import_spec_bundle(bundle, project_name=None):
+    """Upsert (por título, dentro del proyecto) Historias de usuario y sus Casos de prueba — mismo espíritu
+    idempotente que import_spec para casos/suites ejecutables; un Caso de prueba se identifica por su título
+    DENTRO de la Historia a la que pertenece (puede repetirse en otra Historia sin pisarla)."""
+    report = validate_spec_bundle(bundle)
+    if not report['valid']:
+        raise SpecError(report['errors'])
+    project = ensure_project(project_name or bundle.get('project'))
+    pid = project['id']
+    stories_out, cases_out = {}, {}
+    for item in bundle['stories']:
+        existing = next((s for s in core.list_project_items('user_stories', pid) if s['title'] == item['title']), None)
+        if existing:
+            story = core.update_user_story(existing['id'], item['title'], item.get('as_a', ''), item.get('i_want', ''), item.get('so_that', ''),
+                                           existing.get('feature_id'), item.get('priority', 'medium'), item.get('criteria', []), existing.get('status'))
+        else:
+            story = core.create_user_story(item['title'], pid, item.get('as_a', ''), item.get('i_want', ''), item.get('so_that', ''),
+                                           None, item.get('priority', 'medium'), item.get('criteria', []), source='agent')
+        stories_out[item['title']] = story
+        for tc in item.get('test_cases', []):
+            existing_tc = next((s for s in core.list_project_items('test_case_specs', pid) if s['title'] == tc['title'] and s.get('story_id') == story['id']), None)
+            if existing_tc:
+                spec = core.update_test_case_spec(existing_tc['id'], tc['title'], story['id'], existing_tc.get('feature_id'), tc.get('preconditions', ''),
+                                                  tc.get('steps', []), tc.get('priority', 'medium'), tc.get('type', 'functional'), existing_tc.get('linked_case_id'))
+            else:
+                spec = core.create_test_case_spec(tc['title'], pid, story_id=story['id'], preconditions=tc.get('preconditions', ''),
+                                                  steps=tc.get('steps', []), priority=tc.get('priority', 'medium'), type=tc.get('type', 'functional'), source='agent')
+            cases_out[tc['title']] = spec
+    return {'project': project['name'], 'stories': stories_out, 'test_cases': cases_out}
+
+
+def export_spec_bundle(project_name):
+    project = next((p for p in core.list_items('projects') if p['name'] == project_name), None)
+    if project is None:
+        raise ValueError(f'Proyecto inexistente: {project_name}')
+    pid = project['id']
+    specs_by_story = {}
+    for spec in core.list_project_items('test_case_specs', pid):
+        specs_by_story.setdefault(spec.get('story_id'), []).append(spec)
+    stories = []
+    for story in core.list_project_items('user_stories', pid):
+        stories.append({'title': story['title'], 'as_a': story.get('as_a', ''), 'i_want': story.get('i_want', ''), 'so_that': story.get('so_that', ''),
+                        'priority': story.get('priority', 'medium'),
+                        'criteria': [{'text': c['text'], 'status': c.get('status', 'pending')} for c in story.get('criteria', [])],
+                        'test_cases': [{'title': tc['title'], 'preconditions': tc.get('preconditions', ''), 'steps': tc.get('steps', []),
+                                        'priority': tc.get('priority', 'medium'), 'type': tc.get('type', 'functional')}
+                                       for tc in specs_by_story.get(story['id'], [])]})
+    return {'format': FORMAT_SPEC_BUNDLE, 'project': project['name'], 'stories': stories}
+
+
 # --------------------------------------------------------------------------- spec -> workspace
 
 def _default_env_name(spec):
@@ -590,6 +671,29 @@ def register_api(app):
         except ValueError as exc:
             raise HTTPException(404, str(exc))
         return PlainTextResponse(item['brief_markdown']) if format == 'md' else JSONResponse(item)
+
+    @app.get('/agent/v1/specs/schema')
+    def specs_schema():
+        return JSONResponse(SPEC_BUNDLE_SCHEMA)
+
+    @app.post('/agent/v1/specs/import')
+    async def specs_import(request: Request, authorization: str = Header(None)):
+        guard(request, authorization)
+        bundle = await request.json()
+        try:
+            result = import_spec_bundle(bundle, request.query_params.get('project'))
+        except SpecError as exc:
+            return JSONResponse({'format': FORMAT_SPEC_BUNDLE, 'valid': False, 'errors': exc.errors}, status_code=422)
+        return JSONResponse({'format': FORMAT_SPEC_BUNDLE, 'project': result['project'],
+                             'stories': list(result['stories'].keys()), 'test_cases': list(result['test_cases'].keys())})
+
+    @app.get('/agent/v1/specs/export')
+    def specs_export(project: str, request: Request, authorization: str = Header(None)):
+        guard(request, authorization)
+        try:
+            return JSONResponse(export_spec_bundle(project))
+        except ValueError as exc:
+            raise HTTPException(404, str(exc))
 
 
 # --------------------------------------------------------------------------- command line

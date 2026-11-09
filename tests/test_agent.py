@@ -232,6 +232,97 @@ def test_http_api_requires_the_token_and_is_local_only(sample_app, second_app):
     failing_id = report['failures'][0]['id']
     assert client.get(f'/agent/v1/failures/{failing_id}', headers=auth).json()['kind'] == 'assertion'
     assert client.get(f'/agent/v1/failures/{failing_id}?format=md', headers=auth).text.startswith('# Fallo de prueba')
+
+
+# --------------------------------------------------------------------------- ltw.spec_bundle/1 (Especificación)
+
+def make_bundle(**extra):
+    return {'format': 'ltw.spec_bundle/1', 'project': 'Especificación agente',
+            'stories': [{'title': 'Recuperar contraseña', 'as_a': 'usuario', 'i_want': 'recuperar acceso', 'so_that': 'no perder mis datos',
+                        'priority': 'high', 'criteria': [{'text': 'Se envía un email', 'status': 'pending'}],
+                        'test_cases': [{'title': 'Enviar email', 'preconditions': 'cuenta activa',
+                                       'steps': [{'action': 'pedir recuperación', 'expected': 'llega el email'}], 'priority': 'high', 'type': 'functional'}]}],
+            **extra}
+
+
+def test_spec_bundle_schema_is_published_and_valid_json_schema():
+    import jsonschema
+    jsonschema.Draft202012Validator.check_schema(agent.SPEC_BUNDLE_SCHEMA)
+    assert agent.SPEC_BUNDLE_SCHEMA['properties']['format']['const'] == 'ltw.spec_bundle/1'
+
+
+def test_validate_spec_bundle_reports_precise_errors():
+    result = agent.validate_spec_bundle(make_bundle())
+    assert result == {'valid': True, 'errors': []}
+    bad = make_bundle()
+    bad['stories'][0]['priority'] = 'urgentísima'
+    found = agent.validate_spec_bundle(bad)
+    assert not found['valid'] and found['errors'][0]['path'] == '$.stories[0].priority'
+    assert agent.validate_spec_bundle('no es un objeto')['valid'] is False
+
+
+def test_import_spec_bundle_creates_then_upserts_by_title():
+    bundle = make_bundle()
+    result = agent.import_spec_bundle(bundle)
+    project = result['project']
+    story = result['stories']['Recuperar contraseña']
+    spec = result['test_cases']['Enviar email']
+    assert story['as_a'] == 'usuario' and spec['story_id'] == story['id'] and spec['preconditions'] == 'cuenta activa'
+    assert [p['name'] for p in core.list_items('projects')] == [project]
+
+    bundle['stories'][0]['as_a'] = 'usuario registrado'
+    bundle['stories'][0]['test_cases'][0]['preconditions'] = 'cuenta activa y verificada'
+    again = agent.import_spec_bundle(bundle)
+    assert again['stories']['Recuperar contraseña']['id'] == story['id']           # mismo registro, no duplicado
+    assert again['stories']['Recuperar contraseña']['as_a'] == 'usuario registrado'
+    assert again['test_cases']['Enviar email']['id'] == spec['id']
+    assert again['test_cases']['Enviar email']['preconditions'] == 'cuenta activa y verificada'
+    assert len(core.list_items('user_stories')) == 1 and len(core.list_items('test_case_specs')) == 1
+
+
+def test_import_spec_bundle_raises_spec_error_for_an_invalid_bundle():
+    bad = make_bundle()
+    bad['stories'][0]['title'] = ''
+    with pytest.raises(agent.SpecError):
+        agent.import_spec_bundle(bad)
+
+
+def test_export_spec_bundle_mirrors_what_was_imported():
+    agent.import_spec_bundle(make_bundle())
+    exported = agent.export_spec_bundle('Especificación agente')
+    assert exported['format'] == 'ltw.spec_bundle/1' and exported['project'] == 'Especificación agente'
+    assert len(exported['stories']) == 1
+    story = exported['stories'][0]
+    assert story['title'] == 'Recuperar contraseña' and story['criteria'] == [{'text': 'Se envía un email', 'status': 'pending'}]
+    assert story['test_cases'][0]['title'] == 'Enviar email'
+    assert agent.validate_spec_bundle(exported)['valid'] is True   # lo exportado siempre es válido para reimportar
+
+
+def test_export_spec_bundle_rejects_an_unknown_project():
+    with pytest.raises(ValueError):
+        agent.export_spec_bundle('No existe')
+
+
+def test_http_api_specs_endpoints_require_the_token_and_round_trip():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    app = FastAPI()
+    agent.register_api(app)
+    client = TestClient(app, base_url='http://127.0.0.1')
+    token = agent.agent_token()
+    auth = {'Authorization': f'Bearer {token}'}
+    bundle = make_bundle()
+    assert client.get('/agent/v1/specs/schema').json()['title'] == 'ltw.spec_bundle/1'                 # público
+    assert client.post('/agent/v1/specs/import', json=bundle).status_code == 401
+    imported = client.post('/agent/v1/specs/import', json=bundle, headers=auth).json()
+    assert imported['stories'] == ['Recuperar contraseña'] and imported['test_cases'] == ['Enviar email']
+    invalid = client.post('/agent/v1/specs/import', json={'format': 'ltw.spec_bundle/1', 'stories': [{'title': ''}]}, headers=auth)
+    assert invalid.status_code == 422
+    assert client.get('/agent/v1/specs/export', params={'project': 'Especificación agente'}).status_code == 401
+    exported = client.get('/agent/v1/specs/export', params={'project': 'Especificación agente'}, headers=auth).json()
+    assert exported['stories'][0]['title'] == 'Recuperar contraseña'
+    missing = client.get('/agent/v1/specs/export', params={'project': 'No existe'}, headers=auth)
+    assert missing.status_code == 404
     assert client.get('/agent/v1/failures/nope', headers=auth).status_code == 404
     rotated = agent.rotate_agent_token()
     assert rotated != token and not agent.check_token(token) and agent.check_token(f'Bearer {rotated}')
