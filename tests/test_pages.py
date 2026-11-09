@@ -1306,3 +1306,128 @@ async def test_builtin_templates_cannot_be_edited_or_deleted_from_the_ui(user: U
         user.find(marker='template-save')
     with pytest.raises(AssertionError):
         user.find(marker='template-delete')
+
+
+# --------------------------------------------------------------------------- Asistente de IA en Especificación (Fase 2)
+
+async def test_story_assistant_generates_a_draft_from_a_description(user: User):
+    """Un mensaje con «generá»/«creá» (y el formulario vacío) dispara generate_user_story — el resultado llena
+    el formulario, pero nada se guarda hasta que se hace clic en Crear historia."""
+    from app import llm
+    from sample_app.fake_llm import FakeLLM
+    project = core.create_project('Asistente HU')
+    core.set_active_project(project['id'])
+    with FakeLLM() as fake:
+        llm.save_config({'preset': 'local', 'protocol': 'openai', 'base_url': fake.url + '/v1', 'model': 'modelo-demo', 'auth': 'none'})
+        fake.queue(json.dumps({'title': 'Pagar con tarjeta', 'as_a': 'cliente', 'i_want': 'pagar con tarjeta',
+                               'so_that': 'completar la compra', 'criteria': ['Veo la confirmación del pago']}))
+        await user.open('/stories/edit')
+        user.find(marker='story-assistant-input').type('Generá una historia para pagar con tarjeta de crédito')
+        user.find(marker='story-assistant-send').click()
+        await user.should_see('Generé una propuesta', retries=30)
+        assert user.find(marker='story-title').elements.pop().value == 'Pagar con tarjeta'
+        assert core.list_items('user_stories') == []   # todavía no se guardó nada
+        user.find(marker='story-save').click()
+        await user.should_see('Historia creada')
+        [story] = core.list_items('user_stories')
+        assert story['as_a'] == 'cliente' and story['criteria'][0]['text'] == 'Veo la confirmación del pago'
+
+
+async def test_story_assistant_refine_keyword_updates_the_open_form(user: User):
+    from app import llm
+    from sample_app.fake_llm import FakeLLM
+    project = core.create_project('Asistente refinar')
+    core.set_active_project(project['id'])
+    story = core.create_user_story('Pagar', project['id'], as_a='cliente', i_want='pagar', so_that='comprar',
+                                   criteria=[{'text': 'veo confirmación'}])
+    with FakeLLM() as fake:
+        llm.save_config({'preset': 'local', 'protocol': 'openai', 'base_url': fake.url + '/v1', 'model': 'modelo-demo', 'auth': 'none'})
+        fake.queue(json.dumps({'title': 'Pagar', 'as_a': 'cliente registrado', 'i_want': 'pagar', 'so_that': 'comprar',
+                               'criteria': ['veo confirmación', 'recibo un email de confirmación']}))
+        await user.open(f'/stories/edit?id={story["id"]}')
+        user.find(marker='story-assistant-input').type('Enriquecé los criterios de aceptación')
+        user.find(marker='story-assistant-send').click()
+        await user.should_see('Refiné la historia', retries=30)
+        assert user.find(marker='story-title').elements.pop().value == 'Pagar'
+        inputs = user.find(marker='story-criterion-text').elements
+        assert len(inputs) == 2 and {i.value for i in inputs} == {'veo confirmación', 'recibo un email de confirmación'}
+        assert core.get('user_stories', story['id'])['as_a'] == 'cliente'   # no se guardó solo
+
+
+async def test_story_assistant_generates_test_cases_and_creates_the_selected_ones(user: User):
+    from app import llm
+    from sample_app.fake_llm import FakeLLM
+    project = core.create_project('Asistente casos')
+    core.set_active_project(project['id'])
+    story = core.create_user_story('Pagar', project['id'], criteria=[{'text': 'veo confirmación'}])
+    with FakeLLM() as fake:
+        llm.save_config({'preset': 'local', 'protocol': 'openai', 'base_url': fake.url + '/v1', 'model': 'modelo-demo', 'auth': 'none'})
+        fake.queue(json.dumps({'test_cases': [
+            {'title': 'Pago con tarjeta válida', 'preconditions': '', 'steps': [{'action': 'pagar', 'expected': 'confirmado'}], 'priority': 'high', 'type': 'functional'},
+            {'title': 'Pago con tarjeta vencida', 'preconditions': '', 'steps': [{'action': 'pagar', 'expected': 'rechazado'}], 'priority': 'medium', 'type': 'functional'},
+        ]}))
+        await user.open(f'/stories/edit?id={story["id"]}')
+        user.find(marker='story-assistant-input').type('Generá los casos de prueba para esta historia')
+        user.find(marker='story-assistant-send').click()
+        await user.should_see('2 caso(s) de prueba candidatos', retries=30)
+        assert core.list_items('test_case_specs') == []
+        user.find(marker='story-create-draft-cases').click()
+        await user.should_see('2 caso(s) de prueba creado(s)', retries=30)
+        specs = core.list_items('test_case_specs')
+        assert len(specs) == 2 and all(s['source'] == 'ai' and s['story_id'] == story['id'] for s in specs)
+
+
+async def test_spec_assistant_generates_candidates_from_the_linked_story_and_loads_one(user: User):
+    from app import llm
+    from sample_app.fake_llm import FakeLLM
+    project = core.create_project('Asistente spec')
+    core.set_active_project(project['id'])
+    story = core.create_user_story('Pagar', project['id'], criteria=[{'text': 'veo confirmación'}])
+    with FakeLLM() as fake:
+        llm.save_config({'preset': 'local', 'protocol': 'openai', 'base_url': fake.url + '/v1', 'model': 'modelo-demo', 'auth': 'none'})
+        fake.queue(json.dumps({'test_cases': [
+            {'title': 'Pago válido', 'preconditions': 'sesión iniciada', 'steps': [{'action': 'pagar', 'expected': 'confirmado'}], 'priority': 'high', 'type': 'functional'},
+        ]}))
+        await user.open(f'/test-specs/edit?story_id={story["id"]}')
+        user.find(marker='spec-assistant-input').type('Generá candidatos de caso de prueba')
+        user.find(marker='spec-assistant-send').click()
+        await user.should_see('1 candidato(s)', retries=30)
+        assert user.find(marker='spec-title').elements.pop().value == ''   # nada cargado todavía
+        user.find(marker='spec-use-candidate').click()
+        await eventually(lambda: user.find(marker='spec-title').elements.pop().value == 'Pago válido')
+        assert core.list_items('test_case_specs') == []   # cargar un candidato no guarda nada
+
+
+async def test_story_detail_shows_the_coverage_matrix_with_last_run_status(user: User):
+    project = core.create_project('Matriz UI')
+    core.set_active_project(project['id'])
+    story = core.create_user_story('Pagar', project['id'])
+    env = core.save('environments', {'name': 'e', 'project_id': project['id'], 'base_url': 'http://x', 'auth': {'type': 'none'}, 'variables': {}})
+    api_case = core.save('cases', {'name': 'Pagar', 'method': 'GET', 'path': '/pay', 'project_id': project['id'], 'environment_id': env['id'],
+                                   'headers': {}, 'query': {}, 'body': None, 'assertions': [], 'variables': {}, 'extract': [], 'timeout': 10})
+    core.create_test_case_spec('Pago válido', project['id'], story_id=story['id'], linked_case_id=api_case['id'])
+    core.save('runs', {'type': 'api', 'case_id': api_case['id'], 'status': 'passed', 'started_at': core.now()})
+
+    await user.open(f'/stories/edit?id={story["id"]}')
+    await user.should_see('Matriz de pruebas')
+    await user.should_see('1/1 automatizados pasan')
+    await user.should_see('Pago válido')
+
+
+async def test_spec_assistant_refine_keyword_updates_the_open_form(user: User):
+    from app import llm
+    from sample_app.fake_llm import FakeLLM
+    project = core.create_project('Asistente spec refinar')
+    core.set_active_project(project['id'])
+    spec = core.create_test_case_spec('Pago válido', project['id'], preconditions='sesión iniciada',
+                                      steps=[{'action': 'pagar', 'expected': 'confirmado'}])
+    with FakeLLM() as fake:
+        llm.save_config({'preset': 'local', 'protocol': 'openai', 'base_url': fake.url + '/v1', 'model': 'modelo-demo', 'auth': 'none'})
+        fake.queue(json.dumps({'title': 'Pago válido', 'preconditions': 'sesión iniciada con saldo suficiente',
+                               'steps': [{'action': 'pagar', 'expected': 'confirmado'}], 'priority': 'high', 'type': 'functional'}))
+        await user.open(f'/test-specs/edit?id={spec["id"]}')
+        user.find(marker='spec-assistant-input').type('Refiná la precondición, sé más específico')
+        user.find(marker='spec-assistant-send').click()
+        await user.should_see('Refiné el caso de prueba', retries=30)
+        await user.should_see('sesión iniciada con saldo suficiente')
+        assert core.get('test_case_specs', spec['id'])['preconditions'] == 'sesión iniciada'   # no se guardó solo

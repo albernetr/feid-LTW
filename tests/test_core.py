@@ -849,3 +849,22 @@ def test_deleting_a_project_is_blocked_by_stories_and_specs_then_cascade_removes
     core.delete_project_cascade(project['id'])
     assert core.get('user_stories', story['id']) is None
     assert core.get('projects', project['id']) is None
+
+
+def test_story_coverage_crosses_specs_with_their_linked_case_last_run():
+    project = core.create_project('Matriz')
+    story = core.create_user_story('Pagar', project['id'])
+    env = core.save('environments', {'name': 'e', 'project_id': project['id'], 'base_url': 'http://x', 'auth': {'type': 'none'}, 'variables': {}})
+    api_case = core.save('cases', {'name': 'Pagar', 'method': 'GET', 'path': '/pay', 'project_id': project['id'], 'environment_id': env['id'],
+                                   'headers': {}, 'query': {}, 'body': None, 'assertions': [], 'variables': {}, 'extract': [], 'timeout': 10})
+    manual_spec = core.create_test_case_spec('Manual', project['id'], story_id=story['id'])
+    automated_spec = core.create_test_case_spec('Automatizado', project['id'], story_id=story['id'], linked_case_id=api_case['id'])
+    core.save('runs', {'type': 'api', 'case_id': api_case['id'], 'status': 'passed', 'started_at': core.now()})
+
+    coverage = core.story_coverage(story['id'])
+    assert coverage['total'] == 2 and coverage['automated'] == 1 and coverage['passing'] == 1
+    rows_by_spec = {r['spec']['id']: r for r in coverage['rows']}
+    assert rows_by_spec[manual_spec['id']]['last_run'] is None
+    assert rows_by_spec[automated_spec['id']]['last_run']['status'] == 'passed'
+    with pytest.raises(ValueError):
+        core.story_coverage('no-existe')

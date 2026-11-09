@@ -623,3 +623,213 @@ def assistant_reply(conversation_messages, assistant_messages, text, ai_run_acti
     action = data.get('action') if data.get('action') in ('chat', 'note', 'continue') else 'chat'
     return {'reply': str(data['reply']), 'action': action, 'autopilot': bool(data.get('autopilot')),
             'instruction': str(data.get('instruction') or '')}
+
+
+# --------------------------------------------------------------------------- Especificación: generar/refinar HU y
+# Casos de prueba con IA (Fase 2). Mismo patrón que generate_spec: pedir JSON, validar con un validador propio
+# (liviano, nada de agent.validate_spec que es para ltw.spec/1), un reintento automático de reparación si falla.
+# Nunca se guarda nada desde acá — el caller (user_stories.py/test_case_specs.py) siempre muestra el resultado
+# para revisar/editar antes de persistirlo.
+
+SPEC_GENERATE_CASES_KEYWORDS = ('caso de prueba', 'casos de prueba', 'test case', 'test cases', 'matriz de prueba', 'matriz de pruebas')
+SPEC_REFINE_KEYWORDS = ('refin', 'enriquec', 'mejorá', 'mejora', 'optimizá', 'optimiza', 'pulí', 'puli')
+SPEC_GENERATE_STORY_KEYWORDS = ('generá', 'genera', 'generame', 'generar', 'creá', 'crea', 'crear', 'escribí', 'escribi', 'redactá', 'redacta')
+
+GENERATE_STORY_SYSTEM = (
+    'Eres un analista de QA/negocio. Convertís una descripción en una Historia de Usuario. Responde SOLO con un '
+    'objeto JSON válido, sin texto antes ni después: {"title": "...", "as_a": "...", "i_want": "...", '
+    '"so_that": "...", "criteria": ["...", "..."]}. title: corto y descriptivo. as_a/i_want/so_that: el formato '
+    'clásico Como/Quiero/Para, cada uno una frase. criteria: 2 a 5 criterios de aceptación concretos y '
+    'verificables, cada uno una frase. No inventes datos que la descripción no sugiera. Responde en español.')
+
+
+def generate_story_messages(description, feature=None):
+    parts = [f'Descripción de la historia de usuario a crear:\n{description.strip()}']
+    if feature:
+        parts.append(f'Funcionalidad de negocio a la que pertenece: {feature.get("name", "")} — {feature.get("description", "")}')
+    return GENERATE_STORY_SYSTEM, redact(_clip('\n\n'.join(parts)))
+
+
+def _validate_story_draft(data):
+    if not isinstance(data, dict):
+        return ['La respuesta no es un objeto JSON']
+    errors = []
+    if not (data.get('title') or '').strip():
+        errors.append('Falta "title"')
+    if data.get('criteria') is not None and not isinstance(data['criteria'], list):
+        errors.append('"criteria" debe ser una lista')
+    return errors
+
+
+def _clean_story_draft(data):
+    criteria = [{'text': str(c).strip()} for c in (data.get('criteria') or []) if str(c).strip()]
+    return {'title': str(data.get('title', '')).strip(), 'as_a': str(data.get('as_a', '')).strip(),
+            'i_want': str(data.get('i_want', '')).strip(), 'so_that': str(data.get('so_that', '')).strip(), 'criteria': criteria}
+
+
+def _retry_prompt(user, errors):
+    return redact(_clip(user.split('\n\nTu respuesta anterior')[0] +
+                        '\n\nTu respuesta anterior tenía estos problemas; devuelve el JSON completo corregido:\n' +
+                        '\n'.join(f'- {e}' for e in errors)))
+
+
+def generate_user_story(description, feature=None, config=None, attempts=2):
+    """{'story': {...} | None, 'valid': bool, 'errors': [...], 'raw': str, 'attempts': int}. Un reintento
+    automático de reparación si la respuesta no trae al menos un título."""
+    if not (description or '').strip():
+        raise LLMError('Describe la historia de usuario que querés generar.')
+    system, user = generate_story_messages(description, feature)
+    raw, errors, story = '', [], None
+    for attempt in range(1, attempts + 1):
+        raw = ask(system, user, config)
+        try:
+            data = _extract_json(raw)
+            errors = _validate_story_draft(data)
+            story = _clean_story_draft(data) if not errors else None
+        except ValueError as exc:
+            story, errors = None, [f'JSON no válido: {exc}']
+        if story:
+            return {'story': story, 'valid': True, 'errors': [], 'raw': raw, 'attempts': attempt}
+        user = _retry_prompt(user, errors)
+    return {'story': None, 'valid': False, 'errors': errors, 'raw': raw, 'attempts': attempts}
+
+
+GENERATE_TEST_CASES_SYSTEM = (
+    'Eres un ingeniero de QA. A partir de una Historia de Usuario y/o sus Criterios de aceptación (y, si se da, un '
+    'ambiente de prueba), generás Casos de prueba — el PLAN de cada caso (precondición, pasos, resultado '
+    'esperado), no un caso ya automatizado. Responde SOLO con un objeto JSON válido, sin texto antes ni después: '
+    '{"test_cases": [{"title": "...", "preconditions": "...", "steps": [{"action": "...", "expected": "..."}], '
+    '"priority": "low"|"medium"|"high"|"critical", "type": "functional"|"regression"|"smoke"|"exploratory"}]}. '
+    'Generá entre 2 y 6 casos: al menos uno por cada criterio de aceptación dado, y sumá casos límite o negativos '
+    'razonables (datos inválidos, sin permisos, etc.) cuando el criterio lo sugiera. Responde en español.')
+
+
+def generate_test_cases_messages(story=None, criteria=None, environment=None):
+    parts = []
+    if story:
+        text = f'Historia: {story.get("title", "")}'
+        if story.get('as_a') or story.get('i_want') or story.get('so_that'):
+            text += f'\nComo {story.get("as_a", "")}, quiero {story.get("i_want", "")}, para {story.get("so_that", "")}'
+        parts.append(text)
+        if criteria is None:
+            criteria = story.get('criteria')
+    if criteria:
+        texts = [c.get('text') if isinstance(c, dict) else str(c) for c in criteria]
+        texts = [t for t in texts if t]
+        if texts:
+            parts.append('Criterios de aceptación:\n' + '\n'.join(f'- {t}' for t in texts))
+    if not parts:
+        raise LLMError('Necesito una historia de usuario o al menos un criterio de aceptación.')
+    if environment:
+        parts.append(f'Ambiente de prueba: {environment.get("name", "")} — {environment.get("base_url", "")}')
+    return GENERATE_TEST_CASES_SYSTEM, redact(_clip('\n\n'.join(parts)))
+
+
+def _validate_test_cases_draft(data):
+    if not isinstance(data, dict) or not isinstance(data.get('test_cases'), list) or not data['test_cases']:
+        return ['Falta "test_cases" (lista no vacía)']
+    errors = []
+    for index, tc in enumerate(data['test_cases'], 1):
+        if not isinstance(tc, dict) or not (tc.get('title') or '').strip():
+            errors.append(f'Caso {index}: falta "title"')
+    return errors
+
+
+def _clean_test_case_draft(tc):
+    steps = [{'action': str(s.get('action', '')).strip(), 'expected': str(s.get('expected', '')).strip()}
+             for s in (tc.get('steps') or []) if isinstance(s, dict)]
+    return {'title': str(tc.get('title', '')).strip(), 'preconditions': str(tc.get('preconditions', '')).strip(), 'steps': steps,
+            'priority': tc.get('priority') if tc.get('priority') in core.PRIORITIES else 'medium',
+            'type': tc.get('type') if tc.get('type') in core.TEST_CASE_TYPES else 'functional'}
+
+
+def generate_test_cases(story=None, criteria=None, environment=None, config=None, attempts=2):
+    """{'test_cases': [...], 'valid': bool, 'errors': [...], 'raw': str, 'attempts': int}."""
+    system, user = generate_test_cases_messages(story, criteria, environment)
+    raw, errors, cases = '', [], None
+    for attempt in range(1, attempts + 1):
+        raw = ask(system, user, config)
+        try:
+            data = _extract_json(raw)
+            errors = _validate_test_cases_draft(data)
+            cases = [_clean_test_case_draft(tc) for tc in data['test_cases']] if not errors else None
+        except ValueError as exc:
+            cases, errors = None, [f'JSON no válido: {exc}']
+        if cases is not None:
+            return {'test_cases': cases, 'valid': True, 'errors': [], 'raw': raw, 'attempts': attempt}
+        user = _retry_prompt(user, errors)
+    return {'test_cases': [], 'valid': False, 'errors': errors, 'raw': raw, 'attempts': attempts}
+
+
+REFINE_SYSTEM = (
+    'Eres un analista de QA/negocio senior. Te paso un elemento de especificación (una Historia de Usuario o un '
+    'Caso de prueba) en JSON y una instrucción de refinamiento ("enriquecé los criterios", "hacé los pasos más '
+    'específicos", "optimizá la redacción", etc.). Devolvé el MISMO elemento, con la misma forma JSON, aplicando '
+    'el refinamiento pedido — conservá lo que no tenga que cambiar. Responde SOLO con el objeto JSON del elemento '
+    'refinado, sin envolverlo en nada más, sin texto antes ni después. Responde en español.')
+
+
+def refine_messages(kind, item, instruction):
+    if not (instruction or '').strip():
+        raise LLMError('Indicá qué querés refinar/mejorar.')
+    label = 'Historia de usuario' if kind == 'user_story' else 'Caso de prueba'
+    parts = [f'{label} actual (JSON):\n{json.dumps(item, ensure_ascii=False)}', f'Instrucción de refinamiento:\n{instruction.strip()}']
+    return REFINE_SYSTEM, redact(_clip('\n\n'.join(parts)))
+
+
+def _validate_single_test_case(data):
+    if not isinstance(data, dict):
+        return ['La respuesta no es un objeto JSON']
+    return [] if (data.get('title') or '').strip() else ['Falta "title"']
+
+
+def refine_spec_item(kind, item, instruction, config=None, attempts=2):
+    """{'item': {...} | None, 'valid': bool, 'errors': [...], 'raw': str, 'attempts': int}. `kind`: 'user_story' o
+    'test_case' — misma forma que generate_user_story/generate_test_cases para ese tipo."""
+    if kind not in ('user_story', 'test_case'):
+        raise ValueError('kind inválido')
+    system, user = refine_messages(kind, item, instruction)
+    validate, clean = (_validate_story_draft, _clean_story_draft) if kind == 'user_story' else (_validate_single_test_case, _clean_test_case_draft)
+    raw, errors, refined = '', [], None
+    for attempt in range(1, attempts + 1):
+        raw = ask(system, user, config)
+        try:
+            data = _extract_json(raw)
+            errors = validate(data)
+            refined = clean(data) if not errors else None
+        except ValueError as exc:
+            refined, errors = None, [f'JSON no válido: {exc}']
+        if refined:
+            return {'item': refined, 'valid': True, 'errors': [], 'raw': raw, 'attempts': attempt}
+        user = _retry_prompt(user, errors)
+    return {'item': None, 'valid': False, 'errors': errors, 'raw': raw, 'attempts': attempts}
+
+
+SPEC_CHAT_SYSTEM = (
+    'Sos el Asistente de IA de Local Test Workspace, dentro de la sección Especificación (Historias de usuario y '
+    'Casos de prueba). Ayudás a planificar pruebas: respondés preguntas, sugerís mejoras, explicás conceptos. No '
+    'estás generando ni refinando un documento en este mensaje puntual (eso se dispara aparte, por palabra clave) '
+    '— acá solo conversás. Respondé en español, corto y concreto, en texto plano (sin JSON, sin markdown pesado).')
+
+
+def _spec_chat_transcript(history):
+    who_labels = {'user': 'Vos', 'assistant': 'Asistente'}
+    return '\n'.join(f'{who_labels.get(t.get("who"), t.get("who"))}: {t.get("text", "")}' for t in history)
+
+
+def spec_chat_messages(history, text, context=None):
+    parts = [f'Mensaje nuevo: {text.strip()}']
+    context = context or {}
+    if context.get('current'):
+        parts.append(f'Elemento actualmente abierto ({context.get("kind", "")}):\n{json.dumps(context["current"], ensure_ascii=False)}')
+    if history:
+        parts.append(f'Charla hasta ahora:\n{_spec_chat_transcript(history)}')
+    return SPEC_CHAT_SYSTEM, redact(_clip('\n\n'.join(parts)))
+
+
+def spec_chat_reply(history, text, context=None, config=None):
+    """Texto plano (no JSON) — para cuando el mensaje no dispara generar/refinar, solo responde."""
+    if not (text or '').strip():
+        raise LLMError('Escribí algo para el Asistente.')
+    system, user = spec_chat_messages(history, text, context)
+    return ask(system, user, config)

@@ -318,3 +318,88 @@ def test_judge_run_requires_a_run(fake):
     configure(fake)
     with pytest.raises(llm.LLMError, match='No hay corrida'):
         llm.judge_run(None, 'algún criterio')
+
+
+# --------------------------------------------------------------------------- Especificación: generar/refinar HU y
+# Casos de prueba, chat libre (Fase 2)
+
+def test_generate_user_story_validates_and_cleans_criteria(fake):
+    configure(fake)
+    fake.queue(json.dumps({'title': 'Pagar', 'as_a': 'cliente', 'i_want': 'pagar', 'so_that': 'comprar',
+                          'criteria': ['veo confirmación', '  ', 'recibo un email']}))
+    result = llm.generate_user_story('una historia para pagar')
+    assert result['valid'] and result['attempts'] == 1
+    assert [c['text'] for c in result['story']['criteria']] == ['veo confirmación', 'recibo un email']
+    with pytest.raises(llm.LLMError):
+        llm.generate_user_story('   ')
+
+
+def test_generate_user_story_repairs_once_then_gives_up(fake):
+    configure(fake)
+    fake.queue('no es json', json.dumps({'title': 'Pagar'}))
+    result = llm.generate_user_story('algo')
+    assert result['valid'] and result['attempts'] == 2
+    fake.queue('no es json', 'tampoco')
+    failed = llm.generate_user_story('algo')
+    assert not failed['valid'] and failed['attempts'] == 2
+
+
+def test_generate_user_story_includes_the_feature_in_the_prompt(fake):
+    configure(fake)
+    fake.queue(json.dumps({'title': 'x'}))
+    llm.generate_user_story('algo', feature={'name': 'Checkout', 'description': 'pagos'})
+    sent = fake.requests[-1]['body']['messages'][-1]['content']
+    assert 'Checkout' in sent
+
+
+def test_generate_test_cases_from_story_or_criteria_requires_at_least_one(fake):
+    configure(fake)
+    with pytest.raises(llm.LLMError, match='una historia de usuario o al menos un criterio'):
+        llm.generate_test_cases()
+    fake.queue(json.dumps({'test_cases': [{'title': 'Caso 1'}, {'title': 'Caso 2', 'priority': 'bogus', 'type': 'bogus'}]}))
+    result = llm.generate_test_cases(criteria=[{'text': 'veo confirmación'}])
+    assert result['valid'] and len(result['test_cases']) == 2
+    assert result['test_cases'][1]['priority'] == 'medium' and result['test_cases'][1]['type'] == 'functional'   # valor inválido cae al default
+
+
+def test_generate_test_cases_from_a_story_includes_its_criteria_and_the_environment(fake):
+    configure(fake)
+    fake.queue(json.dumps({'test_cases': [{'title': 'Caso 1'}]}))
+    story = {'title': 'Pagar', 'as_a': 'cliente', 'i_want': 'pagar', 'so_that': 'comprar', 'criteria': [{'text': 'veo confirmación'}]}
+    llm.generate_test_cases(story=story, environment={'name': 'qa', 'base_url': 'https://qa.example.com'})
+    sent = fake.requests[-1]['body']['messages'][-1]['content']
+    assert 'Pagar' in sent and 'veo confirmación' in sent and 'qa.example.com' in sent
+
+
+def test_generate_test_cases_rejects_an_empty_list(fake):
+    configure(fake)
+    fake.queue(json.dumps({'test_cases': []}))
+    result = llm.generate_test_cases(criteria=[{'text': 'x'}])
+    assert not result['valid']
+
+
+def test_refine_spec_item_user_story_and_test_case(fake):
+    configure(fake)
+    fake.queue(json.dumps({'title': 'Pagar', 'as_a': 'cliente', 'i_want': 'pagar', 'so_that': 'comprar', 'criteria': ['más específico']}))
+    result = llm.refine_spec_item('user_story', {'title': 'Pagar'}, 'hacelo más específico')
+    assert result['valid'] and result['item']['criteria'][0]['text'] == 'más específico'
+
+    fake.queue(json.dumps({'title': 'Pago válido', 'preconditions': 'sesión iniciada', 'steps': [], 'priority': 'high', 'type': 'functional'}))
+    result = llm.refine_spec_item('test_case', {'title': 'Pago válido'}, 'agregá la precondición')
+    assert result['valid'] and result['item']['preconditions'] == 'sesión iniciada'
+
+    with pytest.raises(ValueError):
+        llm.refine_spec_item('bogus', {}, 'x')
+    with pytest.raises(llm.LLMError, match='qué querés refinar'):
+        llm.refine_spec_item('user_story', {'title': 'x'}, '   ')
+
+
+def test_spec_chat_reply_is_plain_text_and_carries_context(fake):
+    configure(fake)
+    fake.queue('Te recomiendo agregar un criterio sobre el caso negativo.')
+    reply = llm.spec_chat_reply([], '¿qué le falta a esta historia?', {'kind': 'historia de usuario', 'current': {'title': 'Pagar'}})
+    assert reply == 'Te recomiendo agregar un criterio sobre el caso negativo.'
+    sent = fake.requests[-1]['body']['messages'][-1]['content']
+    assert 'Pagar' in sent
+    with pytest.raises(llm.LLMError):
+        llm.spec_chat_reply([], '   ')

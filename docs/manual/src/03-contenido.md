@@ -155,6 +155,19 @@ Antes de ejecutar nada, LTW tiene una sección propia para lo que normalmente se
 - **Casos de prueba** (`/test-specs`): el plan de un caso — precondición, pasos y resultado esperado — como documento propio, **separado** de un Caso API/UI ejecutable. Se liga opcionalmente a una Historia de usuario, a una Funcionalidad, y a un Caso API/UI ya automatizado (campo «Caso API/UI automatizado»); sin ese enlace sigue siendo un caso 100% manual, con su propio estado (Borrador/Listo/Automatizado).
 - **Plantillas** (`/spec-templates`): una **biblioteca global** (compartida entre proyectos, con 4 plantillas de entrada — Historia de usuario INVEST, Criterios Gherkin, Caso de prueba ISTQB, y **Formato libre** para cuando la HU ya viene en un formato propio de la organización — y 3 de salida ya incluidas por defecto) más las **propias de cada proyecto**. Cada proyecto nuevo adopta automáticamente las globales por defecto al crearse. **Adoptar** clona una plantilla global al proyecto activo para poder editarla sin tocar el original; **Promover** publica una copia de una plantilla propia en la biblioteca global para que otros proyectos la adopten. Una plantilla global es de solo lectura hasta que se adopta.
 
+### Asistente de IA (generar, refinar, encadenar)
+
+Tanto el editor de una Historia (`/stories/edit`) como el de un Caso de prueba (`/test-specs/edit`) tienen su propia tarjeta **Asistente de IA** — un mini-chat igual en espíritu al del Chat, pero que actúa sobre el documento que tenés abierto:
+
+- **Generar**: describí lo que querés («Generá una historia para que el cliente pueda…») y el Asistente propone título, Como/Quiero/Para y criterios — se cargan en el formulario de arriba, listos para revisar y **Guardar**; nada se persiste solo.
+- **Generar Casos de prueba**: desde una Historia ya guardada, pedile «Generá los casos de prueba para esta historia» — propone varios candidatos (con pasos, prioridad y tipo) con casilla para elegir cuáles crear; «Crear seleccionados» los guarda ya enlazados a la Historia. Desde el propio editor de un Caso de prueba, el mismo pedido genera candidatos a partir de la Historia ligada (o de tu descripción, si no hay ninguna) — «Usar este» carga uno en el formulario, sin crear nada todavía.
+- **Refinar/enriquecer**: con un documento abierto, pedile «Enriquecé los criterios», «Hacé los pasos más específicos», «Optimizá la redacción», etc. — devuelve el mismo documento mejorado, cargado en el formulario para revisar y guardar.
+- Cualquier otro mensaje (una pregunta, un comentario) lo contesta en texto libre, sin disparar ninguna acción.
+
+### Matriz de pruebas
+
+En el detalle de una Historia ya guardada, la sección **Matriz de pruebas** lista sus Casos de prueba con, si alguno ya está ligado a un Caso API/UI automatizado, el estado de su última corrida (Pasó/Falló/…) — para los que no, su propio estado (Borrador/Listo). Un resumen («N/M automatizados pasan») muestra de un vistazo cuánto de lo automatizado está en verde.
+
 ---
 
 # 8. Casos API

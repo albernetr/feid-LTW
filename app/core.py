@@ -684,6 +684,19 @@ def delete_test_case_spec(spec_id):
     delete('test_case_specs', spec_id)
 
 
+def story_coverage(story_id):
+    """Matriz de pruebas de una HU: sus Casos de prueba y, para los que ya están ligados a un Caso API/UI
+    automatizado, el estado de su última corrida — mismo espíritu que feature_health, a nivel de Historia."""
+    story = get('user_stories', story_id)
+    if story is None:
+        raise ValueError('Historia de usuario inexistente')
+    specs = [s for s in list_items('test_case_specs') if s.get('story_id') == story_id]
+    rows = [{'spec': s, 'last_run': last_run_for_case(s['linked_case_id']) if s.get('linked_case_id') else None} for s in specs]
+    automated = sum(1 for r in rows if r['spec'].get('linked_case_id'))
+    passing = sum(1 for r in rows if r['last_run'] and r['last_run']['status'] == 'passed')
+    return {'story': story, 'rows': rows, 'total': len(rows), 'automated': automated, 'passing': passing}
+
+
 def _clean_test_steps(steps):
     result = []
     for entry in (steps or []):
