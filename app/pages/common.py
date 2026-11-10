@@ -98,6 +98,26 @@ def logout():
     ui.navigate.to('/login')
 
 
+def remembered(key, default=False):
+    """Preferencia (bool, str, lo que sea JSON-serializable) recordada por usuario (app.storage.user — a
+    diferencia de app.storage.browser, que NiceGUI solo deja escribir durante la petición inicial de la página;
+    después de esa respuesta queda de solo lectura, así que un botón clickeado ya con la página cargada nunca
+    lograría persistir nada con `.browser`). Mismo try/except defensivo que ya usa frame() para la expansión de
+    cada grupo de nav. Devuelve (valor, set_valor)."""
+    try:
+        layout = app.storage.user
+    except Exception:
+        layout = {}
+
+    def set_value(value):
+        try:
+            layout[key] = value
+        except Exception:
+            pass
+
+    return layout.get(key, default) if hasattr(layout, 'get') else default, set_value
+
+
 def protected_page(route, **kwargs):
     """Como ui.page(route), pero redirige a /login si nadie inició sesión — toda pantalla de la app usa esto en
     vez de ui.page directamente, así nadie puede olvidarse de proteger una ruta nueva."""
@@ -113,11 +133,13 @@ def protected_page(route, **kwargs):
 
 
 @contextmanager
-def frame(title, current, wide=False, doc_style=False):
+def frame(title, current, wide=False, doc_style=False, full_width=False):
     """Page skeleton: header with active-project switcher, navigation drawer and content column.
     wide=True is for work screens: the menu collapses to icons (expands on hover) and the content uses the whole window.
     doc_style=True gives the content area a "documento" look (fondo suave, tarjetas tipo papel) — para pantallas
-    que conceptualmente son documentos (Especificación), nunca por defecto: no afecta a ninguna otra pantalla."""
+    que conceptualmente son documentos (Especificación), nunca por defecto: no afecta a ninguna otra pantalla.
+    full_width=True da el mismo ancho-completo-sin-título-automático que ya da wide=True, pero sin el drawer
+    mini-icono de las pantallas tipo Chat/Workspace — para pantallas que solo necesitan el ancho, no ese menú."""
     ui.colors(primary='#2563eb')
     ui.add_head_html(ARIA_SCRIPT)
     ui.add_head_html(HTML2CANVAS_SCRIPT)
@@ -190,7 +212,7 @@ def frame(title, current, wide=False, doc_style=False):
                 section.on_value_change(remember)
                 for label, route, icon in items:
                     nav_button(label, route, icon, ' pl-2')
-    if wide:
+    if wide or full_width:
         with ui.column().classes('w-full gap-0 p-0'):
             yield
         return
