@@ -5,6 +5,7 @@ from pathlib import Path
 from nicegui import ui, run
 from .. import core, llm, spec_report
 from .common import frame, guard, confirm, empty_state, require_project, fmt_time, status_badge, read_upload, open_evidence_in_new_tab, protected_page
+from .test_case_specs import STATUS_LABELS as SPEC_STATUS_LABELS, TYPE_LABELS as SPEC_TYPE_LABELS
 
 STATUS_LABELS = {'draft': 'Borrador', 'ready': 'Lista', 'done': 'Terminada'}
 STORY_STATUSES = ('draft', 'ready', 'done')
@@ -169,7 +170,7 @@ def _open_import_dialog(pid):
 
 @protected_page('/stories')
 def stories_list():
-    with frame('Historias de usuario', '/stories'):
+    with frame('Historias de usuario', '/stories', doc_style=True):
         if not require_project():
             return
         pid = core.get_active_project_id()
@@ -228,7 +229,7 @@ def stories_list():
 
 @protected_page('/stories/edit')
 def story_detail(id: str = ''):
-    with frame('Historia de usuario' if id else 'Nueva historia de usuario', '/stories'):
+    with frame('Historia de usuario' if id else 'Nueva historia de usuario', '/stories', doc_style=True):
         if not require_project():
             return
         pid = core.get_active_project_id()
@@ -239,63 +240,222 @@ def story_detail(id: str = ''):
             ui.label('Esta historia ya no existe en el proyecto activo.').classes('text-amber-700')
             return
 
-        d = {'criteria': [dict(c) for c in (current or {}).get('criteria', [])]}
+        d = {'criteria': [dict(c) for c in (current or {}).get('criteria', [])],
+             'dor': [dict(i) for i in (current or {}).get('definition_of_ready', [])],
+             'dod': [dict(i) for i in (current or {}).get('definition_of_done', [])]}
+        other_stories = [s for s in core.list_project_items('user_stories', pid) if not current or s['id'] != current['id']]
 
-        with ui.card().classes('w-full'):
-            with ui.row().classes('items-center gap-2'):
-                ui.icon('auto_stories', color='primary').classes('text-2xl')
-                ui.label(current['title'] if current else 'Nueva historia de usuario').classes('text-xl font-semibold')
+        # Dos paneles: a la derecha los CAMPOS (el formulario, donde se edita); al centro/izquierda la
+        # REDACCIÓN — la Historia tal como se leería ya redactada (mismo renderer que el reporte exportado),
+        # actualizada en vivo a medida que se escribe a la derecha. El panel de campos se arma primero en el
+        # código (document_view necesita que `title`/`as_a`/… ya existan quand se llama) pero se ve a la
+        # derecha gracias a `order-2`/`order-1` — el orden visual no tiene por qué seguir al orden del código.
+        with ui.row().classes('w-full gap-4 items-start no-wrap'):
+            with ui.column().classes('w-full md:w-96 shrink-0 gap-4 order-2'):
+                with ui.card().classes('w-full p-0'):
+                    with ui.row().classes('items-center gap-2 p-4 pb-0'):
+                        ui.icon('edit_note', color='primary').classes('text-2xl')
+                        ui.label('Campos').classes('text-xl font-semibold')
 
-            title = ui.input('Título', value=(current or {}).get('title', '')).props('outlined dense').classes('w-full').mark('story-title')
-            with ui.row().classes('w-full gap-3'):
-                features = core.list_project_items('features', pid)
-                feature = ui.select({f['id']: f['name'] for f in features}, value=(current or {}).get('feature_id'),
-                                    label='Funcionalidad (opcional)', clearable=True).props('outlined dense').classes('w-60').mark('story-feature')
-                priority = ui.select(core.PRIORITY_LABELS, value=(current or {}).get('priority', 'medium'), label='Prioridad').props('outlined dense').classes('w-40')
-                status = ui.select(STATUS_LABELS, value=(current or {}).get('status', 'draft'), label='Estado').props('outlined dense').classes('w-40')
+                    # Carrilera vertical de pestañas (solo iconos + tooltip, rail a la derecha) — mismo patrón
+                    # que el panel derecho de Chat/Espacio de trabajo: reduce el scroll y deja "Casos de prueba"
+                    # a un clic, sin tener que bajar más allá del Asistente/Exportar.
+                    with ui.row().classes('w-full no-wrap gap-0').style('min-height:420px'):
+                        with ui.tab_panels(None, value='general').props('vertical').style('flex:1 1 0;min-width:0;padding:16px') as field_panels:
+                            with ui.tab_panel('general').classes('gap-3 p-0'):
+                                title = ui.input('Título', value=(current or {}).get('title', '')).props('outlined dense').classes('w-full') \
+                                    .mark('story-title').on_value_change(lambda e: document_view.refresh())
+                                features = core.list_project_items('features', pid)
+                                feature = ui.select({f['id']: f['name'] for f in features}, value=(current or {}).get('feature_id'),
+                                                    label='Funcionalidad (opcional)', clearable=True).props('outlined dense').classes('w-full').mark('story-feature')
+                                with ui.row().classes('w-full gap-3'):
+                                    priority = ui.select(core.PRIORITY_LABELS, value=(current or {}).get('priority', 'medium'), label='Prioridad') \
+                                        .props('outlined dense').classes('grow').on_value_change(lambda e: document_view.refresh())
+                                    status = ui.select(STATUS_LABELS, value=(current or {}).get('status', 'draft'), label='Estado').props('outlined dense').classes('grow')
+                                with ui.row().classes('w-full gap-3'):
+                                    story_points = ui.number('Story points', value=(current or {}).get('story_points'), min=0, format='%.0f') \
+                                        .props('outlined dense').classes('grow').mark('story-points').on_value_change(lambda e: document_view.refresh())
+                                    users = core.list_items('users')
+                                    assigned_to = ui.select({u['id']: f'{u.get("first_name", "")} {u.get("last_name", "")}'.strip() or u.get('email', '') for u in users},
+                                                            value=(current or {}).get('assigned_to'), label='Asignado a (opcional)', clearable=True) \
+                                        .props('outlined dense').classes('grow').mark('story-assigned-to')
+                                depends_on = ui.select({s['id']: s['title'] for s in other_stories}, multiple=True, value=(current or {}).get('depends_on', []),
+                                                       label='Depende de (opcional)', clearable=True).props('outlined dense use-chips').classes('w-full') \
+                                    .mark('story-depends-on').on_value_change(lambda e: document_view.refresh())
 
-            ui.label('Como / Quiero / Para').classes('text-sm text-gray-500 mt-2')
-            as_a = ui.input('Como (rol)', value=(current or {}).get('as_a', '')).props('outlined dense').classes('w-full')
-            i_want = ui.input('Quiero (acción o funcionalidad)', value=(current or {}).get('i_want', '')).props('outlined dense').classes('w-full')
-            so_that = ui.input('Para (beneficio o razón)', value=(current or {}).get('so_that', '')).props('outlined dense').classes('w-full')
+                                # La plantilla de ENTRADA elegida reshapea de verdad esta sección: con as_a/i_want/so_that
+                                # en su body (Historia INVEST, Criterios Gherkin — los criterios ya son Gherkin siempre,
+                                # así que para ellas esto es lo mismo) muestra Como/Quiero/Para; con 'content' en vez de
+                                # eso (Formato libre) muestra un único campo de texto. _v() porque según el modo activo
+                                # as_a/i_want/so_that O content_box son None (no existen en el DOM, no solo están vacíos).
+                                input_templates = [t for t in core.list_items('spec_templates') if t.get('kind') == 'input' and t.get('applies_to') == 'user_story'
+                                                  and (t.get('project_id') is None or t.get('project_id') == pid)]
+                                has_content = bool((current or {}).get('content'))
+                                default_tpl_id = next((t['id'] for t in input_templates if has_content and 'content' in {f['field'] for f in (t.get('body') or [])}),
+                                                      next((t['id'] for t in input_templates if not has_content and {'as_a', 'i_want', 'so_that'} & {f['field'] for f in (t.get('body') or [])}),
+                                                           input_templates[0]['id'] if input_templates else None))
+                                input_template = ui.select({t['id']: t['name'] for t in input_templates}, value=default_tpl_id, label='Plantilla de entrada') \
+                                    .props('outlined dense').classes('w-full mt-2').mark('story-input-template') if input_templates else None
 
-            ui.separator().classes('my-2')
-            ui.label('Criterios de aceptación').classes('font-semibold')
+                                as_a = i_want = so_that = content_box = None
 
-            @ui.refreshable
-            def criteria_rows():
-                if not d['criteria']:
-                    ui.label('Ninguno todavía.').classes('text-sm text-gray-400')
-                for c in d['criteria']:
-                    with ui.row().classes('items-center gap-2 w-full no-wrap'):
-                        ui.input(value=c['text']).props('outlined dense').classes('grow').mark('story-criterion-text') \
-                            .on_value_change(lambda e, c=c: c.__setitem__('text', e.value))
-                        ui.select({'pending': 'Pendiente', 'met': 'Cumplido'}, value=c.get('status', 'pending')) \
-                            .props('outlined dense').classes('w-36').on_value_change(lambda e, c=c: c.__setitem__('status', e.value))
-                        ui.button(icon='delete', on_click=lambda _, c=c: (d['criteria'].remove(c), criteria_rows.refresh())).props('flat round dense color=negative')
-            criteria_rows()
-            ui.button('Agregar criterio', icon='add',
-                      on_click=lambda: (d['criteria'].append({'text': '', 'status': 'pending'}), criteria_rows.refresh())).props('outline dense color=primary').mark('story-add-criterion')
+                                @ui.refreshable
+                                def narrative_section():
+                                    nonlocal as_a, i_want, so_that, content_box
+                                    tpl = core.get('spec_templates', input_template.value) if input_template and input_template.value else None
+                                    fields = {f['field'] for f in (tpl.get('body') or [])} if tpl else {'as_a', 'i_want', 'so_that'}
+                                    if 'content' in fields and not ({'as_a', 'i_want', 'so_that'} & fields):
+                                        as_a = i_want = so_that = None
+                                        content_box = ui.textarea('Contenido (formato libre)', value=(current or {}).get('content', '')).props('outlined dense autogrow') \
+                                            .classes('w-full').mark('story-content').on_value_change(lambda e: document_view.refresh())
+                                    else:
+                                        content_box = None
+                                        ui.label('Como / Quiero / Para').classes('text-sm text-gray-500')
+                                        as_a = ui.input('Como (rol)', value=(current or {}).get('as_a', '')).props('outlined dense').classes('w-full').mark('story-as-a').on_value_change(lambda e: document_view.refresh())
+                                        i_want = ui.input('Quiero (acción o funcionalidad)', value=(current or {}).get('i_want', '')).props('outlined dense').classes('w-full').on_value_change(lambda e: document_view.refresh())
+                                        so_that = ui.input('Para (beneficio o razón)', value=(current or {}).get('so_that', '')).props('outlined dense').classes('w-full').on_value_change(lambda e: document_view.refresh())
+                                if input_template:
+                                    input_template.on_value_change(lambda e: (narrative_section.refresh(), document_view.refresh()))
+                                narrative_section()
 
-            def save():
-                if current:
-                    core.update_user_story(current['id'], title.value, as_a.value, i_want.value, so_that.value,
-                                           feature.value, priority.value, d['criteria'], status.value)
-                    ui.notify('Historia actualizada', type='positive')
-                    ui.navigate.to(f'/stories/edit?id={current["id"]}')
-                else:
-                    story = core.create_user_story(title.value, pid, as_a.value, i_want.value, so_that.value, feature.value, priority.value, d['criteria'])
-                    ui.notify('Historia creada', type='positive')
-                    ui.navigate.to(f'/stories/edit?id={story["id"]}')
-            ui.button('Guardar cambios' if current else 'Crear historia', icon='save', on_click=guard(save)).props('color=primary mt-2').mark('story-save')
+                                def _v(el):
+                                    return el.value if el else ''
 
-            if current:
-                def remove(s=current):
-                    core.delete_user_story(s['id'])
-                    ui.notify('Historia eliminada', type='positive')
-                    ui.navigate.to('/stories')
-                ui.button('Eliminar historia', icon='delete', on_click=lambda: confirm(f'¿Eliminar la historia «{current["title"]}»?', remove)) \
-                    .props('flat dense color=negative mt-2').mark('story-delete')
+                            with ui.tab_panel('criteria').classes('gap-3 p-0'):
+                                @ui.refreshable
+                                def criteria_rows():
+                                    if not d['criteria']:
+                                        ui.label('Ninguno todavía.').classes('text-sm text-gray-400')
+                                    for c in d['criteria']:
+                                        with ui.column().classes('w-full gap-1 p-2 border rounded').style('border-color:#e5e7eb'):
+                                            with ui.row().classes('items-center gap-2 w-full no-wrap'):
+                                                ui.input('Resumen del escenario', value=c.get('text', '')).props('outlined dense').classes('grow').mark('story-criterion-text') \
+                                                    .on_value_change(lambda e, c=c: (c.__setitem__('text', e.value), document_view.refresh()))
+                                                ui.select({'pending': 'Pendiente', 'met': 'Cumplido'}, value=c.get('status', 'pending')) \
+                                                    .props('outlined dense').classes('w-32').on_value_change(lambda e, c=c: (c.__setitem__('status', e.value), document_view.refresh()))
+                                                ui.button(icon='delete', on_click=lambda _, c=c: (d['criteria'].remove(c), criteria_rows.refresh(), document_view.refresh())) \
+                                                    .props('flat round dense color=negative')
+                                            ui.textarea('Dado (contexto inicial)', value=c.get('given', '')).props('outlined dense autogrow').classes('w-full').mark('story-criterion-given') \
+                                                .on_value_change(lambda e, c=c: (c.__setitem__('given', e.value), document_view.refresh()))
+                                            ui.textarea('Cuando (acción)', value=c.get('when', '')).props('outlined dense autogrow').classes('w-full').mark('story-criterion-when') \
+                                                .on_value_change(lambda e, c=c: (c.__setitem__('when', e.value), document_view.refresh()))
+                                            ui.textarea('Entonces (resultado esperado)', value=c.get('then', '')).props('outlined dense autogrow').classes('w-full').mark('story-criterion-then') \
+                                                .on_value_change(lambda e, c=c: (c.__setitem__('then', e.value), document_view.refresh()))
+                                criteria_rows()
+                                ui.button('Agregar criterio', icon='add', on_click=lambda: (d['criteria'].append({'text': '', 'given': '', 'when': '', 'then': '', 'status': 'pending'}),
+                                          criteria_rows.refresh(), document_view.refresh())).props('outline dense color=primary').mark('story-add-criterion')
+
+                            with ui.tab_panel('dor_dod').classes('gap-3 p-0'):
+                                def checklist_editor(key, mark_prefix):
+                                    @ui.refreshable
+                                    def rows():
+                                        if not d[key]:
+                                            ui.label('Ninguno todavía.').classes('text-sm text-gray-400')
+                                        for item in d[key]:
+                                            with ui.row().classes('items-center gap-2 w-full no-wrap'):
+                                                ui.checkbox(value=item.get('done', False)).on_value_change(lambda e, item=item: (item.__setitem__('done', e.value), document_view.refresh()))
+                                                ui.input(value=item.get('text', '')).props('outlined dense').classes('grow').mark(f'{mark_prefix}-text') \
+                                                    .on_value_change(lambda e, item=item: (item.__setitem__('text', e.value), document_view.refresh()))
+                                                ui.button(icon='delete', on_click=lambda _, item=item: (d[key].remove(item), rows.refresh(), document_view.refresh())) \
+                                                    .props('flat round dense color=negative')
+                                    rows()
+                                    ui.button('Agregar', icon='add', on_click=lambda: (d[key].append({'text': '', 'done': False}), rows.refresh(), document_view.refresh())) \
+                                        .props('outline dense color=primary').mark(f'{mark_prefix}-add')
+                                    return rows
+                                ui.label('Definición de Listo').classes('font-semibold')
+                                dor_rows = checklist_editor('dor', 'story-dor')
+                                ui.label('Definición de Hecho').classes('font-semibold mt-2')
+                                dod_rows = checklist_editor('dod', 'story-dod')
+
+                            with ui.tab_panel('business').classes('gap-3 p-0'):
+                                business_rules = ui.textarea('Reglas de negocio', value=(current or {}).get('business_rules', '')).props('outlined dense autogrow') \
+                                    .classes('w-full').mark('story-business-rules').on_value_change(lambda e: document_view.refresh())
+                                assumptions = ui.textarea('Supuestos', value=(current or {}).get('assumptions', '')).props('outlined dense autogrow') \
+                                    .classes('w-full').mark('story-assumptions').on_value_change(lambda e: document_view.refresh())
+                                risks = ui.textarea('Riesgos', value=(current or {}).get('risks', '')).props('outlined dense autogrow') \
+                                    .classes('w-full').mark('story-risks').on_value_change(lambda e: document_view.refresh())
+                                out_of_scope = ui.textarea('Fuera de alcance', value=(current or {}).get('out_of_scope', '')).props('outlined dense autogrow') \
+                                    .classes('w-full').mark('story-out-of-scope').on_value_change(lambda e: document_view.refresh())
+
+                            with ui.tab_panel('tests').classes('gap-3 p-0'):
+                                if not current:
+                                    ui.label('Guardá la historia primero para poder ligarle Casos de prueba.').classes('text-sm text-gray-400')
+                                else:
+                                    coverage = core.story_coverage(current['id'])
+                                    with ui.row().classes('items-center gap-2 w-full'):
+                                        ui.label(f'Matriz de pruebas — {coverage["total"]} caso(s) ligado(s)').classes('font-semibold')
+                                        if coverage['automated']:
+                                            ui.badge(f'{coverage["passing"]}/{coverage["automated"]} automatizados pasan',
+                                                     color='positive' if coverage['passing'] == coverage['automated'] else 'negative')
+                                    ui.button('Nuevo caso de prueba desde esta historia', icon='add',
+                                              on_click=lambda: ui.navigate.to(f'/test-specs/edit?story_id={current["id"]}')).props('outline dense color=primary')
+                                    if not coverage['rows']:
+                                        ui.label('Ninguno todavía.').classes('text-sm text-gray-400')
+                                    else:
+                                        for row in coverage['rows']:
+                                            spec, last_run = row['spec'], row['last_run']
+                                            with ui.row().classes('items-center gap-2 w-full cursor-pointer hover:bg-gray-50') \
+                                                    .on('click', lambda _, sid=spec['id']: ui.navigate.to(f'/test-specs/edit?id={sid}')):
+                                                if last_run:
+                                                    status_badge(last_run['status'])
+                                                else:
+                                                    ui.badge(SPEC_STATUS_LABELS.get(spec.get('status'), spec.get('status', 'draft')), color='positive' if spec.get('status') == 'automated' else 'grey')
+                                                ui.label(spec['title']).classes('text-sm text-gray-700 grow truncate')
+                                                if last_run:
+                                                    ui.label(fmt_time(last_run.get('started_at'))).classes('text-xs text-gray-400')
+
+                        with ui.tabs().props('vertical dense no-caps').classes('shrink-0').style('width:56px;border-left:1px solid #e5e7eb') as field_rail:
+                            ui.tab('general', label='', icon='edit_note').tooltip('General').mark('story-rail-general')
+                            ui.tab('criteria', label='', icon='checklist').tooltip('Criterios').mark('story-rail-criteria')
+                            ui.tab('dor_dod', label='', icon='fact_check').tooltip('Listo / Hecho').mark('story-rail-dor_dod')
+                            ui.tab('business', label='', icon='business_center').tooltip('Negocio').mark('story-rail-business')
+                            ui.tab('tests', label='', icon='science').tooltip('Casos de prueba').mark('story-rail-tests')
+                        field_panels.bind_value_from(field_rail, 'value')
+                        field_rail.set_value('general')
+
+                    def save():
+                        if current:
+                            core.update_user_story(current['id'], title.value, _v(as_a), _v(i_want), _v(so_that),
+                                                   feature.value, priority.value, d['criteria'], status.value,
+                                                   definition_of_ready=d['dor'], definition_of_done=d['dod'], depends_on=depends_on.value,
+                                                   story_points=story_points.value, assigned_to=assigned_to.value,
+                                                   business_rules=business_rules.value, assumptions=assumptions.value,
+                                                   risks=risks.value, out_of_scope=out_of_scope.value, content=_v(content_box))
+                            ui.notify('Historia actualizada', type='positive')
+                            ui.navigate.to(f'/stories/edit?id={current["id"]}')
+                        else:
+                            story = core.create_user_story(title.value, pid, _v(as_a), _v(i_want), _v(so_that), feature.value, priority.value, d['criteria'],
+                                                           definition_of_ready=d['dor'], definition_of_done=d['dod'], depends_on=depends_on.value,
+                                                           story_points=story_points.value, assigned_to=assigned_to.value,
+                                                           business_rules=business_rules.value, assumptions=assumptions.value,
+                                                           risks=risks.value, out_of_scope=out_of_scope.value, content=_v(content_box))
+                            ui.notify('Historia creada', type='positive')
+                            ui.navigate.to(f'/stories/edit?id={story["id"]}')
+                    ui.button('Guardar cambios' if current else 'Crear historia', icon='save', on_click=guard(save)).props('color=primary mt-2').mark('story-save')
+
+                    if current:
+                        def remove(s=current):
+                            core.delete_user_story(s['id'])
+                            ui.notify('Historia eliminada', type='positive')
+                            ui.navigate.to('/stories')
+                        ui.button('Eliminar historia', icon='delete', on_click=lambda: confirm(f'¿Eliminar la historia «{current["title"]}»?', remove)) \
+                            .props('flat dense color=negative mt-2').mark('story-delete')
+
+            with ui.column().classes('grow gap-4 order-1 min-w-0'):
+                with ui.card().classes('w-full').mark('story-document'):
+                    @ui.refreshable
+                    def document_view():
+                        ui.label(title.value or 'Nueva historia de usuario').classes('text-2xl font-bold')
+                        story_titles = {s['id']: s['title'] for s in other_stories}
+                        ui.html(spec_report.render_story_view_html({
+                            'as_a': _v(as_a), 'i_want': _v(i_want), 'so_that': _v(so_that), 'content': _v(content_box), 'priority': priority.value,
+                            'story_points': int(story_points.value) if story_points.value not in (None, '') else None,
+                            'criteria': d['criteria'], 'definition_of_ready': d['dor'], 'definition_of_done': d['dod'],
+                            'business_rules': business_rules.value, 'assumptions': assumptions.value, 'risks': risks.value,
+                            'out_of_scope': out_of_scope.value,
+                            'dependency_titles': [story_titles[sid] for sid in (depends_on.value or []) if sid in story_titles],
+                        })).classes('w-full')
+                    document_view()
 
         # ------------------------------------------------------------ Asistente de IA (Fase 2)
         thread_key = current['id'] if current else 'new'
@@ -305,12 +465,27 @@ def story_detail(id: str = ''):
         def _apply_story_draft(story, errors):
             if not story:
                 raise ValueError('; '.join(errors) or 'El modelo no devolvió una historia válida')
+            if content_box is not None and input_template:   # el Asistente siempre genera Como/Quiero/Para — si está en modo "Formato libre", vuelve al modo estructurado
+                structured = next((t for t in input_templates if {'as_a', 'i_want', 'so_that'} & {f['field'] for f in (t.get('body') or [])}), None)
+                if structured:
+                    input_template.set_value(structured['id'])
+                    narrative_section.refresh()
             title.set_value(story['title'])
             as_a.set_value(story['as_a'])
             i_want.set_value(story['i_want'])
             so_that.set_value(story['so_that'])
-            d['criteria'] = [{'text': c['text'], 'status': 'pending'} for c in story['criteria']]
+            d['criteria'] = [{'text': c.get('text', ''), 'given': c.get('given', ''), 'when': c.get('when', ''),
+                              'then': c.get('then', ''), 'status': 'pending'} for c in story['criteria']]
+            d['dor'] = [{'text': t, 'done': False} for t in (story.get('definition_of_ready') or [])]
+            d['dod'] = [{'text': t, 'done': False} for t in (story.get('definition_of_done') or [])]
+            business_rules.set_value(story.get('business_rules', ''))
+            assumptions.set_value(story.get('assumptions', ''))
+            risks.set_value(story.get('risks', ''))
+            out_of_scope.set_value(story.get('out_of_scope', ''))
             criteria_rows.refresh()
+            dor_rows.refresh()
+            dod_rows.refresh()
+            document_view.refresh()
 
         with ui.card().classes('w-full'):
             with ui.row().classes('items-center gap-2'):
@@ -340,7 +515,8 @@ def story_detail(id: str = ''):
                     for tc in draft_cases['items']:
                         c = ui.checkbox(tc['title'], value=True).mark('story-draft-case')
                         checks.append((c, tc))
-                        ui.label(f'{len(tc["steps"])} paso(s) · {tc["type"]} · {tc["priority"]}').classes('text-xs text-gray-500 ml-8')
+                        ui.label(f'{len(tc["steps"])} paso(s) · {SPEC_TYPE_LABELS.get(tc["type"], tc["type"])} · '
+                                f'{core.PRIORITY_LABELS.get(tc["priority"], tc["priority"])}').classes('text-xs text-gray-500 ml-8')
 
                     def create_selected():
                         made = 0
@@ -378,8 +554,10 @@ def story_detail(id: str = ''):
                         draft_cases_view.refresh()
                         reply = f'Generé {len(result["test_cases"])} caso(s) de prueba candidatos — elegí cuáles crear, arriba.'
                     elif any(k in lowered for k in llm.SPEC_REFINE_KEYWORDS):
-                        item = {'title': title.value, 'as_a': as_a.value, 'i_want': i_want.value, 'so_that': so_that.value,
-                               'criteria': [c['text'] for c in d['criteria']]}
+                        item = {'title': title.value, 'as_a': _v(as_a), 'i_want': _v(i_want), 'so_that': _v(so_that),
+                               'criteria': d['criteria'], 'definition_of_ready': [i['text'] for i in d['dor']],
+                               'definition_of_done': [i['text'] for i in d['dod']], 'business_rules': business_rules.value,
+                               'assumptions': assumptions.value, 'risks': risks.value, 'out_of_scope': out_of_scope.value}
                         result = await run.io_bound(llm.refine_spec_item, 'user_story', item, text)
                         _apply_story_draft(result['item'], result['errors'])
                         reply = 'Refiné la historia — revisá los cambios arriba y guardá si te sirven.'
@@ -389,8 +567,8 @@ def story_detail(id: str = ''):
                         _apply_story_draft(result['story'], result['errors'])
                         reply = 'Generé una propuesta — revisala arriba (título, Como/Quiero/Para y criterios) y guardá si te sirve.'
                     else:
-                        context = {'kind': 'historia de usuario', 'current': {'title': title.value, 'as_a': as_a.value,
-                                   'i_want': i_want.value, 'so_that': so_that.value, 'criteria': [c['text'] for c in d['criteria']]}}
+                        context = {'kind': 'historia de usuario', 'current': {'title': title.value, 'as_a': _v(as_a),
+                                   'i_want': _v(i_want), 'so_that': _v(so_that), 'criteria': [c['text'] for c in d['criteria']]}}
                         reply = await run.io_bound(llm.spec_chat_reply, thread[:-1], text, context)
                 except (llm.LLMError, ValueError) as exc:
                     reply = f'No pude: {exc}'
@@ -425,27 +603,3 @@ def story_detail(id: str = ''):
                     ui.button('Word', icon='description', on_click=guard(lambda: _download_story_report(current, tpl(), 'docx'))).props('flat dense no-caps').mark('story-export-docx')
                     ui.button('Markdown', icon='code', on_click=guard(lambda: _download_story_report(current, tpl(), 'md'))).props('flat dense no-caps')
 
-        coverage = core.story_coverage(current['id'])
-        with ui.card().classes('w-full'):
-            with ui.row().classes('items-center gap-2'):
-                ui.icon('checklist', color='primary')
-                ui.label(f'Matriz de pruebas — Casos ligados ({coverage["total"]})').classes('font-semibold')
-                if coverage['automated']:
-                    ui.badge(f'{coverage["passing"]}/{coverage["automated"]} automatizados pasan',
-                             color='positive' if coverage['passing'] == coverage['automated'] else 'negative')
-            ui.button('Nuevo caso de prueba desde esta historia', icon='add',
-                      on_click=lambda: ui.navigate.to(f'/test-specs/edit?story_id={current["id"]}')).props('outline dense color=primary')
-            if not coverage['rows']:
-                ui.label('Ninguno todavía.').classes('text-sm text-gray-400')
-            else:
-                for row in coverage['rows']:
-                    spec, last_run = row['spec'], row['last_run']
-                    with ui.row().classes('items-center gap-2 w-full cursor-pointer hover:bg-gray-50') \
-                            .on('click', lambda _, sid=spec['id']: ui.navigate.to(f'/test-specs/edit?id={sid}')):
-                        if last_run:
-                            status_badge(last_run['status'])
-                        else:
-                            ui.badge(spec.get('status', 'draft'), color='positive' if spec.get('status') == 'automated' else 'grey')
-                        ui.label(spec['title']).classes('text-sm text-gray-700 grow truncate')
-                        if last_run:
-                            ui.label(fmt_time(last_run.get('started_at'))).classes('text-xs text-gray-400')

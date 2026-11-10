@@ -647,11 +647,24 @@ SPEC_REFINE_KEYWORDS = ('refin', 'enriquec', 'mejorá', 'mejora', 'optimizá', '
 SPEC_GENERATE_STORY_KEYWORDS = ('generá', 'genera', 'generame', 'generar', 'creá', 'crea', 'crear', 'escribí', 'escribi', 'redactá', 'redacta')
 
 GENERATE_STORY_SYSTEM = (
-    'Eres un analista de QA/negocio. Convertís una descripción en una Historia de Usuario. Responde SOLO con un '
-    'objeto JSON válido, sin texto antes ni después: {"title": "...", "as_a": "...", "i_want": "...", '
-    '"so_that": "...", "criteria": ["...", "..."]}. title: corto y descriptivo. as_a/i_want/so_that: el formato '
-    'clásico Como/Quiero/Para, cada uno una frase. criteria: 2 a 5 criterios de aceptación concretos y '
-    'verificables, cada uno una frase. No inventes datos que la descripción no sugiera. Responde en español.')
+    'Eres un analista de QA/negocio senior, redactando una Historia de Usuario de nivel profesional (no un '
+    'borrador mínimo). Convertís una descripción en una Historia completa. Responde SOLO con un objeto JSON '
+    'válido, sin texto antes ni después: {"title": "...", "as_a": "...", "i_want": "...", "so_that": "...", '
+    '"criteria": [{"text": "resumen corto del escenario", "given": "...", "when": "...", "then": "..."}, ...], '
+    '"definition_of_ready": ["...", "..."], "definition_of_done": ["...", "..."], "business_rules": "...", '
+    '"assumptions": "...", "risks": "...", "out_of_scope": "..."}. title: corto y descriptivo. as_a/i_want/so_that: '
+    'el formato clásico Como/Quiero/Para, cada uno una frase — pero cada campo lleva SOLO su contenido, SIN '
+    'repetir la palabra "Como"/"Quiero"/"Para" al principio (esa palabra ya la pone la pantalla al mostrarlo): '
+    'as_a="cliente que olvidó su contraseña" (no "Como cliente..."), i_want="recuperarla por email" (no "Quiero '
+    'recuperarla..."), so_that="pueda volver a acceder a su cuenta" (no "Para que pueda..."). criteria: 3 a 6 '
+    'escenarios en formato Gherkin (Dado/Cuando/Entonces), concretos y verificables — incluí AL MENOS un '
+    'escenario negativo o de borde (datos inválidos, permisos, límites, etc.), no solo el camino feliz. '
+    'definition_of_ready: 2 a 4 condiciones para poder empezar a trabajar la historia (p. ej. "Diseño aprobado", '
+    '"Dependencias resueltas"). definition_of_done: 2 a 4 condiciones para considerarla realmente terminada '
+    '(p. ej. "Pruebas automatizadas pasando", "Documentación actualizada"). business_rules/assumptions/risks/'
+    'out_of_scope: una frase cada uno (o cadena vacía si la descripción no da para inferirlo — NUNCA inventes '
+    'contenido que la descripción no sugiera). No inventes datos que la descripción no sugiera. Responde en '
+    'español.')
 
 
 def generate_story_messages(description, feature=None):
@@ -672,10 +685,31 @@ def _validate_story_draft(data):
     return errors
 
 
+def _clean_gherkin_criteria(raw_criteria):
+    criteria = []
+    for c in (raw_criteria or []):
+        if isinstance(c, dict):
+            text, given, when, then = (str(c.get('text', '')).strip(), str(c.get('given', '')).strip(),
+                                       str(c.get('when', '')).strip(), str(c.get('then', '')).strip())
+        else:
+            text, given, when, then = str(c).strip(), '', '', ''
+        if text or given or when or then:
+            criteria.append({'text': text, 'given': given, 'when': when, 'then': then})
+    return criteria
+
+
+def _clean_checklist_draft(raw_items):
+    return [str(x).strip() for x in (raw_items or []) if str(x).strip()]
+
+
 def _clean_story_draft(data):
-    criteria = [{'text': str(c).strip()} for c in (data.get('criteria') or []) if str(c).strip()]
     return {'title': str(data.get('title', '')).strip(), 'as_a': str(data.get('as_a', '')).strip(),
-            'i_want': str(data.get('i_want', '')).strip(), 'so_that': str(data.get('so_that', '')).strip(), 'criteria': criteria}
+            'i_want': str(data.get('i_want', '')).strip(), 'so_that': str(data.get('so_that', '')).strip(),
+            'criteria': _clean_gherkin_criteria(data.get('criteria')),
+            'definition_of_ready': _clean_checklist_draft(data.get('definition_of_ready')),
+            'definition_of_done': _clean_checklist_draft(data.get('definition_of_done')),
+            'business_rules': str(data.get('business_rules', '')).strip(), 'assumptions': str(data.get('assumptions', '')).strip(),
+            'risks': str(data.get('risks', '')).strip(), 'out_of_scope': str(data.get('out_of_scope', '')).strip()}
 
 
 def _retry_prompt(user, errors):
@@ -725,8 +759,14 @@ def generate_test_cases_messages(story=None, criteria=None, environment=None):
         if criteria is None:
             criteria = story.get('criteria')
     if criteria:
-        texts = [c.get('text') if isinstance(c, dict) else str(c) for c in criteria]
-        texts = [t for t in texts if t]
+        def describe(c):
+            if not isinstance(c, dict):
+                return str(c)
+            if c.get('given') or c.get('when') or c.get('then'):
+                return (f'{c.get("text", "").strip()}: ' if c.get('text') else '') + \
+                       f'Dado {c.get("given", "")}, cuando {c.get("when", "")}, entonces {c.get("then", "")}'
+            return c.get('text', '')
+        texts = [t for t in (describe(c) for c in criteria) if t]
         if texts:
             parts.append('Criterios de aceptación:\n' + '\n'.join(f'- {t}' for t in texts))
     if not parts:
@@ -851,13 +891,21 @@ def spec_chat_reply(history, text, context=None, config=None):
 # va aparte, directo a ask().
 
 GENERATE_FROM_SOURCE_SYSTEM = (
-    'Eres un analista de QA/negocio. Te paso una fuente — texto y/o una imagen (una captura de pantalla, un '
+    'Eres un analista de QA/negocio senior. Te paso una fuente — texto y/o una imagen (una captura de pantalla, un '
     'diagrama, una Historia de Usuario escrita a mano o en su propio formato, una página pegada, etc.) — con '
-    'información de un requerimiento, y extraés de ahí una Historia de Usuario completa y sus Casos de prueba. '
-    'Responde SOLO con un objeto JSON válido, sin texto antes ni después: {"story": {"title": "...", '
-    '"as_a": "...", "i_want": "...", "so_that": "...", "criteria": ["...", "..."]}, "test_cases": '
+    'información de un requerimiento, y extraés de ahí una Historia de Usuario de nivel profesional y sus Casos '
+    'de prueba. Responde SOLO con un objeto JSON válido, sin texto antes ni después: {"story": {"title": "...", '
+    '"as_a": "...", "i_want": "...", "so_that": "...", "criteria": [{"text": "resumen corto", "given": "...", '
+    '"when": "...", "then": "..."}, ...], "definition_of_ready": ["...", "..."], "definition_of_done": ["...", '
+    '"..."], "business_rules": "...", "assumptions": "...", "risks": "...", "out_of_scope": "..."}, "test_cases": '
     '[{"title": "...", "preconditions": "...", "steps": [{"action": "...", "expected": "..."}], '
     '"priority": "low"|"medium"|"high"|"critical", "type": "functional"|"regression"|"smoke"|"exploratory"}]}. '
+    'as_a/i_want/so_that llevan SOLO su contenido, SIN repetir la palabra "Como"/"Quiero"/"Para" al principio '
+    '(esa palabra ya la pone la pantalla al mostrarlo): as_a="cliente que olvidó su contraseña" (no "Como '
+    'cliente..."). criteria: escenarios en formato Gherkin (Dado/Cuando/Entonces), incluyendo casos negativos o '
+    'de borde cuando la fuente los sugiera. definition_of_ready/definition_of_done: condiciones de inicio/cierre '
+    'si la fuente las sugiere, si no una lista vacía. business_rules/assumptions/risks/out_of_scope: una frase '
+    'cada uno, o cadena vacía si la fuente no da para inferirlo — NUNCA inventes lo que la fuente no sugiere. '
     'Interpretá la fuente tal cual es — no inventes requerimientos que no estén ahí; si ya es una Historia de '
     'Usuario en su propio formato, respetá su contenido real, solo reordenalo a esta forma. Generá entre 1 y 6 '
     'Casos de prueba razonables (puede ser una lista vacía si la fuente no da para ninguno). Responde en español.')

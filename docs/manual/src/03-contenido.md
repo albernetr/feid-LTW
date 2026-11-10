@@ -151,15 +151,32 @@ Una **Funcionalidad** (`/features`) es una capacidad de negocio que puede cruzar
 
 Antes de ejecutar nada, LTW tiene una sección propia para lo que normalmente se escribe primero:
 
-- **Historias de usuario** (`/stories`): título, Como/Quiero/Para y sus **Criterios de aceptación** (uno por línea, cada uno con su propio estado Pendiente/Cumplido), ligada opcionalmente a una Funcionalidad.
+- **Historias de usuario** (`/stories`): una Historia de nivel profesional, no solo el esqueleto Como/Quiero/Para — ver «Historias de usuario de nivel profesional» más abajo.
 - **Casos de prueba** (`/test-specs`): el plan de un caso — precondición, pasos y resultado esperado — como documento propio, **separado** de un Caso API/UI ejecutable. Se liga opcionalmente a una Historia de usuario, a una Funcionalidad, y a un Caso API/UI ya automatizado (campo «Caso API/UI automatizado»); sin ese enlace sigue siendo un caso 100% manual, con su propio estado (Borrador/Listo/Automatizado).
 - **Plantillas** (`/spec-templates`): una **biblioteca global** (compartida entre proyectos, con 4 plantillas de entrada — Historia de usuario INVEST, Criterios Gherkin, Caso de prueba ISTQB, y **Formato libre** para cuando la HU ya viene en un formato propio de la organización — y 3 de salida ya incluidas por defecto) más las **propias de cada proyecto**. Cada proyecto nuevo adopta automáticamente las globales por defecto al crearse. **Adoptar** clona una plantilla global al proyecto activo para poder editarla sin tocar el original; **Promover** publica una copia de una plantilla propia en la biblioteca global para que otros proyectos la adopten. Una plantilla global es de solo lectura hasta que se adopta.
+
+### El editor: documento al centro, campos en pestañas a la derecha
+
+`/stories/edit` y `/test-specs/edit` muestran dos paneles: a la **derecha**, los campos del formulario, organizados en **pestañas** (General, Criterios, Listo/Hecho, Negocio, Casos de prueba — para no tener que scrollear una columna larguísima); al **centro**, la Historia o el Caso de prueba **redactado como se leería** — mismo renderer que el documento exportado, no un volcado de los campos — y se actualiza **en vivo** a medida que escribís a la derecha, sin recargar la página. La pestaña **Casos de prueba** de una Historia es la Matriz de pruebas: sus Casos ligados, el estado de la última corrida de los que ya están automatizados, y el botón para crear uno nuevo desde ahí — así queda claro cómo se relaciona la Historia con la sección Casos de prueba, sin salir de la pantalla.
+
+### Historias de usuario de nivel profesional
+
+Una Historia no es solo título + Como/Quiero/Para. Cada una tiene:
+
+- **Criterios de aceptación en Gherkin**: cada escenario lleva un resumen corto y, opcionalmente, **Dado/Cuando/Entonces** — incluí al menos un escenario negativo o de borde, no solo el camino feliz. Un criterio «viejo» con solo texto (de antes de esta versión) se sigue mostrando igual, sin forzar la estructura.
+- **Definición de Listo** y **Definición de Hecho**: dos checklists independientes — condiciones para poder empezar a trabajar la historia, y condiciones para considerarla realmente terminada.
+- **Story points**, **Asignado a**, y **Depende de** (otras Historias del mismo proyecto que deben resolverse antes) — para trazabilidad y planificación.
+- **Contexto de negocio**: Reglas de negocio, Supuestos, Riesgos y Fuera de alcance — una por campo, texto libre.
+
+### La plantilla de entrada cambia el formulario de verdad
+
+En la pestaña **General**, el selector **Plantilla de entrada** no es solo documentación: elegir una plantilla distinta **reshapea el formulario**. Con «Historia de usuario (INVEST)» o «Criterios de aceptación (Gherkin)» ves el formulario estructurado de siempre (Como/Quiero/Para + criterios Gherkin — los criterios ya son Gherkin con cualquiera de las dos, porque esa estructura es parte del modelo, no de la plantilla). Con **Formato libre**, Como/Quiero/Para desaparece y en su lugar aparece un único campo **Contenido (formato libre)** — para cuando la Historia ya viene redactada en el formato propio de otra herramienta u organización y no tiene sentido forzarla a la estructura. Al reabrir una Historia, LTW infiere sola qué modo mostrar según los datos que tiene guardados (si tiene `content`, abre en Formato libre; si no, en modo estructurado) — no hace falta volver a elegir la plantilla cada vez.
 
 ### Asistente de IA (generar, refinar, encadenar)
 
 Tanto el editor de una Historia (`/stories/edit`) como el de un Caso de prueba (`/test-specs/edit`) tienen su propia tarjeta **Asistente de IA** — un mini-chat igual en espíritu al del Chat, pero que actúa sobre el documento que tenés abierto:
 
-- **Generar**: describí lo que querés («Generá una historia para que el cliente pueda…») y el Asistente propone título, Como/Quiero/Para y criterios — se cargan en el formulario de arriba, listos para revisar y **Guardar**; nada se persiste solo.
+- **Generar**: describí lo que querés («Generá una historia para que el cliente pueda…») y el Asistente propone la Historia completa — título, Como/Quiero/Para, criterios en Gherkin (con al menos un escenario negativo), Definición de Listo/Hecho y contexto de negocio — se cargan en los campos de la derecha, listos para revisar en el documento del centro y **Guardar**; nada se persiste solo.
 - **Generar Casos de prueba**: desde una Historia ya guardada, pedile «Generá los casos de prueba para esta historia» — propone varios candidatos (con pasos, prioridad y tipo) con casilla para elegir cuáles crear; «Crear seleccionados» los guarda ya enlazados a la Historia. Desde el propio editor de un Caso de prueba, el mismo pedido genera candidatos a partir de la Historia ligada (o de tu descripción, si no hay ninguna) — «Usar este» carga uno en el formulario, sin crear nada todavía.
 - **Refinar/enriquecer**: con un documento abierto, pedile «Enriquecé los criterios», «Hacé los pasos más específicos», «Optimizá la redacción», etc. — devuelve el mismo documento mejorado, cargado en el formulario para revisar y guardar.
 - Cualquier otro mensaje (una pregunta, un comentario) lo contesta en texto libre, sin disparar ninguna acción.

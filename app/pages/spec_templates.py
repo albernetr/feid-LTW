@@ -8,7 +8,7 @@ APPLIES_LABELS = {'user_story': 'Historia de usuario', 'test_case': 'Caso de pru
 
 @protected_page('/spec-templates')
 def spec_templates_list():
-    with frame('Plantillas', '/spec-templates'):
+    with frame('Plantillas', '/spec-templates', doc_style=True):
         if not require_project():
             return
         pid = core.get_active_project_id()
@@ -52,7 +52,7 @@ def spec_templates_list():
 
 @protected_page('/spec-templates/edit')
 def spec_template_detail(id: str = ''):
-    with frame('Plantilla' if id else 'Nueva plantilla', '/spec-templates'):
+    with frame('Plantilla' if id else 'Nueva plantilla', '/spec-templates', doc_style=True):
         if not require_project():
             return
         pid = core.get_active_project_id()

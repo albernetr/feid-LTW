@@ -571,24 +571,36 @@ def feature_health(feature_id):
 
 PRIORITIES = ('low', 'medium', 'high', 'critical')
 PRIORITY_LABELS = {'low': 'Baja', 'medium': 'Media', 'high': 'Alta', 'critical': 'Crítica'}
-STORY_SOURCES = ('manual', 'ai', 'import')
+STORY_SOURCES = ('manual', 'ai', 'import', 'agent')
 
 
-def create_user_story(title, project_id, as_a='', i_want='', so_that='', feature_id=None, priority='medium', criteria=None, source='manual'):
+def create_user_story(title, project_id, as_a='', i_want='', so_that='', feature_id=None, priority='medium', criteria=None, source='manual',
+                      definition_of_ready=None, definition_of_done=None, depends_on=None, story_points=None, assigned_to=None,
+                      business_rules='', assumptions='', risks='', out_of_scope='', content=''):
     title = (title or '').strip()
     if not title:
         raise ValueError('El título de la historia de usuario es obligatorio')
     if feature_id and get('features', feature_id) is None:
         raise ValueError('Funcionalidad inexistente')
+    if assigned_to and get('users', assigned_to) is None:
+        raise ValueError('Usuario inexistente')
     item = {'title': title, 'as_a': (as_a or '').strip(), 'i_want': (i_want or '').strip(), 'so_that': (so_that or '').strip(),
-            'priority': priority if priority in PRIORITIES else 'medium', 'status': 'draft',
-            'criteria': _clean_criteria(criteria), 'source': source if source in STORY_SOURCES else 'manual', 'project_id': project_id}
+            'content': (content or '').strip(), 'priority': priority if priority in PRIORITIES else 'medium', 'status': 'draft',
+            'criteria': _clean_criteria(criteria), 'source': source if source in STORY_SOURCES else 'manual', 'project_id': project_id,
+            'definition_of_ready': _clean_checklist(definition_of_ready), 'definition_of_done': _clean_checklist(definition_of_done),
+            'depends_on': _clean_depends_on(depends_on, project_id), 'story_points': _clean_story_points(story_points),
+            'business_rules': (business_rules or '').strip(), 'assumptions': (assumptions or '').strip(),
+            'risks': (risks or '').strip(), 'out_of_scope': (out_of_scope or '').strip()}
     if feature_id:
         item['feature_id'] = feature_id
+    if assigned_to:
+        item['assigned_to'] = assigned_to
     return save('user_stories', item)
 
 
-def update_user_story(story_id, title, as_a='', i_want='', so_that='', feature_id=None, priority='medium', criteria=None, status=None):
+def update_user_story(story_id, title, as_a='', i_want='', so_that='', feature_id=None, priority='medium', criteria=None, status=None,
+                      definition_of_ready=None, definition_of_done=None, depends_on=None, story_points=None, assigned_to=None,
+                      business_rules='', assumptions='', risks='', out_of_scope='', content=''):
     story = get('user_stories', story_id)
     if story is None:
         raise ValueError('Historia de usuario inexistente')
@@ -597,9 +609,16 @@ def update_user_story(story_id, title, as_a='', i_want='', so_that='', feature_i
         raise ValueError('El título de la historia de usuario es obligatorio')
     if feature_id and get('features', feature_id) is None:
         raise ValueError('Funcionalidad inexistente')
+    if assigned_to and get('users', assigned_to) is None:
+        raise ValueError('Usuario inexistente')
     story.update({'title': title, 'as_a': (as_a or '').strip(), 'i_want': (i_want or '').strip(), 'so_that': (so_that or '').strip(),
-                  'priority': priority if priority in PRIORITIES else 'medium', 'criteria': _clean_criteria(criteria)})
+                  'content': (content or '').strip(), 'priority': priority if priority in PRIORITIES else 'medium', 'criteria': _clean_criteria(criteria),
+                  'definition_of_ready': _clean_checklist(definition_of_ready), 'definition_of_done': _clean_checklist(definition_of_done),
+                  'depends_on': _clean_depends_on(depends_on, story['project_id'], exclude_id=story_id), 'story_points': _clean_story_points(story_points),
+                  'business_rules': (business_rules or '').strip(), 'assumptions': (assumptions or '').strip(),
+                  'risks': (risks or '').strip(), 'out_of_scope': (out_of_scope or '').strip()})
     story['feature_id'] = feature_id or None
+    story['assigned_to'] = assigned_to or None
     if status:
         story['status'] = status
     return save('user_stories', story)
@@ -611,19 +630,62 @@ def delete_user_story(story_id):
     linked = [t for t in list_items('test_case_specs') if t.get('story_id') == story_id]
     if linked:
         raise ValueError(f'No se puede eliminar: tiene {len(linked)} caso(s) de prueba ligado(s). Desvincúlalos primero.')
+    dependents = [s for s in list_items('user_stories') if story_id in (s.get('depends_on') or [])]
+    if dependents:
+        raise ValueError(f'No se puede eliminar: {len(dependents)} historia(s) dependen de esta. Quita la dependencia primero.')
     delete('user_stories', story_id)
 
 
 def _clean_criteria(criteria):
-    """Normaliza la lista de criterios de aceptación: cada uno con su propio id y estado, sin texto vacío."""
+    """Normaliza los criterios de aceptación a escenarios Gherkin: cada uno con su propio id, un resumen
+    opcional (`text`), Dado/Cuando/Entonces y su estado — sin descartar un criterio «viejo» que solo tenga
+    `text` (se sigue mostrando como una frase sola, sin forzar la estructura)."""
     result = []
     for entry in (criteria or []):
-        text = (entry.get('text') if isinstance(entry, dict) else str(entry)).strip()
+        if not isinstance(entry, dict):
+            entry = {'text': str(entry)}
+        text = (entry.get('text') or '').strip()
+        given, when, then = (entry.get('given') or '').strip(), (entry.get('when') or '').strip(), (entry.get('then') or '').strip()
+        if not (text or given or when or then):
+            continue
+        result.append({'id': entry.get('id') or uid(), 'text': text, 'given': given, 'when': when, 'then': then,
+                       'status': entry.get('status') or 'pending'})
+    return result
+
+
+def _clean_checklist(items):
+    """Definición de Listo / Definición de Hecho: una lista de {text, done} — sin ítems vacíos."""
+    result = []
+    for entry in (items or []):
+        text = ((entry.get('text') if isinstance(entry, dict) else str(entry)) or '').strip()
         if not text:
             continue
-        result.append({'id': (entry.get('id') if isinstance(entry, dict) else None) or uid(), 'text': text,
-                       'status': (entry.get('status') if isinstance(entry, dict) else None) or 'pending'})
+        result.append({'text': text, 'done': bool(entry.get('done')) if isinstance(entry, dict) else False})
     return result
+
+
+def _clean_depends_on(depends_on, project_id, exclude_id=None):
+    """Otras Historias de las que esta depende — deben existir en el mismo proyecto; nunca de sí misma."""
+    result = []
+    for story_id in (depends_on or []):
+        if story_id == exclude_id or story_id in result:
+            continue
+        other = get('user_stories', story_id)
+        if other and other.get('project_id') == project_id:
+            result.append(story_id)
+    return result
+
+
+def _clean_story_points(value):
+    if value in (None, ''):
+        return None
+    try:
+        points = int(value)
+    except (TypeError, ValueError):
+        raise ValueError('Los story points deben ser un número entero')
+    if points < 0:
+        raise ValueError('Los story points no pueden ser negativos')
+    return points
 
 
 TEST_CASE_TYPES = ('functional', 'regression', 'smoke', 'exploratory')
@@ -735,12 +797,17 @@ DEFAULT_SPEC_TEMPLATES = [
      'description': 'Resumen corto para quien no necesita el detalle completo.',
      'body': [{'field': 'summary', 'label': 'Resumen'}, {'field': 'coverage', 'label': 'Cobertura'}, {'field': 'risks', 'label': 'Riesgos'}]},
     {'name': 'Especificación detallada', 'kind': 'output', 'applies_to': 'report',
-     'description': 'Documento completo: historia, criterios, casos de prueba y trazabilidad.',
+     'description': 'Documento completo de nivel profesional: historia, criterios en Gherkin, Definición de Listo/Hecho, '
+                     'contexto de negocio, dependencias, casos de prueba y trazabilidad.',
      'body': [{'field': 'story', 'label': 'Historia de usuario'}, {'field': 'criteria', 'label': 'Criterios de aceptación'},
-              {'field': 'test_cases', 'label': 'Casos de prueba'}, {'field': 'traceability', 'label': 'Trazabilidad'}]},
+              {'field': 'definition_of_ready', 'label': 'Definición de Listo'}, {'field': 'definition_of_done', 'label': 'Definición de Hecho'},
+              {'field': 'business_rules', 'label': 'Reglas de negocio'}, {'field': 'assumptions', 'label': 'Supuestos'},
+              {'field': 'business_risks', 'label': 'Riesgos'}, {'field': 'out_of_scope', 'label': 'Fuera de alcance'},
+              {'field': 'dependencies', 'label': 'Depende de'}, {'field': 'test_cases', 'label': 'Casos de prueba'},
+              {'field': 'traceability', 'label': 'Trazabilidad'}]},
     {'name': 'Matriz de trazabilidad', 'kind': 'output', 'applies_to': 'report',
-     'description': 'HU → Criterios → Casos de prueba → estado de ejecución, en una sola tabla.',
-     'body': [{'field': 'matrix', 'label': 'Matriz HU → Criterios → Casos → Estado'}]},
+     'description': 'HU → Casos de prueba → estado de ejecución, en una sola tabla.',
+     'body': [{'field': 'matrix', 'label': 'Matriz HU → Casos de prueba → Estado'}]},
 ]
 
 

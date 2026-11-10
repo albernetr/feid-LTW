@@ -1,5 +1,5 @@
 from nicegui import ui, run
-from .. import core, llm
+from .. import core, llm, spec_report
 from .common import frame, guard, confirm, empty_state, require_project, protected_page
 
 STATUS_LABELS = {'draft': 'Borrador', 'ready': 'Listo', 'automated': 'Automatizado'}
@@ -11,7 +11,7 @@ ASSISTANT_THREADS = {}
 
 @protected_page('/test-specs')
 def test_specs_list():
-    with frame('Casos de prueba', '/test-specs'):
+    with frame('Casos de prueba', '/test-specs', doc_style=True):
         if not require_project():
             return
         pid = core.get_active_project_id()
@@ -66,7 +66,7 @@ def test_specs_list():
 
 @protected_page('/test-specs/edit')
 def test_spec_detail(id: str = '', story_id: str = ''):
-    with frame('Caso de prueba' if id else 'Nuevo caso de prueba', '/test-specs'):
+    with frame('Caso de prueba' if id else 'Nuevo caso de prueba', '/test-specs', doc_style=True):
         if not require_project():
             return
         pid = core.get_active_project_id()
@@ -79,65 +79,82 @@ def test_spec_detail(id: str = '', story_id: str = ''):
 
         d = {'steps': [dict(s) for s in (current or {}).get('steps', [])]}
 
-        with ui.card().classes('w-full'):
-            with ui.row().classes('items-center gap-2'):
-                ui.icon('checklist', color='primary').classes('text-2xl')
-                ui.label(current['title'] if current else 'Nuevo caso de prueba').classes('text-xl font-semibold')
+        # Mismo espíritu que /stories/edit: a la derecha los campos, al centro la redacción (mismo renderer que
+        # el reporte exportado), actualizada en vivo — ver el comentario de user_stories.py:story_detail.
+        with ui.row().classes('w-full gap-4 items-start no-wrap'):
+            with ui.column().classes('w-full md:w-96 shrink-0 gap-4 order-2'):
+                with ui.card().classes('w-full'):
+                    with ui.row().classes('items-center gap-2'):
+                        ui.icon('edit_note', color='primary').classes('text-2xl')
+                        ui.label('Campos').classes('text-xl font-semibold')
 
-            title = ui.input('Título', value=(current or {}).get('title', '')).props('outlined dense').classes('w-full').mark('spec-title')
-            with ui.row().classes('w-full gap-3'):
-                stories = core.list_project_items('user_stories', pid)
-                default_story = (current or {}).get('story_id') or (story_id or None)
-                story = ui.select({s['id']: s['title'] for s in stories}, value=default_story,
-                                  label='Historia de usuario (opcional)', clearable=True).props('outlined dense').classes('w-60').mark('spec-story')
-                features = core.list_project_items('features', pid)
-                feature = ui.select({f['id']: f['name'] for f in features}, value=(current or {}).get('feature_id'),
-                                    label='Funcionalidad (opcional)', clearable=True).props('outlined dense').classes('w-60')
-            with ui.row().classes('w-full gap-3'):
-                priority = ui.select(core.PRIORITY_LABELS, value=(current or {}).get('priority', 'medium'), label='Prioridad').props('outlined dense').classes('w-40')
-                type_ = ui.select(TYPE_LABELS, value=(current or {}).get('type', 'functional'), label='Tipo').props('outlined dense').classes('w-44')
-                cases = core.list_project_items('cases', pid)
-                linked = ui.select({c['id']: c['name'] for c in cases}, value=(current or {}).get('linked_case_id'),
-                                   label='Caso API/UI automatizado (opcional)', clearable=True).props('outlined dense').classes('w-64').mark('spec-linked-case')
+                    title = ui.input('Título', value=(current or {}).get('title', '')).props('outlined dense').classes('w-full') \
+                        .mark('spec-title').on_value_change(lambda e: document_view.refresh())
+                    stories = core.list_project_items('user_stories', pid)
+                    default_story = (current or {}).get('story_id') or (story_id or None)
+                    story = ui.select({s['id']: s['title'] for s in stories}, value=default_story,
+                                      label='Historia de usuario (opcional)', clearable=True).props('outlined dense').classes('w-full').mark('spec-story')
+                    features = core.list_project_items('features', pid)
+                    feature = ui.select({f['id']: f['name'] for f in features}, value=(current or {}).get('feature_id'),
+                                        label='Funcionalidad (opcional)', clearable=True).props('outlined dense').classes('w-full')
+                    with ui.row().classes('w-full gap-3'):
+                        priority = ui.select(core.PRIORITY_LABELS, value=(current or {}).get('priority', 'medium'), label='Prioridad').props('outlined dense').classes('grow')
+                        type_ = ui.select(TYPE_LABELS, value=(current or {}).get('type', 'functional'), label='Tipo').props('outlined dense').classes('grow')
+                    cases = core.list_project_items('cases', pid)
+                    linked = ui.select({c['id']: c['name'] for c in cases}, value=(current or {}).get('linked_case_id'),
+                                       label='Caso API/UI automatizado (opcional)', clearable=True).props('outlined dense').classes('w-full').mark('spec-linked-case')
 
-            preconditions = ui.textarea('Precondición', value=(current or {}).get('preconditions', '')).props('outlined dense autogrow').classes('w-full')
+                    preconditions = ui.textarea('Precondición', value=(current or {}).get('preconditions', '')).props('outlined dense autogrow') \
+                        .classes('w-full').on_value_change(lambda e: document_view.refresh())
 
-            ui.separator().classes('my-2')
-            ui.label('Pasos de ejecución y resultado esperado').classes('font-semibold')
+                    ui.separator().classes('my-2')
+                    ui.label('Pasos de ejecución y resultado esperado').classes('font-semibold')
 
-            @ui.refreshable
-            def step_rows():
-                if not d['steps']:
-                    ui.label('Ninguno todavía.').classes('text-sm text-gray-400')
-                for index, s in enumerate(d['steps']):
-                    with ui.row().classes('items-center gap-2 w-full no-wrap'):
-                        ui.label(str(index + 1)).classes('w-6 text-gray-500')
-                        ui.input('Paso', value=s.get('action', '')).props('outlined dense').classes('grow').mark('spec-step-action').on_value_change(lambda e, s=s: s.__setitem__('action', e.value))
-                        ui.input('Resultado esperado', value=s.get('expected', '')).props('outlined dense').classes('grow').mark('spec-step-expected').on_value_change(lambda e, s=s: s.__setitem__('expected', e.value))
-                        ui.button(icon='delete', on_click=lambda _, s=s: (d['steps'].remove(s), step_rows.refresh())).props('flat round dense color=negative')
-            step_rows()
-            ui.button('Agregar paso', icon='add', on_click=lambda: (d['steps'].append({'action': '', 'expected': ''}), step_rows.refresh())).props('outline dense color=primary').mark('spec-add-step')
+                    @ui.refreshable
+                    def step_rows():
+                        if not d['steps']:
+                            ui.label('Ninguno todavía.').classes('text-sm text-gray-400')
+                        for index, s in enumerate(d['steps']):
+                            with ui.row().classes('items-start gap-2 w-full no-wrap'):
+                                ui.label(str(index + 1)).classes('w-6 text-gray-500 pt-3')
+                                ui.textarea('Paso', value=s.get('action', '')).props('outlined dense autogrow').classes('grow').mark('spec-step-action') \
+                                    .on_value_change(lambda e, s=s: (s.__setitem__('action', e.value), document_view.refresh()))
+                                ui.textarea('Resultado esperado', value=s.get('expected', '')).props('outlined dense autogrow').classes('grow').mark('spec-step-expected') \
+                                    .on_value_change(lambda e, s=s: (s.__setitem__('expected', e.value), document_view.refresh()))
+                                ui.button(icon='delete', on_click=lambda _, s=s: (d['steps'].remove(s), step_rows.refresh(), document_view.refresh())) \
+                                    .props('flat round dense color=negative').classes('mt-1')
+                    step_rows()
+                    ui.button('Agregar paso', icon='add', on_click=lambda: (d['steps'].append({'action': '', 'expected': ''}),
+                              step_rows.refresh(), document_view.refresh())).props('outline dense color=primary').mark('spec-add-step')
 
-            def save():
-                if current:
-                    core.update_test_case_spec(current['id'], title.value, story.value, feature.value, preconditions.value,
-                                               d['steps'], priority.value, type_.value, linked.value)
-                    ui.notify('Caso de prueba actualizado', type='positive')
-                    ui.navigate.to(f'/test-specs/edit?id={current["id"]}')
-                else:
-                    spec = core.create_test_case_spec(title.value, pid, story.value, feature.value, preconditions.value,
+                    def save():
+                        if current:
+                            core.update_test_case_spec(current['id'], title.value, story.value, feature.value, preconditions.value,
                                                        d['steps'], priority.value, type_.value, linked.value)
-                    ui.notify('Caso de prueba creado', type='positive')
-                    ui.navigate.to(f'/test-specs/edit?id={spec["id"]}')
-            ui.button('Guardar cambios' if current else 'Crear caso de prueba', icon='save', on_click=guard(save)).props('color=primary mt-2').mark('spec-save')
+                            ui.notify('Caso de prueba actualizado', type='positive')
+                            ui.navigate.to(f'/test-specs/edit?id={current["id"]}')
+                        else:
+                            spec = core.create_test_case_spec(title.value, pid, story.value, feature.value, preconditions.value,
+                                                               d['steps'], priority.value, type_.value, linked.value)
+                            ui.notify('Caso de prueba creado', type='positive')
+                            ui.navigate.to(f'/test-specs/edit?id={spec["id"]}')
+                    ui.button('Guardar cambios' if current else 'Crear caso de prueba', icon='save', on_click=guard(save)).props('color=primary mt-2').mark('spec-save')
 
-            if current:
-                def remove(s=current):
-                    core.delete_test_case_spec(s['id'])
-                    ui.notify('Caso de prueba eliminado', type='positive')
-                    ui.navigate.to('/test-specs')
-                ui.button('Eliminar caso de prueba', icon='delete', on_click=lambda: confirm(f'¿Eliminar el caso de prueba «{current["title"]}»?', remove)) \
-                    .props('flat dense color=negative mt-2').mark('spec-delete')
+                    if current:
+                        def remove(s=current):
+                            core.delete_test_case_spec(s['id'])
+                            ui.notify('Caso de prueba eliminado', type='positive')
+                            ui.navigate.to('/test-specs')
+                        ui.button('Eliminar caso de prueba', icon='delete', on_click=lambda: confirm(f'¿Eliminar el caso de prueba «{current["title"]}»?', remove)) \
+                            .props('flat dense color=negative mt-2').mark('spec-delete')
+
+            with ui.column().classes('grow gap-4 order-1 min-w-0'):
+                with ui.card().classes('w-full').mark('spec-document'):
+                    @ui.refreshable
+                    def document_view():
+                        ui.label(title.value or 'Nuevo caso de prueba').classes('text-2xl font-bold')
+                        ui.html(spec_report.render_test_case_view_html({'preconditions': preconditions.value, 'steps': d['steps']})).classes('w-full')
+                    document_view()
 
         # ------------------------------------------------------------ Asistente de IA (Fase 2)
         thread_key = current['id'] if current else 'new'
@@ -153,6 +170,7 @@ def test_spec_detail(id: str = '', story_id: str = ''):
             type_.set_value(tc['type'])
             d['steps'] = [dict(s) for s in tc['steps']]
             step_rows.refresh()
+            document_view.refresh()
 
         with ui.card().classes('w-full'):
             with ui.row().classes('items-center gap-2'):
@@ -179,7 +197,8 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                     ui.label(f'{len(candidates["items"])} candidato(s) — elegí uno para cargarlo arriba').classes('font-semibold')
                     for tc in candidates['items']:
                         with ui.row().classes('items-center gap-2 w-full no-wrap'):
-                            ui.label(f'{tc["title"]} — {len(tc["steps"])} paso(s) · {tc["type"]} · {tc["priority"]}').classes('text-sm grow')
+                            ui.label(f'{tc["title"]} — {len(tc["steps"])} paso(s) · {TYPE_LABELS.get(tc["type"], tc["type"])} · '
+                                    f'{core.PRIORITY_LABELS.get(tc["priority"], tc["priority"])}').classes('text-sm grow')
 
                             def use(tc=tc):
                                 _apply_case_draft(tc, [])

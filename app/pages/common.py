@@ -55,6 +55,17 @@ MINI_CSS = '''<style>
 .ltw-pane .nicegui-code{max-width:100%}
 </style>'''
 
+# Aire de "documento" (fondo suave + tarjetas tipo papel) — solo para frame(doc_style=True), hoy únicamente
+# Historias de usuario / Casos de prueba / Plantillas, porque conceptualmente SON documentos de especificación.
+# Inyectado por página (ui.add_head_html vuelve a renderizar en cada carga), nunca toca el resto de la app.
+DOC_CSS = '''<style>
+body{background:#f3f4f6}
+.ltw-doc .q-card,.ltw-doc .q-table{border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.07),0 1px 2px rgba(0,0,0,.04);border:1px solid #e9eaee;overflow:hidden}
+.ltw-doc .q-card+.q-card{margin-top:4px}
+.ltw-doc>.q-page-title,.ltw-doc .ltw-doc-title{font-size:26px;font-weight:700;letter-spacing:-.01em;margin-bottom:2px}
+.ltw-doc .ltw-doc-subtitle{color:#6b7280;font-size:14px;margin-bottom:8px}
+</style>'''
+
 # Captura de pantalla y video «slideshow» del propio Chat/Espacio de trabajo (Fase D) — nunca Playwright (no hay
 # navegador de prueba del lado del servidor para esas dos pantallas, es la UI misma de LTW), así que se hace en
 # el cliente con html2canvas sobre el panel pedido. Cargado una sola vez acá, en el esqueleto compartido de
@@ -102,12 +113,16 @@ def protected_page(route, **kwargs):
 
 
 @contextmanager
-def frame(title, current, wide=False):
+def frame(title, current, wide=False, doc_style=False):
     """Page skeleton: header with active-project switcher, navigation drawer and content column.
-    wide=True is for work screens: the menu collapses to icons (expands on hover) and the content uses the whole window."""
+    wide=True is for work screens: the menu collapses to icons (expands on hover) and the content uses the whole window.
+    doc_style=True gives the content area a "documento" look (fondo suave, tarjetas tipo papel) — para pantallas
+    que conceptualmente son documentos (Especificación), nunca por defecto: no afecta a ninguna otra pantalla."""
     ui.colors(primary='#2563eb')
     ui.add_head_html(ARIA_SCRIPT)
     ui.add_head_html(HTML2CANVAS_SCRIPT)
+    if doc_style:
+        ui.add_head_html(DOC_CSS)
     ui.page_title(f'{title} · Local Test Workspace')
     drawer = ui.left_drawer(value=True, bordered=True).classes('bg-gray-50 pt-4')
     if wide:
@@ -179,8 +194,8 @@ def frame(title, current, wide=False):
         with ui.column().classes('w-full gap-0 p-0'):
             yield
         return
-    with ui.column().classes('w-full max-w-6xl mx-auto p-4 gap-4'):
-        ui.label(title).classes('text-2xl font-semibold')
+    with ui.column().classes('w-full p-4 gap-4' + (' max-w-7xl mx-auto ltw-doc' if doc_style else ' max-w-6xl mx-auto')):
+        ui.label(title).classes('ltw-doc-title text-2xl font-semibold' if doc_style else 'text-2xl font-semibold')
         yield
 
 

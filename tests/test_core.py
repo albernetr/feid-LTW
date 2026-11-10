@@ -813,6 +813,79 @@ def test_delete_user_story_blocks_while_a_test_case_spec_is_linked():
     assert core.get('user_stories', story['id']) is None
 
 
+def test_user_story_criteria_accept_gherkin_and_keep_old_flat_text_working():
+    project = core.create_project('Gherkin')
+    story = core.create_user_story('Pagar', project['id'], criteria=[
+        {'text': 'Pago válido', 'given': 'una tarjeta válida', 'when': 'el cliente confirma el pago', 'then': 'se aprueba la compra'},
+        {'text': 'solo texto, sin estructurar'},   # criterio "viejo", sin romperse
+        {'given': '', 'when': '', 'then': ''},     # vacío del todo: se descarta
+    ])
+    assert len(story['criteria']) == 2
+    scenario = story['criteria'][0]
+    assert scenario['given'] == 'una tarjeta válida' and scenario['when'] == 'el cliente confirma el pago' and scenario['then'] == 'se aprueba la compra'
+    assert story['criteria'][1]['text'] == 'solo texto, sin estructurar' and story['criteria'][1]['given'] == ''
+
+
+def test_user_story_definition_of_ready_and_done_are_checklists():
+    project = core.create_project('DoR DoD')
+    story = core.create_user_story('Pagar', project['id'],
+                                   definition_of_ready=[{'text': 'Mockups aprobados', 'done': True}, {'text': '  '}, 'Dependencias resueltas'],
+                                   definition_of_done=[{'text': 'Pruebas automatizadas pasando'}])
+    assert story['definition_of_ready'] == [{'text': 'Mockups aprobados', 'done': True}, {'text': 'Dependencias resueltas', 'done': False}]
+    assert story['definition_of_done'] == [{'text': 'Pruebas automatizadas pasando', 'done': False}]
+
+
+def test_user_story_depends_on_only_keeps_stories_in_the_same_project():
+    project = core.create_project('Depende')
+    other_project = core.create_project('Otro')
+    a = core.create_user_story('A', project['id'])
+    b = core.create_user_story('B', project['id'])
+    foreign = core.create_user_story('Ajena', other_project['id'])
+    c = core.create_user_story('C', project['id'], depends_on=[a['id'], b['id'], foreign['id'], 'no-existe'])
+    assert set(c['depends_on']) == {a['id'], b['id']}
+    # no puede depender de sí misma
+    updated = core.update_user_story(c['id'], 'C', depends_on=[a['id'], c['id']])
+    assert updated['depends_on'] == [a['id']]
+
+
+def test_delete_user_story_blocks_while_another_story_depends_on_it():
+    project = core.create_project('Dependencia bloquea borrado')
+    a = core.create_user_story('A', project['id'])
+    core.create_user_story('B', project['id'], depends_on=[a['id']])
+    with pytest.raises(ValueError):
+        core.delete_user_story(a['id'])
+
+
+def test_user_story_story_points_must_be_a_non_negative_integer():
+    project = core.create_project('Story points')
+    story = core.create_user_story('Pagar', project['id'], story_points=5)
+    assert story['story_points'] == 5
+    assert core.create_user_story('Sin estimar', project['id'])['story_points'] is None
+    with pytest.raises(ValueError):
+        core.create_user_story('x', project['id'], story_points=-1)
+    with pytest.raises(ValueError):
+        core.create_user_story('x', project['id'], story_points='no-es-un-número')
+
+
+def test_user_story_assigned_to_must_be_an_existing_user():
+    project = core.create_project('Asignado')
+    with pytest.raises(ValueError):
+        core.create_user_story('Pagar', project['id'], assigned_to='no-existe')
+    user = core.create_user('Ana', 'QA', 'ana@ltw.local', 'password', password='x' * 12)
+    story = core.create_user_story('Pagar', project['id'], assigned_to=user['id'])
+    assert story['assigned_to'] == user['id']
+    cleared = core.update_user_story(story['id'], 'Pagar', assigned_to=None)
+    assert cleared['assigned_to'] is None
+
+
+def test_user_story_business_context_fields_round_trip():
+    project = core.create_project('Contexto de negocio')
+    story = core.create_user_story('Pagar', project['id'], business_rules='Solo tarjetas propias', assumptions='El banco responde en <2s',
+                                   risks='Picos de tráfico en campañas', out_of_scope='No cubre pagos en cuotas')
+    assert story['business_rules'] == 'Solo tarjetas propias' and story['assumptions'] == 'El banco responde en <2s'
+    assert story['risks'] == 'Picos de tráfico en campañas' and story['out_of_scope'] == 'No cubre pagos en cuotas'
+
+
 def test_create_test_case_spec_requires_existing_links_and_cleans_empty_steps():
     project = core.create_project('CP')
     with pytest.raises(ValueError):

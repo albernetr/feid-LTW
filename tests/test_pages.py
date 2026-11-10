@@ -1267,6 +1267,81 @@ async def test_test_case_spec_can_be_created_from_a_story_and_linked_to_an_autom
     await user.should_see('Pagar con tarjeta válida')                 # ligado, se ve desde la historia también
 
 
+async def test_user_story_professional_fields_round_trip_through_save(user: User):
+    """Story points, Gherkin, Definición de Listo/Hecho y contexto de negocio — no solo el esqueleto Como/Quiero/Para."""
+    project = core.create_project('HU profesional')
+    core.set_active_project(project['id'])
+
+    await user.open('/stories')
+    user.find('Nueva historia').click()
+    await user.should_see(marker='story-title')
+    user.find(marker='story-title').type('Pagar con tarjeta')
+    user.find(marker='story-points').type('5')
+    user.find(marker='story-add-criterion').click()
+    await user.should_see(marker='story-criterion-given')
+    user.find(marker='story-criterion-text').type('Pago válido')
+    user.find(marker='story-criterion-given').type('una tarjeta válida')
+    user.find(marker='story-criterion-when').type('el cliente confirma el pago')
+    user.find(marker='story-criterion-then').type('se aprueba la compra')
+    user.find(marker='story-dor-add').click()
+    await user.should_see(marker='story-dor-text')
+    user.find(marker='story-dor-text').type('Mockups aprobados')
+    user.find(marker='story-dod-add').click()
+    await user.should_see(marker='story-dod-text')
+    user.find(marker='story-dod-text').type('Pruebas automatizadas pasando')
+    user.find(marker='story-business-rules').type('Solo tarjetas propias')
+    user.find(marker='story-assumptions').type('El banco responde en menos de 2 segundos')
+    user.find(marker='story-risks').type('Picos de tráfico en campañas')
+    user.find(marker='story-out-of-scope').type('No cubre pagos en cuotas')
+    user.find(marker='story-save').click()
+    await user.should_see('Historia creada')
+
+    [story] = core.list_items('user_stories')
+    assert story['story_points'] == 5
+    assert story['criteria'][0]['given'] == 'una tarjeta válida' and story['criteria'][0]['then'] == 'se aprueba la compra'
+    assert story['definition_of_ready'] == [{'text': 'Mockups aprobados', 'done': False}]
+    assert story['definition_of_done'] == [{'text': 'Pruebas automatizadas pasando', 'done': False}]
+    assert story['business_rules'] == 'Solo tarjetas propias' and story['risks'] == 'Picos de tráfico en campañas'
+
+    # el documento (vista de lectura) refleja todo lo guardado, no solo el formulario
+    await user.open(f'/stories/edit?id={story["id"]}')
+    await user.should_see('una tarjeta válida')
+    await user.should_see('Mockups aprobados')
+    await user.should_see('Solo tarjetas propias')
+
+
+async def test_user_story_switching_the_input_template_reshapes_the_form(user: User):
+    """Elegir la plantilla de entrada "Formato libre" cambia de verdad el formulario: oculta Como/Quiero/Para
+    y muestra un único campo de texto — no es solo una biblioteca/previsualizador."""
+    project = core.create_project('Plantilla reshapea')
+    core.set_active_project(project['id'])
+
+    await user.open('/stories')
+    user.find('Nueva historia').click()
+    await user.should_see(marker='story-as-a')   # modo estructurado por defecto (Historia de usuario INVEST)
+    user.find(marker='story-title').type('HU heredada de un documento externo')
+
+    user.find(marker='story-input-template').click()
+    await user.should_see('Formato libre')
+    user.find('Formato libre').click()
+    await user.should_see(marker='story-content', retries=30)
+    with pytest.raises(AssertionError):
+        user.find(marker='story-as-a')   # Como/Quiero/Para ya no está: el formulario cambió de forma, no solo de etiqueta
+    user.find(marker='story-content').type('Historia completa pegada tal cual vino del documento del cliente.')
+    user.find(marker='story-save').click()
+    await user.should_see('Historia creada')
+
+    [story] = core.list_items('user_stories')
+    assert story['content'] == 'Historia completa pegada tal cual vino del documento del cliente.'
+    assert story['as_a'] == '' and story['i_want'] == '' and story['so_that'] == ''
+
+    # reabrir infiere el modo correcto a partir de los datos: ya tiene 'content', vuelve en modo Formato libre
+    await user.open(f'/stories/edit?id={story["id"]}')
+    await user.should_see('Historia completa pegada tal cual')
+    with pytest.raises(AssertionError):
+        user.find(marker='story-as-a')
+
+
 async def test_spec_templates_come_preseeded_and_support_adopt_and_promote(user: User):
     project = core.create_project('Plantillas UI')
     core.set_active_project(project['id'])

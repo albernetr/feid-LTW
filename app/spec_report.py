@@ -21,8 +21,13 @@ PLACEHOLDER_STORY = {
     'title': 'Recuperar contraseña por email', 'as_a': 'usuario registrado',
     'i_want': 'poder recuperar el acceso a mi cuenta si olvido la contraseña', 'so_that': 'no perder el acceso a mis datos',
     'priority': 'high', 'status': 'ready',
-    'criteria': [{'text': 'Dado un email válido, se envía un enlace de recuperación', 'status': 'met'},
-                 {'text': 'El enlace expira a los 30 minutos', 'status': 'pending'}],
+    'criteria': [{'text': 'Email válido', 'given': 'un email registrado y válido', 'when': 'el usuario pide recuperar su contraseña', 'then': 'se envía un enlace de recuperación', 'status': 'met'},
+                 {'text': 'Enlace expirado', 'given': 'un enlace de recuperación con más de 30 minutos', 'when': 'el usuario lo abre', 'then': 'se rechaza y se ofrece reenviarlo', 'status': 'pending'}],
+    'definition_of_ready': [{'text': 'Diseño de la pantalla de recuperación aprobado', 'done': True}, {'text': 'Plantilla de email definida', 'done': False}],
+    'definition_of_done': [{'text': 'Pruebas automatizadas pasando', 'done': False}, {'text': 'Documentación de usuario actualizada', 'done': False}],
+    'business_rules': 'Un enlace de recuperación solo puede usarse una vez.', 'assumptions': 'El proveedor de email entrega en menos de 1 minuto.',
+    'risks': 'Picos de solicitudes podrían saturar el envío de emails.', 'out_of_scope': 'No cubre recuperación por SMS.',
+    'story_points': 5, 'depends_on': [],
 }
 PLACEHOLDER_CASES = [
     {'title': 'Solicitar recuperación con email válido', 'preconditions': 'El usuario tiene una cuenta activa',
@@ -78,14 +83,36 @@ def _resolve_field(field, ctx):
         met = sum(1 for c in all_criteria if c.get('status') == 'met')
         quien = f'«{story["title"]}»' if story else f'{len(stories)} historia(s)'
         return f'{quien}: {met}/{len(all_criteria)} criterio(s) cumplido(s), {len(rows)} caso(s) de prueba ({automated} automatizado(s), {passing} pasa(n)).'
-    if field == 'risks':
-        risks = [f'Criterio pendiente: {c["text"]}' for c in all_criteria if c.get('status') != 'met']
+    if field == 'risks':   # riesgos CALCULADOS (criterios pendientes + casos automatizados en rojo) — no confundir con 'business_risks' (los que redactó la persona)
+        risks = [f'Criterio pendiente: {c["text"] or (c.get("then") or "")}' for c in all_criteria if c.get('status') != 'met']
         for r in rows:
             spec, last_run = r['spec'], r.get('last_run')
             if spec.get('linked_case_id') and (not last_run or last_run['status'] != 'passed'):
                 risks.append(f'Caso automatizado «{spec["title"]}» en estado {last_run["status"] if last_run else "nunca ejecutado"}.')
         return risks
-    return None   # preconditions/expected/content/given/when/then: no modelados a nivel de Historia
+    if field in ('business_rules', 'assumptions', 'out_of_scope'):
+        return (story.get(field) or None) if story else None
+    if field == 'business_risks':
+        return (story.get('risks') or None) if story else None
+    if field in ('definition_of_ready', 'definition_of_done'):
+        if not story:
+            return None
+        return [{'text': item['text'], 'status': 'met' if item.get('done') else 'pending'} for item in (story.get(field) or [])]
+    if field == 'story_points':
+        return str(story.get('story_points')) if story and story.get('story_points') is not None else None
+    if field == 'dependencies':
+        if not story:
+            return None
+        titles = [core.get('user_stories', sid) for sid in (story.get('depends_on') or [])]
+        return [t['title'] for t in titles if t] or None
+    if field == 'assigned_to':
+        if not story:
+            return None
+        user = core.get('users', story.get('assigned_to')) if story.get('assigned_to') else None
+        return f'{user.get("first_name", "")} {user.get("last_name", "")}'.strip() if user else None
+    if field == 'content':
+        return (story.get('content') or None) if story else None
+    return None   # preconditions/expected/given/when/then: no modelados a nivel de Historia
 
 
 def _resolve_test_case_field(field, record):
@@ -170,6 +197,7 @@ main{max-width:900px;margin:0 auto;padding:24px 20px 48px}h1{font-size:22px;marg
 .story-card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px}
 table{width:100%;border-collapse:collapse;background:#fff;font-size:13px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #e5e7eb;vertical-align:top}th{background:#f9fafb;color:#374151}
 .tc{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;margin:8px 0}
+.criteria{list-style:none;padding-left:0;margin:0}.criteria li{margin:6px 0}.criteria input{margin-right:6px;vertical-align:middle}
 .sample{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;font-size:13px;margin-bottom:12px}
 @media print{body{background:#fff}main{padding:0}.tc,table{break-inside:avoid}}
 '''
@@ -203,13 +231,94 @@ def _render_content_html(content):
             parts.append('</div>')
         return ''.join(parts)
     if isinstance(content, list) and 'status' in content[0] and 'text' in content[0]:
-        return '<ul>' + ''.join(f'<li>{"✓" if c.get("status") == "met" else "○"} {e(c["text"])}</li>' for c in content) + '</ul>'
+        # checkbox real del navegador, no un glifo de fuente (un círculo vacío "○" puede confundirse con una "O" suelta
+        # según la fuente/el renderizador — un checkbox no depende de ninguna fuente y es inequívoco). Estilo en
+        # línea (no una clase CSS externa): este fragmento también se incrusta tal cual en la vista de solo
+        # lectura de la propia pantalla (ver render_story_view_html), que no carga HTML_CSS. Si el criterio trae
+        # Dado/Cuando/Entonces (Gherkin), se muestra debajo del resumen — si no (p. ej. Definición de Listo/Hecho,
+        # o un criterio "viejo" sin estructurar), solo el resumen.
+        items = []
+        for c in content:
+            label = e(c['text']) if c.get('text') else '<i style="color:#9ca3af">(sin resumen)</i>'
+            gherkin = ''
+            if c.get('given') or c.get('when') or c.get('then'):
+                gherkin = (f'<div style="margin:2px 0 0 24px;font-size:13px;color:#4b5563">'
+                          f'<b>Dado</b> {e(c.get("given", ""))} <b>cuando</b> {e(c.get("when", ""))} <b>entonces</b> {e(c.get("then", ""))}</div>')
+            items.append(f'<li style="margin:8px 0"><label style="cursor:default"><input type="checkbox" disabled{" checked" if c.get("status") == "met" else ""} '
+                        f'style="margin-right:6px;vertical-align:middle"> {label}</label>{gherkin}</li>')
+        return '<ul style="list-style:none;padding-left:0;margin:0">' + ''.join(items) + '</ul>'
     if isinstance(content, list) and isinstance(content[0], str):
         return '<ul>' + ''.join(f'<li>{e(c)}</li>' for c in content) + '</ul>'
     if isinstance(content, list) and 'case' in content[0]:
         rows = ''.join(f'<tr><td>{e(r["story"])}</td><td>{e(r["case"])}</td><td>{e(r["type"])}</td><td>{e(r["priority"])}</td><td>{e(r["status"])}</td></tr>' for r in content)
         return f'<table><tr><th>Historia</th><th>Caso de prueba</th><th>Tipo</th><th>Prioridad</th><th>Estado</th></tr>{rows}</table>'
     return f'<pre>{e(json.dumps(content, ensure_ascii=False, indent=2))}</pre>'
+
+
+# --------------------------------------------------------------------------- vista de lectura en la propia pantalla
+# (no exportación): un fragmento HTML — sin <html>/<head>, para incrustar con ui.html() tal cual, con estilos en
+# línea (no depende de HTML_CSS, que solo se carga en el documento exportado) — que muestra la Historia o el Caso
+# de prueba redactado como se leería, en vez del formulario. Reusa _render_content_html para que la redacción
+# nunca se desalinee del reporte que de verdad se exporta.
+
+def _h3(label):
+    return f'<h3 style="margin:18px 0 8px;font-size:15px;font-weight:600;color:#374151">{label}</h3>'
+
+
+def render_story_view_html(story):
+    """`story`: as_a/i_want/so_that/priority/story_points/criteria/definition_of_ready/definition_of_done/
+    business_rules/assumptions/risks/out_of_scope tal como viven en la base — más `dependency_titles` (lista de
+    strings, no ids: títulos ya resueltos por el caller, para no tener que ir a buscarlos acá)."""
+    e = html.escape
+    parts = []
+    if story.get('content'):
+        parts.append(f'<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;white-space:pre-wrap">{e(story["content"])}</div>')
+    elif story.get('as_a') or story.get('i_want') or story.get('so_that'):
+        parts.append('<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:4px 0 2px">')
+        parts.append(f'<p style="margin:6px 0"><b>Como</b> {e(story.get("as_a", "")) or "—"}</p>')
+        parts.append(f'<p style="margin:6px 0"><b>Quiero</b> {e(story.get("i_want", "")) or "—"}</p>')
+        parts.append(f'<p style="margin:6px 0"><b>Para</b> {e(story.get("so_that", "")) or "—"}</p>')
+        parts.append('</div>')
+    meta = []
+    if story.get('priority'):
+        meta.append(f'Prioridad: {core.PRIORITY_LABELS.get(story["priority"], story["priority"])}')
+    if story.get('story_points') not in (None, ''):
+        meta.append(f'{story["story_points"]} story points')
+    if meta:
+        parts.append(f'<p style="margin:10px 0 0;font-size:13px;color:#6b7280">{e(" · ".join(meta))}</p>')
+
+    parts.append(_h3('Criterios de aceptación'))
+    parts.append(_render_content_html(story.get('criteria') or []))
+
+    for field, label in (('definition_of_ready', 'Definición de Listo'), ('definition_of_done', 'Definición de Hecho')):
+        items = story.get(field) or []
+        if items:
+            parts.append(_h3(label))
+            parts.append(_render_content_html([{'text': i['text'], 'status': 'met' if i.get('done') else 'pending'} for i in items]))
+
+    for field, label in (('business_rules', 'Reglas de negocio'), ('assumptions', 'Supuestos'), ('risks', 'Riesgos'), ('out_of_scope', 'Fuera de alcance')):
+        if story.get(field):
+            parts.append(_h3(label) + f'<p style="margin:0">{e(story[field])}</p>')
+
+    if story.get('dependency_titles'):
+        parts.append(_h3('Depende de'))
+        parts.append(_render_content_html(story['dependency_titles']))
+    return ''.join(parts)
+
+
+def render_test_case_view_html(spec):
+    e = html.escape
+    parts = []
+    if spec.get('preconditions'):
+        parts.append(f'<p style="margin:6px 0"><b>Precondición</b><br>{e(spec["preconditions"])}</p>')
+    parts.append('<h3 style="margin:18px 0 8px;font-size:15px;font-weight:600;color:#374151">Pasos de ejecución y resultado esperado</h3>')
+    steps = spec.get('steps') or []
+    if not steps:
+        parts.append('<p style="color:#9ca3af;font-size:13px">Ninguno todavía.</p>')
+    else:
+        parts.append('<ol style="margin:0;padding-left:22px">' + ''.join(
+            f'<li style="margin:8px 0">{e(s.get("action", "")) or "—"} <span style="color:#9ca3af">→</span> {e(s.get("expected", "")) or "—"}</li>' for s in steps) + '</ol>')
+    return ''.join(parts)
 
 
 def render_spec_html(data):
@@ -251,7 +360,12 @@ def _render_content_markdown(content):
             lines.append('')
         return lines
     if isinstance(content, list) and 'status' in content[0] and 'text' in content[0]:
-        return [('- [x] ' if c.get('status') == 'met' else '- [ ] ') + c['text'] for c in content] + ['']
+        lines = []
+        for c in content:
+            lines.append(('- [x] ' if c.get('status') == 'met' else '- [ ] ') + (c.get('text') or '(sin resumen)'))
+            if c.get('given') or c.get('when') or c.get('then'):
+                lines.append(f'  Dado {c.get("given", "")}, cuando {c.get("when", "")}, entonces {c.get("then", "")}')
+        return lines + ['']
     if isinstance(content, list) and isinstance(content[0], str):
         return [f'- {c}' for c in content] + ['']
     if isinstance(content, list) and 'case' in content[0]:
@@ -300,8 +414,11 @@ def _write_content_docx(doc, content):
                 doc.add_paragraph(f'{i}. {s.get("action", "")} → {s.get("expected", "")}')
         return
     if isinstance(content, list) and 'status' in content[0] and 'text' in content[0]:
+        # "[x]"/"[ ]" en vez de un glifo de círculo: inequívoco sin depender de que la fuente lo soporte.
         for c in content:
-            doc.add_paragraph(('✓ ' if c.get('status') == 'met' else '○ ') + c['text'])
+            doc.add_paragraph(('[x] ' if c.get('status') == 'met' else '[ ] ') + (c.get('text') or '(sin resumen)'))
+            if c.get('given') or c.get('when') or c.get('then'):
+                doc.add_paragraph(f'    Dado {c.get("given", "")}, cuando {c.get("when", "")}, entonces {c.get("then", "")}')
         return
     if isinstance(content, list) and isinstance(content[0], str):
         for c in content:

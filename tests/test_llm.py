@@ -352,6 +352,36 @@ def test_generate_user_story_includes_the_feature_in_the_prompt(fake):
     assert 'Checkout' in sent
 
 
+def test_generate_user_story_cleans_gherkin_criteria_and_business_context(fake):
+    configure(fake)
+    fake.queue(json.dumps({
+        'title': 'Pagar', 'as_a': 'cliente', 'i_want': 'pagar', 'so_that': 'comprar',
+        'criteria': [{'text': 'Pago válido', 'given': 'una tarjeta válida', 'when': 'confirma el pago', 'then': 'se aprueba'},
+                     'sin estructurar', {'given': '', 'when': '', 'then': ''}],
+        'definition_of_ready': ['Mockups aprobados', '  ', 'Dependencias resueltas'],
+        'definition_of_done': ['Pruebas pasando'],
+        'business_rules': 'Solo tarjetas propias', 'assumptions': 'El banco responde rápido',
+        'risks': 'Picos de tráfico', 'out_of_scope': 'No cubre cuotas'}))
+    result = llm.generate_user_story('una historia para pagar')
+    assert result['valid']
+    story = result['story']
+    assert len(story['criteria']) == 2   # el criterio vacío del todo se descarta
+    assert story['criteria'][0] == {'text': 'Pago válido', 'given': 'una tarjeta válida', 'when': 'confirma el pago', 'then': 'se aprueba'}
+    assert story['criteria'][1] == {'text': 'sin estructurar', 'given': '', 'when': '', 'then': ''}
+    assert story['definition_of_ready'] == ['Mockups aprobados', 'Dependencias resueltas']
+    assert story['definition_of_done'] == ['Pruebas pasando']
+    assert story['business_rules'] == 'Solo tarjetas propias' and story['assumptions'] == 'El banco responde rápido'
+    assert story['risks'] == 'Picos de tráfico' and story['out_of_scope'] == 'No cubre cuotas'
+
+
+def test_generate_test_cases_from_criteria_describes_gherkin_scenarios_in_the_prompt(fake):
+    configure(fake)
+    fake.queue(json.dumps({'test_cases': [{'title': 'x'}]}))
+    llm.generate_test_cases(criteria=[{'text': 'Pago válido', 'given': 'una tarjeta válida', 'when': 'confirma el pago', 'then': 'se aprueba la compra'}])
+    sent = fake.requests[-1]['body']['messages'][-1]['content']
+    assert 'Dado una tarjeta válida, cuando confirma el pago, entonces se aprueba la compra' in sent
+
+
 def test_generate_test_cases_from_story_or_criteria_requires_at_least_one(fake):
     configure(fake)
     with pytest.raises(llm.LLMError, match='una historia de usuario o al menos un criterio'):
