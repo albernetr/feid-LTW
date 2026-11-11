@@ -769,6 +769,18 @@ def test_initialize_seeds_seven_default_global_templates_idempotently():
     assert len([t for t in core.list_items('spec_templates') if t.get('project_id') is None]) == 7
 
 
+def _without_ids(nodes):
+    """Quita 'id' de cada nodo, recursivamente (incluidos los 'children' de un grupo) — para comparar dos
+    árboles de plantilla por estructura/contenido sin que un id regenerado al azar los haga parecer distintos."""
+    cleaned = []
+    for n in nodes:
+        n = {k: v for k, v in n.items() if k != 'id'}
+        if n.get('children'):
+            n['children'] = _without_ids(n['children'])
+        cleaned.append(n)
+    return cleaned
+
+
 def test_seed_resyncs_a_pre_existing_builtin_templates_body_with_the_current_default():
     """Un builtin global nunca es editable por nadie (el editor lo deja `disabled`) — la única forma en que su
     `body` guardado puede divergir de DEFAULT_SPEC_TEMPLATES es haber quedado sembrado por una versión anterior
@@ -786,15 +798,19 @@ def test_seed_resyncs_a_pre_existing_builtin_templates_body_with_the_current_def
     # servidor) ya pasa por ese primer llamado; acá se invoca el seeder directo para no depender de esa cache.
     core.seed_default_spec_templates()   # debe restaurar el body canónico completo, sin duplicar ni tocar otra plantilla
     upgraded = core.get('spec_templates', builtin['id'])
-    assert len(upgraded['body']) == 3 and all(n.get('kind') == 'field' for n in upgraded['body'])
-    assert [n['field_key'] for n in upgraded['body']] == ['given', 'when', 'then']
+    # Ahora el body canónico es 2 grupos (general con los metadatos + criteria con given/when/then) — ya no una
+    # lista plana de 3 campos, desde que los metadatos pasaron a ser parte de la plantilla (ver AGENTS.md/sesión).
+    assert len(upgraded['body']) == 2 and all(n.get('kind') == 'group' for n in upgraded['body'])
+    assert upgraded['body'][0]['id'] == 'general' and upgraded['body'][0]['children'][0]['field_key'] == 'title'
+    assert upgraded['body'][1]['id'] == 'criteria'
+    assert [n['field_key'] for n in upgraded['body'][1]['children']] == ['given', 'when', 'then']
     assert len([t for t in core.list_items('spec_templates') if t.get('project_id') is None]) == 7   # nada duplicado
 
-    core.seed_default_spec_templates()   # idempotente (salvo el 'id' de un campo sin id propio en
-    # DEFAULT_SPEC_TEMPLATES, que se regenera en cada limpieza — irrelevante, nada lo direcciona por fuera)
+    core.seed_default_spec_templates()   # idempotente (salvo el 'id' de un nodo sin id propio en
+    # default_spec_templates.json — field o group — que se regenera en cada limpieza — irrelevante, nada lo
+    # direcciona por fuera; _without_ids lo quita recursivamente, no solo del nivel de grupo)
     resynced = core.get('spec_templates', builtin['id'])['body']
-    assert [{k: v for k, v in n.items() if k != 'id'} for n in resynced] == \
-           [{k: v for k, v in n.items() if k != 'id'} for n in upgraded['body']]
+    assert _without_ids(resynced) == _without_ids(upgraded['body'])
 
 
 def test_promote_and_adopt_normalize_a_legacy_flat_body_on_copy():
@@ -1019,6 +1035,48 @@ def test_custom_field_catalog_lists_custom_fields_from_input_templates_without_d
 
     only_test_case = core.custom_field_catalog(pid, applies_to='test_case')
     assert {c['template_name'] for c in only_test_case} == {'Caso con presupuesto'}
+
+
+def test_pair_rows_groups_consecutive_half_width_siblings_into_rows():
+    nodes = [{'id': 'a', 'width': 'full'}, {'id': 'b', 'width': 'half'}, {'id': 'c', 'width': 'half'},
+             {'id': 'd', 'width': 'half'}]   # 'd' queda solo: su posible pareja ya se usó con 'c'
+    rows = core.pair_rows(nodes)
+    assert [[n['id'] for n in row] for row in rows] == [['a'], ['b', 'c'], ['d']]
+
+
+def test_known_fields_include_registration_metadata_now_that_its_template_governed():
+    """Título/Prioridad/Estado/... (HU) y Título/Historia/.../Caso ligado (Caso de prueba) dejaron de ser fijos
+    fuera de toda plantilla — son campos conocidos más, que una plantilla ubica donde quiera (ver
+    default_spec_templates.json, grupo 'general')."""
+    assert {'title', 'feature_id', 'priority', 'status', 'story_points', 'assigned_to', 'depends_on'} <= set(core.KNOWN_STORY_FIELDS)
+    assert {'title', 'story_id', 'feature_id', 'linked_case_id', 'priority', 'type'} <= set(core.KNOWN_TEST_CASE_FIELDS)
+
+
+def test_default_spec_templates_json_has_seven_templates_with_a_general_metadata_group_first():
+    assert len(core.DEFAULT_SPEC_TEMPLATES) == 7
+    assert {t['kind'] for t in core.DEFAULT_SPEC_TEMPLATES} == {'input', 'output'}
+    input_templates_with_metadata = ('Historia de usuario (INVEST)', 'Criterios de aceptación (Gherkin)',
+                                     'Caso de prueba (ISTQB)', 'Formato libre')
+    for name in input_templates_with_metadata:
+        tpl = next(t for t in core.DEFAULT_SPEC_TEMPLATES if t['name'] == name)
+        general = tpl['body'][0]
+        assert general['kind'] == 'group' and general['id'] == 'general'
+        assert general['children'][0]['field'] == 'title'
+
+
+def test_input_template_id_round_trips_on_user_story_and_test_case_spec():
+    pid = core.create_project('Plantilla elegida')['id']
+    tpl = core.create_spec_template('Mi plantilla', 'input', 'user_story', project_id=pid, body=[])
+    story = core.create_user_story('Con plantilla', pid, input_template_id=tpl['id'])
+    assert core.get('user_stories', story['id'])['input_template_id'] == tpl['id']
+    core.update_user_story(story['id'], 'Con plantilla', input_template_id=None)
+    assert core.get('user_stories', story['id'])['input_template_id'] is None
+
+    spec_tpl = core.create_spec_template('Mi plantilla de caso', 'input', 'test_case', project_id=pid, body=[])
+    spec = core.create_test_case_spec('Con plantilla', pid, input_template_id=spec_tpl['id'])
+    assert core.get('test_case_specs', spec['id'])['input_template_id'] == spec_tpl['id']
+    core.update_test_case_spec(spec['id'], 'Con plantilla', input_template_id=None)
+    assert core.get('test_case_specs', spec['id'])['input_template_id'] is None
 
 
 def test_create_test_case_spec_requires_existing_links_and_cleans_empty_steps():

@@ -1,0 +1,109 @@
+[
+  {
+    "name": "Historia de usuario (INVEST)",
+    "kind": "input",
+    "applies_to": "user_story",
+    "description": "Formato clásico Como/Quiero/Para, con sus criterios de aceptación.",
+    "body": [
+      {"kind": "group", "id": "general", "label": "General", "icon": "edit_note", "children": [
+        {"field": "title", "label": "Título"},
+        {"field": "feature_id", "label": "Funcionalidad"},
+        {"field": "priority", "label": "Prioridad", "width": "half"}, {"field": "status", "label": "Estado", "width": "half"},
+        {"field": "story_points", "label": "Story points", "width": "half"}, {"field": "assigned_to", "label": "Asignado a", "width": "half"},
+        {"field": "depends_on", "label": "Depende de"}]},
+      {"kind": "group", "id": "resumen", "label": "Resumen", "icon": "description", "children": [
+        {"field": "as_a", "label": "Como (rol)"}, {"field": "i_want", "label": "Quiero (acción o funcionalidad)"},
+        {"field": "so_that", "label": "Para (beneficio o razón)"}]},
+      {"kind": "group", "id": "criteria", "label": "Criterios de aceptación", "icon": "checklist", "children": [
+        {"field": "criteria", "label": "Criterios de aceptación"}]},
+      {"kind": "group", "id": "dor_dod", "label": "Listo / Hecho", "icon": "fact_check", "children": [
+        {"field": "definition_of_ready", "label": "Definición de Listo"}, {"field": "definition_of_done", "label": "Definición de Hecho"}]},
+      {"kind": "group", "id": "business", "label": "Negocio", "icon": "business_center", "children": [
+        {"field": "business_rules", "label": "Reglas de negocio"}, {"field": "assumptions", "label": "Supuestos"},
+        {"field": "risks", "label": "Riesgos"}, {"field": "out_of_scope", "label": "Fuera de alcance"}]},
+      {"kind": "group", "id": "tests", "label": "Casos de prueba", "icon": "science", "children": [
+        {"field": "linked_test_cases", "label": "Casos de prueba"}]}
+    ]
+  },
+  {
+    "name": "Criterios de aceptación (Gherkin)",
+    "kind": "input",
+    "applies_to": "user_story",
+    "description": "Dado/Cuando/Entonces, para criterios de aceptación ejecutables.",
+    "body": [
+      {"kind": "group", "id": "general", "label": "General", "icon": "edit_note", "children": [
+        {"field": "title", "label": "Título"},
+        {"field": "feature_id", "label": "Funcionalidad"},
+        {"field": "priority", "label": "Prioridad", "width": "half"}, {"field": "status", "label": "Estado", "width": "half"},
+        {"field": "story_points", "label": "Story points", "width": "half"}, {"field": "assigned_to", "label": "Asignado a", "width": "half"},
+        {"field": "depends_on", "label": "Depende de"}]},
+      {"kind": "group", "id": "criteria", "label": "Criterios", "icon": "checklist", "children": [
+        {"field": "given", "label": "Dado (contexto inicial)"}, {"field": "when", "label": "Cuando (acción)"},
+        {"field": "then", "label": "Entonces (resultado esperado)"}]}
+    ]
+  },
+  {
+    "name": "Caso de prueba (ISTQB)",
+    "kind": "input",
+    "applies_to": "test_case",
+    "description": "Precondición, pasos y resultado esperado, con prioridad.",
+    "body": [
+      {"kind": "group", "id": "general", "label": "General", "icon": "edit_note", "children": [
+        {"field": "title", "label": "Título"},
+        {"field": "story_id", "label": "Historia de usuario"},
+        {"field": "feature_id", "label": "Funcionalidad"},
+        {"field": "priority", "label": "Prioridad", "width": "half"}, {"field": "type", "label": "Tipo", "width": "half"},
+        {"field": "linked_case_id", "label": "Caso API/UI automatizado"}]},
+      {"kind": "group", "id": "contenido", "label": "Contenido", "icon": "science", "children": [
+        {"field": "preconditions", "label": "Precondición"}, {"field": "steps", "label": "Pasos de ejecución"}]}
+    ]
+  },
+  {
+    "name": "Formato libre",
+    "kind": "input",
+    "applies_to": "user_story",
+    "description": "Un solo campo de texto libre, para cuando la HU ya viene en un formato propio (de la organización o de otra herramienta) y no hace falta forzarla a Como/Quiero/Para.",
+    "body": [
+      {"kind": "group", "id": "general", "label": "General", "icon": "edit_note", "children": [
+        {"field": "title", "label": "Título"},
+        {"field": "feature_id", "label": "Funcionalidad"},
+        {"field": "priority", "label": "Prioridad", "width": "half"}, {"field": "status", "label": "Estado", "width": "half"},
+        {"field": "story_points", "label": "Story points", "width": "half"}, {"field": "assigned_to", "label": "Asignado a", "width": "half"},
+        {"field": "depends_on", "label": "Depende de"}]},
+      {"kind": "group", "id": "contenido", "label": "Contenido", "icon": "description", "children": [
+        {"field": "content", "label": "Contenido (formato libre)"}]}
+    ]
+  },
+  {
+    "name": "Reporte ejecutivo",
+    "kind": "output",
+    "applies_to": "report",
+    "description": "Resumen corto para quien no necesita el detalle completo.",
+    "body": [
+      {"field": "summary", "label": "Resumen"}, {"field": "coverage", "label": "Cobertura"}, {"field": "risks", "label": "Riesgos"}
+    ]
+  },
+  {
+    "name": "Especificación detallada",
+    "kind": "output",
+    "applies_to": "report",
+    "description": "Documento completo de nivel profesional: historia, criterios en Gherkin, Definición de Listo/Hecho, contexto de negocio, dependencias, casos de prueba y trazabilidad.",
+    "body": [
+      {"field": "story", "label": "Historia de usuario"}, {"field": "criteria", "label": "Criterios de aceptación"},
+      {"field": "definition_of_ready", "label": "Definición de Listo"}, {"field": "definition_of_done", "label": "Definición de Hecho"},
+      {"field": "business_rules", "label": "Reglas de negocio"}, {"field": "assumptions", "label": "Supuestos"},
+      {"field": "business_risks", "label": "Riesgos"}, {"field": "out_of_scope", "label": "Fuera de alcance"},
+      {"field": "dependencies", "label": "Depende de"}, {"field": "test_cases", "label": "Casos de prueba"},
+      {"field": "traceability", "label": "Trazabilidad"}
+    ]
+  },
+  {
+    "name": "Matriz de trazabilidad",
+    "kind": "output",
+    "applies_to": "report",
+    "description": "HU → Casos de prueba → estado de ejecución, en una sola tabla.",
+    "body": [
+      {"field": "matrix", "label": "Matriz HU → Casos de prueba → Estado"}
+    ]
+  }
+]

@@ -136,3 +136,121 @@ def test_attach_evidence_dispatches_by_platform(monkeypatch):
     assert calls == ['jira', 'azdo']
     with pytest.raises(ValueError, match='no soportada'):
         integrations.attach_evidence({'platform': 'trello', 'config': {}}, 'f', b'x', 'text/plain', 1)
+
+
+# --------------------------------------------------------------------------- asignar / cambiar estado — Jira
+
+def test_jira_update_assignment_resolves_account_id_then_puts_it(monkeypatch):
+    core.secret_set('jira-token-assign', 'tok-123')
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if request.url.path.endswith('/user/search'):
+            return httpx.Response(200, json=[{'accountId': 'acc-1'}])
+        return httpx.Response(204)
+
+    monkeypatch.setattr(core, '_httpx_client', _client_with(handler))
+    config = {'site_url': 'https://acme.atlassian.net', 'email': 'qa@acme.com', 'secret': 'jira-token-assign'}
+    result = integrations.jira_update_assignment(config, 'PROJ-1', 'dev@acme.com')
+    assert result == {'accountId': 'acc-1'}
+    assert calls[0].url.params['query'] == 'dev@acme.com'
+    assert calls[1].method == 'PUT' and calls[1].url.path.endswith('/issue/PROJ-1/assignee')
+    assert json.loads(calls[1].content) == {'accountId': 'acc-1'}
+
+
+def test_jira_update_assignment_raises_when_no_user_matches(monkeypatch):
+    core.secret_set('jira-token-assign2', 'tok-123')
+    monkeypatch.setattr(core, '_httpx_client', _client_with(lambda r: httpx.Response(200, json=[])))
+    config = {'site_url': 'https://acme.atlassian.net', 'email': 'qa@acme.com', 'secret': 'jira-token-assign2'}
+    with pytest.raises(ValueError, match='No se encontró ningún usuario'):
+        integrations.jira_update_assignment(config, 'PROJ-1', 'nadie@acme.com')
+
+
+def test_jira_update_status_posts_the_matching_transition(monkeypatch):
+    core.secret_set('jira-token-status', 'tok-123')
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if request.url.path.endswith('/transitions') and request.method == 'GET':
+            return httpx.Response(200, json={'transitions': [{'id': '31', 'name': 'Done', 'to': {'name': 'Hecho'}}]})
+        return httpx.Response(204)
+
+    monkeypatch.setattr(core, '_httpx_client', _client_with(handler))
+    config = {'site_url': 'https://acme.atlassian.net', 'email': 'qa@acme.com', 'secret': 'jira-token-status'}
+    result = integrations.jira_update_status(config, 'PROJ-1', 'hecho')
+    assert result == {'transition': 'Hecho'}
+    assert calls[1].method == 'POST' and json.loads(calls[1].content) == {'transition': {'id': '31'}}
+
+
+def test_jira_update_status_raises_with_available_transitions_when_none_matches(monkeypatch):
+    core.secret_set('jira-token-status2', 'tok-123')
+    monkeypatch.setattr(core, '_httpx_client', _client_with(
+        lambda r: httpx.Response(200, json={'transitions': [{'id': '1', 'name': 'Start', 'to': {'name': 'En progreso'}}]})))
+    config = {'site_url': 'https://acme.atlassian.net', 'email': 'qa@acme.com', 'secret': 'jira-token-status2'}
+    with pytest.raises(ValueError, match='En progreso'):
+        integrations.jira_update_status(config, 'PROJ-1', 'Cerrado')
+
+
+# --------------------------------------------------------------------------- asignar / cambiar estado — Azure DevOps
+
+def test_azdo_update_assignment_patches_assigned_to(monkeypatch):
+    core.secret_set('azdo-pat-assign', 'pat-123')
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={'id': 42})
+
+    monkeypatch.setattr(core, '_httpx_client', _client_with(handler))
+    config = {'organization': 'acme', 'project': 'proj', 'secret': 'azdo-pat-assign'}
+    result = integrations.azdo_update_assignment(config, 42, 'dev@acme.com')
+    assert result == {'id': 42}
+    body = json.loads(calls[0].content)
+    assert body[0]['path'] == '/fields/System.AssignedTo' and body[0]['value'] == 'dev@acme.com'
+
+
+def test_azdo_update_assignment_requires_assigned_to():
+    with pytest.raises(ValueError, match='Indica a quién asignar'):
+        integrations.azdo_update_assignment({'organization': 'acme', 'project': 'proj', 'secret': 'x'}, 42, '')
+
+
+def test_azdo_update_status_validates_against_the_work_item_types_real_states(monkeypatch):
+    core.secret_set('azdo-pat-status', 'pat-123')
+
+    def handler(request):
+        if request.url.path.endswith('/states'):
+            return httpx.Response(200, json={'value': [{'name': 'To Do'}, {'name': 'Doing'}, {'name': 'Done'}]})
+        if request.method == 'GET':   # leer el tipo del work item
+            return httpx.Response(200, json={'fields': {'System.WorkItemType': 'Issue'}})
+        return httpx.Response(200, json={'id': 42})
+
+    monkeypatch.setattr(core, '_httpx_client', _client_with(handler))
+    config = {'organization': 'acme', 'project': 'proj', 'secret': 'azdo-pat-status'}
+    assert integrations.azdo_update_status(config, 42, 'Doing') == {'id': 42}
+    with pytest.raises(ValueError, match='Estado inválido'):
+        integrations.azdo_update_status(config, 42, 'Cerrado')
+
+
+# --------------------------------------------------------------------------- dispatch genérico
+
+def test_update_assignment_and_update_status_dispatch_by_platform(monkeypatch):
+    calls = []
+    monkeypatch.setattr(integrations, 'jira_update_assignment', lambda c, t, v: calls.append(('jira-assign', t, v)))
+    monkeypatch.setattr(integrations, 'azdo_update_assignment', lambda c, t, v: calls.append(('azdo-assign', t, v)))
+    monkeypatch.setattr(integrations, 'jira_update_status', lambda c, t, v: calls.append(('jira-status', t, v)))
+    monkeypatch.setattr(integrations, 'azdo_update_status', lambda c, t, v: calls.append(('azdo-status', t, v)))
+
+    integrations.update_assignment({'platform': 'jira', 'config': {}}, 'PROJ-1', 'qa@acme.com')
+    integrations.update_assignment({'platform': 'azdo', 'config': {}}, 42, 'qa@acme.com')
+    integrations.update_status({'platform': 'jira', 'config': {}}, 'PROJ-1', 'Hecho')
+    integrations.update_status({'platform': 'azdo', 'config': {}}, 42, 'Doing')
+    assert calls == [
+        ('jira-assign', 'PROJ-1', 'qa@acme.com'), ('azdo-assign', 42, 'qa@acme.com'),
+        ('jira-status', 'PROJ-1', 'Hecho'), ('azdo-status', 42, 'Doing'),
+    ]
+    with pytest.raises(ValueError, match='no soportada'):
+        integrations.update_assignment({'platform': 'trello', 'config': {}}, 1, 'x')
+    with pytest.raises(ValueError, match='no soportada'):
+        integrations.update_status({'platform': 'trello', 'config': {}}, 1, 'x')

@@ -801,75 +801,32 @@ CUSTOM_FIELD_TYPE_LABELS = {'text': 'Texto corto', 'textarea': 'Texto largo', 'l
 
 # Campos FIJOS de cada `applies_to`: los que ya tienen su propio editor/renderer especializado, no un `field_type`
 # genérico. Una plantilla puede referenciar cualquiera de estos (field_type=None) además de definir los suyos.
-KNOWN_STORY_FIELDS = ('as_a', 'i_want', 'so_that', 'content', 'criteria', 'given', 'when', 'then', 'definition_of_ready',
-                      'definition_of_done', 'business_rules', 'assumptions', 'risks', 'out_of_scope', 'story_points',
-                      'assigned_to', 'depends_on',
+# Incluye los METADATOS de registro (title/feature_id/priority/status/story_points/assigned_to/depends_on para
+# HU; title/story_id/feature_id/priority/type/linked_case_id para Caso de prueba) — ya no están fuera de toda
+# plantilla: son campos conocidos más, que cada plantilla ubica donde quiera (las 4 por defecto los agrupan en
+# su propio grupo "General", ver DEFAULT_SPEC_TEMPLATES más abajo).
+KNOWN_STORY_FIELDS = ('title', 'feature_id', 'priority', 'status', 'as_a', 'i_want', 'so_that', 'content', 'criteria',
+                      'given', 'when', 'then', 'definition_of_ready', 'definition_of_done', 'business_rules',
+                      'assumptions', 'risks', 'out_of_scope', 'story_points', 'assigned_to', 'depends_on',
                       'linked_test_cases')   # slot de solo-UI: gestión de Casos de prueba ligados — no es un
                                               # atributo de la Historia (la relación ya vive en test_case_specs.
                                               # story_id), solo una sección que una plantilla de entrada puede
                                               # ubicar en su árbol, igual que 'given'/'when'/'then' no aplican a
                                               # todas las plantillas de HU.
-KNOWN_TEST_CASE_FIELDS = ('preconditions', 'steps', 'expected', 'priority', 'type')
+KNOWN_TEST_CASE_FIELDS = ('title', 'story_id', 'feature_id', 'linked_case_id', 'preconditions', 'steps', 'expected', 'priority', 'type')
 KNOWN_REPORT_FIELDS = ('story', 'as_a', 'i_want', 'so_that', 'content', 'criteria', 'definition_of_ready', 'definition_of_done',
                        'business_rules', 'assumptions', 'business_risks', 'out_of_scope', 'dependencies', 'test_cases',
                        'traceability', 'matrix', 'summary', 'coverage', 'risks', 'story_points', 'assigned_to',
                        'preconditions', 'steps', 'expected', 'priority', 'type')
 KNOWN_FIELDS_BY_APPLIES_TO = {'user_story': KNOWN_STORY_FIELDS, 'test_case': KNOWN_TEST_CASE_FIELDS, 'report': KNOWN_REPORT_FIELDS}
 
-DEFAULT_SPEC_TEMPLATES = [
-    {'name': 'Historia de usuario (INVEST)', 'kind': 'input', 'applies_to': 'user_story',
-     'description': 'Formato clásico Como/Quiero/Para, con sus criterios de aceptación.',
-     # Grupos de primer nivel con `id` FIJO (resumen/criteria/dor_dod/business/tests) — user_stories.py arma el
-     # riel de pestañas a partir de estos grupos (ver core.template_top_level_groups); el id fijo es a propósito
-     # el mismo que usaban las pestañas hardcodeadas de antes (salvo 'resumen', antes 'general': ese nombre/
-     # ícono ahora los usa la pestaña fija de Metadatos que arma la propia página — no un grupo de la plantilla),
-     # para que las marcas `story-rail-*` y el comportamiento por defecto no cambien. Una plantilla propia que
-     # cree un usuario no necesita esto — sus grupos generan un id al azar, sin que le importe a ningún test.
-     'body': [
-         {'kind': 'group', 'id': 'resumen', 'label': 'Resumen', 'icon': 'description', 'children': [
-             {'field': 'as_a', 'label': 'Como (rol)'}, {'field': 'i_want', 'label': 'Quiero (acción o funcionalidad)'},
-             {'field': 'so_that', 'label': 'Para (beneficio o razón)'}]},
-         {'kind': 'group', 'id': 'criteria', 'label': 'Criterios de aceptación', 'icon': 'checklist', 'children': [
-             {'field': 'criteria', 'label': 'Criterios de aceptación'}]},
-         {'kind': 'group', 'id': 'dor_dod', 'label': 'Listo / Hecho', 'icon': 'fact_check', 'children': [
-             {'field': 'definition_of_ready', 'label': 'Definición de Listo'}, {'field': 'definition_of_done', 'label': 'Definición de Hecho'}]},
-         {'kind': 'group', 'id': 'business', 'label': 'Negocio', 'icon': 'business_center', 'children': [
-             {'field': 'business_rules', 'label': 'Reglas de negocio'}, {'field': 'assumptions', 'label': 'Supuestos'},
-             {'field': 'risks', 'label': 'Riesgos'}, {'field': 'out_of_scope', 'label': 'Fuera de alcance'}]},
-         {'kind': 'group', 'id': 'tests', 'label': 'Casos de prueba', 'icon': 'science', 'children': [
-             {'field': 'linked_test_cases', 'label': 'Casos de prueba'}]},
-     ]},
-    {'name': 'Criterios de aceptación (Gherkin)', 'kind': 'input', 'applies_to': 'user_story',
-     'description': 'Dado/Cuando/Entonces, para criterios de aceptación ejecutables.',
-     'body': [{'field': 'given', 'label': 'Dado (contexto inicial)'}, {'field': 'when', 'label': 'Cuando (acción)'},
-              {'field': 'then', 'label': 'Entonces (resultado esperado)'}]},
-    {'name': 'Caso de prueba (ISTQB)', 'kind': 'input', 'applies_to': 'test_case',
-     'description': 'Precondición, pasos y resultado esperado, con prioridad.',
-     # id 'contenido' (antes 'general'): ese nombre/ícono ahora los usa la pestaña fija de Metadatos de la
-     # propia página, no un grupo de la plantilla — ver el comentario equivalente en la HU (INVEST) de arriba.
-     'body': [
-         {'kind': 'group', 'id': 'contenido', 'label': 'Contenido', 'icon': 'science', 'children': [
-             {'field': 'preconditions', 'label': 'Precondición'}, {'field': 'steps', 'label': 'Pasos de ejecución'}]},
-     ]},
-    {'name': 'Formato libre', 'kind': 'input', 'applies_to': 'user_story',
-     'description': 'Un solo campo de texto libre, para cuando la HU ya viene en un formato propio (de la organización o de otra herramienta) y no hace falta forzarla a Como/Quiero/Para.',
-     'body': [{'field': 'content', 'label': 'Contenido (formato libre)'}]},
-    {'name': 'Reporte ejecutivo', 'kind': 'output', 'applies_to': 'report',
-     'description': 'Resumen corto para quien no necesita el detalle completo.',
-     'body': [{'field': 'summary', 'label': 'Resumen'}, {'field': 'coverage', 'label': 'Cobertura'}, {'field': 'risks', 'label': 'Riesgos'}]},
-    {'name': 'Especificación detallada', 'kind': 'output', 'applies_to': 'report',
-     'description': 'Documento completo de nivel profesional: historia, criterios en Gherkin, Definición de Listo/Hecho, '
-                     'contexto de negocio, dependencias, casos de prueba y trazabilidad.',
-     'body': [{'field': 'story', 'label': 'Historia de usuario'}, {'field': 'criteria', 'label': 'Criterios de aceptación'},
-              {'field': 'definition_of_ready', 'label': 'Definición de Listo'}, {'field': 'definition_of_done', 'label': 'Definición de Hecho'},
-              {'field': 'business_rules', 'label': 'Reglas de negocio'}, {'field': 'assumptions', 'label': 'Supuestos'},
-              {'field': 'business_risks', 'label': 'Riesgos'}, {'field': 'out_of_scope', 'label': 'Fuera de alcance'},
-              {'field': 'dependencies', 'label': 'Depende de'}, {'field': 'test_cases', 'label': 'Casos de prueba'},
-              {'field': 'traceability', 'label': 'Trazabilidad'}]},
-    {'name': 'Matriz de trazabilidad', 'kind': 'output', 'applies_to': 'report',
-     'description': 'HU → Casos de prueba → estado de ejecución, en una sola tabla.',
-     'body': [{'field': 'matrix', 'label': 'Matriz HU → Casos de prueba → Estado'}]},
-]
+# Las 7 plantillas globales por defecto viven en default_spec_templates.json (al lado de este archivo, NO en
+# ROOT/data — ese es el directorio de datos de runtime, gitignored) — versionado, legible y editable sin tocar
+# Python. seed_default_spec_templates() las sincroniza en SQLite sin condición en cada arranque (ver abajo); el
+# JSON es la fuente de verdad real, la fila en la base es solo una copia materializada para que las páginas la
+# consulten igual que a cualquier plantilla propia de un proyecto (mismo core.list_items/core.get).
+with open(Path(__file__).resolve().parent / 'default_spec_templates.json', encoding='utf-8') as _f:
+    DEFAULT_SPEC_TEMPLATES = json.load(_f)
 
 
 def seed_default_spec_templates():

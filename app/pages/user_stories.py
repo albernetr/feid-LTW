@@ -241,7 +241,7 @@ def story_detail(id: str = ''):
         main_split_value, set_main_split_value_pref = remembered('story_split_width', default=75)
         S = {'assistant_location': assistant_location, 'center_mode': center_mode,
              'center_open': ['document'] + (['assistant'] if assistant_location == 'center' else []),
-             'fields_collapsed': False, 'active_field_tab': '__meta__'}
+             'fields_collapsed': False, 'active_field_tab': 'general'}
         drag_state = {'key': None}
 
         def handle_rail_click(key):
@@ -317,6 +317,16 @@ def story_detail(id: str = ''):
             if fn:
                 fn.refresh()
 
+        def _set_meta(widget, key, value):
+            # Los metadatos de registro (título/prioridad/...) ahora también los gobierna la plantilla — un
+            # widget puede no existir si la plantilla elegida no los incluye. Si existe, set_value() dispara su
+            # on_value_change y ESO actualiza d['meta']; si no, hay que escribir ahí directamente para no perder
+            # el dato (p. ej. el Asistente de IA proponiendo un título con "Formato libre" activo).
+            if widget:
+                widget.set_value(value)
+            else:
+                d['meta'][key] = value
+
         # Asistente de IA: estado + render definidos ACÁ (antes de armar los paneles) para poder montarlo en dos
         # lugares físicos distintos (columna derecha, o abajo a lo ancho) sin duplicar nada — cada mount es un
         # @ui.refreshable chico que solo decide SI renderiza acá; nunca reconstruye los campos de "Campos"
@@ -333,7 +343,7 @@ def story_detail(id: str = ''):
                 if structured:
                     input_template.set_value(structured['id'])
                     fields_section.refresh()
-            title.set_value(story['title'])
+            _set_meta(title, 'title', story['title'])
             if as_a:
                 as_a.set_value(story['as_a'])
             if i_want:
@@ -416,20 +426,20 @@ def story_detail(id: str = ''):
                         draft_cases_view.refresh()
                         reply = f'Generé {len(result["test_cases"])} caso(s) de prueba candidatos — elegí cuáles crear, arriba.'
                     elif any(k in lowered for k in llm.SPEC_REFINE_KEYWORDS):
-                        item = {'title': title.value, 'as_a': _v(as_a), 'i_want': _v(i_want), 'so_that': _v(so_that),
+                        item = {'title': d['meta']['title'], 'as_a': _v(as_a), 'i_want': _v(i_want), 'so_that': _v(so_that),
                                'criteria': d['criteria'], 'definition_of_ready': [i['text'] for i in d['dor']],
                                'definition_of_done': [i['text'] for i in d['dod']], 'business_rules': _v(business_rules),
                                'assumptions': _v(assumptions), 'risks': _v(risks), 'out_of_scope': _v(out_of_scope)}
                         result = await run.io_bound(llm.refine_spec_item, 'user_story', item, text)
                         _apply_story_draft(result['item'], result['errors'])
                         reply = 'Refiné la historia — revisá los cambios arriba y guardá si te sirven.'
-                    elif any(k in lowered for k in llm.SPEC_GENERATE_STORY_KEYWORDS) or not title.value.strip():
-                        selected_feature = core.get('features', feature.value) if feature.value else None
+                    elif any(k in lowered for k in llm.SPEC_GENERATE_STORY_KEYWORDS) or not d['meta']['title'].strip():
+                        selected_feature = core.get('features', d['meta']['feature_id']) if d['meta']['feature_id'] else None
                         result = await run.io_bound(llm.generate_user_story, text, selected_feature)
                         _apply_story_draft(result['story'], result['errors'])
                         reply = 'Generé una propuesta — revisala arriba (título, Como/Quiero/Para y criterios) y guardá si te sirve.'
                     else:
-                        context = {'kind': 'historia de usuario', 'current': {'title': title.value, 'as_a': _v(as_a),
+                        context = {'kind': 'historia de usuario', 'current': {'title': d['meta']['title'], 'as_a': _v(as_a),
                                    'i_want': _v(i_want), 'so_that': _v(so_that), 'criteria': [c['text'] for c in d['criteria']]}}
                         reply = await run.io_bound(llm.spec_chat_reply, thread[:-1], text, context)
                 except (llm.LLMError, ValueError) as exc:
@@ -580,6 +590,11 @@ def story_detail(id: str = ''):
                                 # Quiero/Para y un textarea libre), ahora gobierna de verdad qué secciones existen,
                                 # con qué etiqueta/ícono y en qué orden — cada GRUPO de primer nivel de su `body` es
                                 # una pestaña del riel de abajo (ver fields_section()/core.template_top_level_groups).
+                                # Esto incluye los METADATOS de registro (Título/Prioridad/Estado/...): ya no viven
+                                # en una pestaña fija — son campos conocidos más, que la plantilla ubica donde
+                                # quiera (las 4 plantillas por defecto los agrupan en su propio grupo "General",
+                                # pero una plantilla propia podría no incluir alguno, agruparlos distinto, o
+                                # ponerlos a dos columnas con Ancho=Mitad).
                                 input_templates = [t for t in core.list_items('spec_templates') if t.get('kind') == 'input' and t.get('applies_to') == 'user_story'
                                                   and (t.get('project_id') is None or t.get('project_id') == pid)]
                                 # Qué plantilla elegir al (re)abrir la historia: la que se guardó la última vez
@@ -592,48 +607,64 @@ def story_detail(id: str = ''):
                                     next((t['id'] for t in input_templates if has_content and 'content' in core.template_field_keys(t.get('body'))),
                                         next((t['id'] for t in input_templates if not has_content and {'as_a', 'i_want', 'so_that'} & core.template_field_keys(t.get('body'))),
                                              input_templates[0]['id'] if input_templates else None))
-                                d['meta']['input_template_id'] = default_tpl_id
+
+                                # La plantilla elegida es, ella misma, lo que decide qué pestañas existen — así que
+                                # su selector queda FUERA del riel que gobierna: siempre visible, nunca se puede
+                                # perder de vista por más que la plantilla activa no la mencione en su árbol.
+                                input_template = ui.select({t['id']: t['name'] for t in input_templates}, value=default_tpl_id, label='Plantilla de entrada') \
+                                    .props('outlined dense').classes('w-full mt-2').mark('story-input-template') if input_templates else None
 
                                 field_panels = None
                                 known_renderers = {}
 
-                                # Metadatos de registro: su propia pestaña fija del riel ("General", primera,
-                                # nunca arrastrable al centro) — igual que ANTES de que la plantilla de entrada
-                                # gobernara el resto del panel (ver AGENTS.md/plan de esta ronda). Se reconstruye
-                                # entera en cada fields_section.refresh() (p. ej. al cambiar de plantilla), así
-                                # que cada widget lee/escribe en d['meta'] en vez de en `current` directamente —
-                                # si no, cualquier edición sin guardar se perdería al tocar la plantilla elegida.
-                                def render_meta_panel():
-                                    nonlocal title, feature, priority, status, story_points, assigned_to, depends_on, input_template
+                                def render_title():
+                                    nonlocal title
                                     title = ui.input('Título', value=d['meta']['title']).props('outlined dense').classes('w-full') \
                                         .mark('story-title').on_value_change(lambda e: (d['meta'].__setitem__('title', e.value), document_view.refresh()))
+                                known_renderers['title'] = render_title
+
+                                def render_feature():
+                                    nonlocal feature
                                     features = core.list_project_items('features', pid)
                                     feature = ui.select({f['id']: f['name'] for f in features}, value=d['meta']['feature_id'],
                                                         label='Funcionalidad (opcional)', clearable=True).props('outlined dense').classes('w-full').mark('story-feature') \
                                         .on_value_change(lambda e: d['meta'].__setitem__('feature_id', e.value))
-                                    with ui.row().classes('w-full gap-3'):
-                                        priority = ui.select(core.PRIORITY_LABELS, value=d['meta']['priority'], label='Prioridad') \
-                                            .props('outlined dense').classes('grow').on_value_change(lambda e: (d['meta'].__setitem__('priority', e.value), document_view.refresh()))
-                                        status = ui.select(STATUS_LABELS, value=d['meta']['status'], label='Estado').props('outlined dense').classes('grow') \
-                                            .on_value_change(lambda e: d['meta'].__setitem__('status', e.value))
-                                    with ui.row().classes('w-full gap-3'):
-                                        story_points = ui.number('Story points', value=d['meta']['story_points'], min=0, format='%.0f') \
-                                            .props('outlined dense').classes('grow').mark('story-points').on_value_change(lambda e: (d['meta'].__setitem__('story_points', e.value), document_view.refresh()))
-                                        users = core.list_items('users')
-                                        assigned_to = ui.select({u['id']: f'{u.get("first_name", "")} {u.get("last_name", "")}'.strip() or u.get('email', '') for u in users},
-                                                                value=d['meta']['assigned_to'], label='Asignado a (opcional)', clearable=True) \
-                                            .props('outlined dense').classes('grow').mark('story-assigned-to') \
-                                            .on_value_change(lambda e: d['meta'].__setitem__('assigned_to', e.value))
+                                known_renderers['feature_id'] = render_feature
+
+                                def render_priority():
+                                    nonlocal priority
+                                    priority = ui.select(core.PRIORITY_LABELS, value=d['meta']['priority'], label='Prioridad') \
+                                        .props('outlined dense').classes('w-full').on_value_change(lambda e: (d['meta'].__setitem__('priority', e.value), document_view.refresh()))
+                                known_renderers['priority'] = render_priority
+
+                                def render_status():
+                                    nonlocal status
+                                    status = ui.select(STATUS_LABELS, value=d['meta']['status'], label='Estado').props('outlined dense').classes('w-full') \
+                                        .on_value_change(lambda e: d['meta'].__setitem__('status', e.value))
+                                known_renderers['status'] = render_status
+
+                                def render_story_points():
+                                    nonlocal story_points
+                                    story_points = ui.number('Story points', value=d['meta']['story_points'], min=0, format='%.0f') \
+                                        .props('outlined dense').classes('w-full').mark('story-points') \
+                                        .on_value_change(lambda e: (d['meta'].__setitem__('story_points', e.value), document_view.refresh()))
+                                known_renderers['story_points'] = render_story_points
+
+                                def render_assigned_to():
+                                    nonlocal assigned_to
+                                    users = core.list_items('users')
+                                    assigned_to = ui.select({u['id']: f'{u.get("first_name", "")} {u.get("last_name", "")}'.strip() or u.get('email', '') for u in users},
+                                                            value=d['meta']['assigned_to'], label='Asignado a (opcional)', clearable=True) \
+                                        .props('outlined dense').classes('w-full').mark('story-assigned-to') \
+                                        .on_value_change(lambda e: d['meta'].__setitem__('assigned_to', e.value))
+                                known_renderers['assigned_to'] = render_assigned_to
+
+                                def render_depends_on():
+                                    nonlocal depends_on
                                     depends_on = ui.select({s['id']: s['title'] for s in other_stories}, multiple=True, value=d['meta']['depends_on'],
                                                            label='Depende de (opcional)', clearable=True).props('outlined dense use-chips').classes('w-full') \
                                         .mark('story-depends-on').on_value_change(lambda e: (d['meta'].__setitem__('depends_on', e.value), document_view.refresh()))
-                                    if input_templates:
-                                        ui.separator().classes('my-1')
-                                        input_template = ui.select({t['id']: t['name'] for t in input_templates}, value=d['meta']['input_template_id'], label='Plantilla de entrada') \
-                                            .props('outlined dense').classes('w-full mt-2').mark('story-input-template')
-                                        input_template.on_value_change(lambda e: (d['meta'].__setitem__('input_template_id', e.value), _on_input_template_change(e)))
-                                    else:
-                                        input_template = None
+                                known_renderers['depends_on'] = render_depends_on
 
                                 def render_as_a():
                                     nonlocal as_a
@@ -772,43 +803,35 @@ def story_detail(id: str = ''):
                                                         ui.label(fmt_time(last_run.get('started_at'))).classes('text-xs text-gray-400')
                                 known_renderers['linked_test_cases'] = render_tests_panel
 
-                                # Riel dinámico: Metadatos ("__meta__", fija, primera, no arrastrable — ver
-                                # render_meta_panel) + un grupo de primer nivel del `body` de la plantilla de
-                                # entrada elegida por cada pestaña siguiente (ícono/tooltip = los del grupo) —
-                                # ver core.template_top_level_groups. Sin plantilla alguna (caso borde, no
-                                # debería pasar: todo proyecto adopta las 7 por defecto), cae a un único grupo
-                                # Resumen con Como/Quiero/Para, igual que el comportamiento de siempre.
+                                # Riel 100% dinámico: un grupo de primer nivel del `body` de la plantilla de
+                                # entrada elegida = una pestaña (ícono/tooltip = los del grupo) — ver
+                                # core.template_top_level_groups. Ya no hay ninguna pestaña fija: los metadatos
+                                # de registro son, para esto, un grupo más (las 4 plantillas por defecto los
+                                # agrupan en su propio "General", ver core.DEFAULT_SPEC_TEMPLATES). Sin plantilla
+                                # alguna (caso borde, no debería pasar: todo proyecto adopta las 7 por defecto),
+                                # cae a un único grupo con Título + Como/Quiero/Para.
                                 @ui.refreshable
                                 def fields_section():
                                     nonlocal field_panels
-                                    # Lee d['meta']['input_template_id'], NO input_template.value: en la primera
-                                    # pasada de cada carga de página esta misma función todavía no llamó a
-                                    # render_meta_panel() (más abajo) — quien de verdad (re)crea el widget
-                                    # `input_template` — así que leerlo acá arriba vería el `None` inicial.
-                                    tpl = core.get('spec_templates', d['meta'].get('input_template_id')) if d['meta'].get('input_template_id') else None
+                                    tpl = core.get('spec_templates', input_template.value) if input_template and input_template.value else None
                                     groups = core.template_top_level_groups(tpl.get('body')) if tpl else [
-                                        {'id': 'resumen', 'label': 'Resumen', 'icon': 'description', 'children': [
+                                        {'id': 'general', 'label': 'General', 'icon': 'edit_note', 'children': [
+                                            {'kind': 'field', 'field_key': 'title', 'field_type': None, 'label': 'Título'},
                                             {'kind': 'field', 'field_key': 'as_a', 'field_type': None, 'label': 'Como (rol)'},
                                             {'kind': 'field', 'field_key': 'i_want', 'field_type': None, 'label': 'Quiero (acción o funcionalidad)'},
                                             {'kind': 'field', 'field_key': 'so_that', 'field_type': None, 'label': 'Para (beneficio o razón)'}]}]
-                                    if S['active_field_tab'] != '__meta__' and not any(g['id'] == S['active_field_tab'] for g in groups):
-                                        S['active_field_tab'] = groups[0]['id'] if groups else '__meta__'
+                                    if not any(g['id'] == S['active_field_tab'] for g in groups):
+                                        S['active_field_tab'] = groups[0]['id'] if groups else 'general'
                                     with ui.row().classes('w-full no-wrap gap-0').style('min-height:420px;justify-content:flex-end'):
                                         with ui.tab_panels(None, value=S['active_field_tab']).props('vertical').style('flex:1 1 0;min-width:0;padding:16px') as field_panels:
-                                            with ui.tab_panel('__meta__').classes('gap-3 p-0'):
-                                                render_meta_panel()
                                             for group in groups:
                                                 with ui.tab_panel(group['id']).classes('gap-3 p-0'):
                                                     render_template_tree(group['children'], d['custom'], known_renderers, on_change=lambda: document_view.refresh())
                                         # Arrastrables hacia el panel central (soltar ahí los agrega como pestaña propia,
                                         # sin dejar de vivir acá) — ondragstart además de .on('dragstart', ...) porque
                                         # algunos navegadores exigen un dataTransfer.setData() para iniciar el arrastre.
-                                        # Cualquier pestaña DEL CONTENIDO es arrastrable — Metadatos no (misma idea que
-                                        # la pestaña "General" de antes de este rediseño: agrupa lo que no gobierna
-                                        # ninguna plantilla, así que no tiene sentido llevarla al panel central).
+                                        # Cualquier pestaña del riel es arrastrable — ya no una lista especial fija.
                                         with ui.tabs().props('vertical dense no-caps').classes('shrink-0').style('width:56px;border-left:1px solid #e5e7eb') as field_rail:
-                                            ui.tab('__meta__', label='', icon='edit_note').tooltip('General').mark('story-rail-meta') \
-                                                .on('click', lambda: handle_rail_click('__meta__'))
                                             for group in groups:
                                                 tip = f'{group["label"]} (arrastrable al centro)' if len(groups) > 1 else group['label']
                                                 ui.tab(group['id'], label='', icon=group['icon'] or 'folder').tooltip(tip).mark(f'story-rail-{group["id"]}') \
@@ -824,22 +847,24 @@ def story_detail(id: str = ''):
                                     rebuild_center_panels()
                                     center_area.refresh()
                                     document_view.refresh()
+                                if input_template:
+                                    input_template.on_value_change(_on_input_template_change)
 
                                 def save():
                                     if current:
-                                        core.update_user_story(current['id'], title.value, _v(as_a), _v(i_want), _v(so_that),
-                                                               feature.value, priority.value, d['criteria'], status.value,
-                                                               definition_of_ready=d['dor'], definition_of_done=d['dod'], depends_on=depends_on.value,
-                                                               story_points=story_points.value, assigned_to=assigned_to.value,
+                                        core.update_user_story(current['id'], d['meta']['title'], _v(as_a), _v(i_want), _v(so_that),
+                                                               d['meta']['feature_id'], d['meta']['priority'], d['criteria'], d['meta']['status'],
+                                                               definition_of_ready=d['dor'], definition_of_done=d['dod'], depends_on=d['meta']['depends_on'],
+                                                               story_points=d['meta']['story_points'], assigned_to=d['meta']['assigned_to'],
                                                                business_rules=_v(business_rules), assumptions=_v(assumptions),
                                                                risks=_v(risks), out_of_scope=_v(out_of_scope), content=_v(content_box), custom_fields=d['custom'],
                                                                input_template_id=input_template.value if input_template else None)
                                         ui.notify('Historia actualizada', type='positive')
                                         ui.navigate.to(f'/stories/edit?id={current["id"]}')
                                     else:
-                                        story = core.create_user_story(title.value, pid, _v(as_a), _v(i_want), _v(so_that), feature.value, priority.value, d['criteria'],
-                                                                       definition_of_ready=d['dor'], definition_of_done=d['dod'], depends_on=depends_on.value,
-                                                                       story_points=story_points.value, assigned_to=assigned_to.value,
+                                        story = core.create_user_story(d['meta']['title'], pid, _v(as_a), _v(i_want), _v(so_that), d['meta']['feature_id'], d['meta']['priority'], d['criteria'],
+                                                                       definition_of_ready=d['dor'], definition_of_done=d['dod'], depends_on=d['meta']['depends_on'],
+                                                                       story_points=d['meta']['story_points'], assigned_to=d['meta']['assigned_to'],
                                                                        business_rules=_v(business_rules), assumptions=_v(assumptions),
                                                                        risks=_v(risks), out_of_scope=_v(out_of_scope), content=_v(content_box), custom_fields=d['custom'],
                                                                        input_template_id=input_template.value if input_template else None)
@@ -864,23 +889,23 @@ def story_detail(id: str = ''):
                         with ui.column().classes('w-full gap-4 min-w-0').style('height:100%' if compact else ''):
                             @ui.refreshable
                             def document_view():
-                                ui.label(title.value or 'Nueva historia de usuario').classes('text-2xl font-bold')
+                                ui.label(d['meta']['title'] or 'Nueva historia de usuario').classes('text-2xl font-bold')
                                 story_titles = {s['id']: s['title'] for s in other_stories}
                                 # El documento muestra SOLO lo que la plantilla de entrada elegida define, en su
-                                # orden (core.iter_template_fields) — incluidos sus campos personalizados (antes
-                                # esta vista era fija, ajena a la plantilla: mostraba siempre las mismas secciones
-                                # y nunca los campos personalizados). priority/story_points/depends_on son
-                                # metadatos de registro: se muestran siempre, no dependen de la plantilla.
+                                # orden (core.iter_template_fields) — incluidos sus campos personalizados y los
+                                # metadatos de registro (priority/story_points/depends_on: ya no son fijos, son
+                                # campos conocidos más — si la plantilla no los incluye, no aparecen).
                                 tpl = core.get('spec_templates', input_template.value) if input_template and input_template.value else None
                                 fields = list(core.iter_template_fields(tpl.get('body'))) if tpl else \
                                     [{'kind': 'field', 'field_key': k, 'field_type': None} for k in ('as_a', 'i_want', 'so_that')]
                                 fragment = spec_report.render_story_view_html({
-                                    'as_a': _v(as_a), 'i_want': _v(i_want), 'so_that': _v(so_that), 'content': _v(content_box), 'priority': priority.value,
-                                    'story_points': int(story_points.value) if story_points.value not in (None, '') else None,
+                                    'as_a': _v(as_a), 'i_want': _v(i_want), 'so_that': _v(so_that), 'content': _v(content_box),
+                                    'priority': d['meta']['priority'],
+                                    'story_points': int(d['meta']['story_points']) if d['meta']['story_points'] not in (None, '') else None,
                                     'criteria': d['criteria'], 'definition_of_ready': d['dor'], 'definition_of_done': d['dod'],
                                     'business_rules': _v(business_rules), 'assumptions': _v(assumptions), 'risks': _v(risks),
                                     'out_of_scope': _v(out_of_scope),
-                                    'dependency_titles': [story_titles[sid] for sid in (depends_on.value or []) if sid in story_titles],
+                                    'dependency_titles': [story_titles[sid] for sid in (d['meta']['depends_on'] or []) if sid in story_titles],
                                 }, fields, d['custom'])
                                 ui.html(live_doc_html(fragment, doc_typography()[0])).classes('w-full')
 

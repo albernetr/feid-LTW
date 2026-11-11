@@ -9,12 +9,14 @@ APPLIES_LABELS = {'user_story': 'Historia de usuario', 'test_case': 'Caso de pru
 # Nombres legibles de los campos FIJOS conocidos (core.KNOWN_FIELDS_BY_APPLIES_TO) — solo para el selector
 # "Campo existente" del editor; no es un contrato de datos, por eso vive acá y no en core.py.
 KNOWN_FIELD_LABELS = {
-    'user_story': {'as_a': 'Como (rol)', 'i_want': 'Quiero (acción)', 'so_that': 'Para (beneficio)', 'content': 'Contenido (formato libre)',
+    'user_story': {'title': 'Título', 'feature_id': 'Funcionalidad', 'priority': 'Prioridad', 'status': 'Estado',
+                  'as_a': 'Como (rol)', 'i_want': 'Quiero (acción)', 'so_that': 'Para (beneficio)', 'content': 'Contenido (formato libre)',
                   'criteria': 'Criterios de aceptación', 'given': 'Dado (contexto inicial)', 'when': 'Cuando (acción)', 'then': 'Entonces (resultado esperado)',
                   'definition_of_ready': 'Definición de Listo', 'definition_of_done': 'Definición de Hecho',
                   'business_rules': 'Reglas de negocio', 'assumptions': 'Supuestos', 'risks': 'Riesgos', 'out_of_scope': 'Fuera de alcance',
                   'story_points': 'Story points', 'assigned_to': 'Asignado a', 'depends_on': 'Depende de'},
-    'test_case': {'preconditions': 'Precondición', 'steps': 'Pasos de ejecución', 'expected': 'Resultado esperado', 'priority': 'Prioridad', 'type': 'Tipo'},
+    'test_case': {'title': 'Título', 'story_id': 'Historia de usuario', 'feature_id': 'Funcionalidad', 'linked_case_id': 'Caso API/UI automatizado',
+                  'preconditions': 'Precondición', 'steps': 'Pasos de ejecución', 'expected': 'Resultado esperado', 'priority': 'Prioridad', 'type': 'Tipo'},
     'report': {'story': 'Historia de usuario', 'as_a': 'Como (rol)', 'i_want': 'Quiero (acción)', 'so_that': 'Para (beneficio)',
               'content': 'Contenido (formato libre)', 'criteria': 'Criterios de aceptación', 'definition_of_ready': 'Definición de Listo',
               'definition_of_done': 'Definición de Hecho', 'business_rules': 'Reglas de negocio', 'assumptions': 'Supuestos',

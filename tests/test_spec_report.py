@@ -106,7 +106,9 @@ def test_build_template_preview_for_a_user_story_template(world):
 def test_build_template_preview_for_a_free_format_template_shows_not_applicable():
     tpl = _template('Formato libre')
     data = spec_report.build_template_preview(tpl)
-    assert data['sections'][0]['field'] == 'content' and data['sections'][0]['content'] is None
+    # 'Formato libre' ahora empieza con el grupo 'general' de metadatos (ver core.DEFAULT_SPEC_TEMPLATES) — el
+    # campo 'content' ya no es la primera sección, hay que aplanar para encontrarlo.
+    assert _flatten(data['sections'])['content'] is None
 
 
 def test_build_template_preview_for_an_output_template_delegates_to_the_story_report():
@@ -238,3 +240,48 @@ def test_build_test_case_report_data_resolves_preconditions_and_steps(world):
     assert tc['title'] == 'Enviar email de recuperación'
     assert spec_report.render_spec_html(data) and spec_report.render_spec_markdown(data)
     assert spec_report.render_spec_docx(data)[:2] == b'PK'
+
+
+# --------------------------------------------------------------------------- vista en vivo (render_story_view_html /
+# render_test_case_view_html): a diferencia del reporte exportado (arriba), esta es la vista previa en vivo del
+# panel central de Historias de usuario/Casos de prueba — `fields` (core.iter_template_fields de la plantilla de
+# ENTRADA elegida) decide QUÉ se muestra; nada que la plantilla no incluya aparece, así tenga valor en el registro.
+
+def test_render_story_view_html_only_shows_fields_the_template_includes():
+    fields = [{'field_key': 'as_a', 'field_type': None}, {'field_key': 'i_want', 'field_type': None},
+              {'field_key': 'so_that', 'field_type': None}, {'field_key': 'business_rules', 'field_type': None}]
+    story = {'as_a': 'tester', 'i_want': 'probar', 'so_that': 'confirmar', 'business_rules': 'debe validarse',
+             'priority': 'high', 'story_points': 5, 'dependency_titles': ['Otra historia']}
+    html = spec_report.render_story_view_html(story, fields, {})
+    assert 'tester' in html and 'Reglas de negocio' in html
+    # 'priority'/'story_points'/'depends_on' tienen valor en el registro, pero no están en `fields`: no se
+    # muestran — ya no son metadatos "siempre fijos" (ver Decisión del cambio de arquitectura de metadatos).
+    assert 'Prioridad' not in html and 'story points' not in html and 'Depende de' not in html
+
+
+def test_render_story_view_html_shows_priority_story_points_and_dependencies_when_the_template_includes_them():
+    fields = [{'field_key': 'priority', 'field_type': None}, {'field_key': 'story_points', 'field_type': None},
+              {'field_key': 'depends_on', 'field_type': None}]
+    story = {'priority': 'high', 'story_points': 5, 'dependency_titles': ['Otra historia']}
+    html = spec_report.render_story_view_html(story, fields, {})
+    assert 'Prioridad: Alta' in html
+    assert '5 story points' in html
+    assert 'Depende de' in html and 'Otra historia' in html
+
+
+def test_render_story_view_html_shows_a_custom_field_only_when_it_has_a_value():
+    fields = [{'field_key': 'canal', 'field_type': 'text', 'label': 'Canal de contacto'}]
+    assert 'Canal de contacto' not in spec_report.render_story_view_html({}, fields, {'canal': ''})
+    html = spec_report.render_story_view_html({}, fields, {'canal': 'WhatsApp'})
+    assert 'Canal de contacto' in html and 'WhatsApp' in html
+
+
+def test_render_test_case_view_html_shows_priority_and_type_only_when_the_template_includes_them():
+    fields = [{'field_key': 'preconditions', 'field_type': None}]
+    spec = {'preconditions': 'cuenta activa', 'priority': 'high', 'type': 'regression'}
+    html = spec_report.render_test_case_view_html(spec, fields, {})
+    assert 'Prioridad' not in html and 'Tipo' not in html
+
+    fields_with_meta = fields + [{'field_key': 'priority', 'field_type': None}, {'field_key': 'type', 'field_type': None}]
+    html = spec_report.render_test_case_view_html(spec, fields_with_meta, {})
+    assert 'Prioridad: Alta' in html and 'Tipo: Regresión' in html

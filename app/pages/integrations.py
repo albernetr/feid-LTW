@@ -29,7 +29,32 @@ def integrations_list():
                     async def test(i=item):
                         result = await run.io_bound(integrations.test_connection, i)
                         ui.notify(f'Conexión correcta: {result}', type='positive')
-                    ui.button('Probar conexión', icon='wifi_tethering', on_click=guard(test)).props('outline dense no-caps')
+                    ui.button('Probar conexión', icon='wifi_tethering', on_click=guard(test)).props('outline dense no-caps').mark('integ-test-connection')
+
+                    def assign_dialog(i=item):
+                        with ui.dialog() as dialog, ui.card().classes('w-96 gap-3'):
+                            ui.label(f'Asignar / cambiar estado — {i["name"]}').classes('text-lg font-semibold')
+                            ticket = ui.input('Ticket (Jira) o work item (Azure DevOps)').props('outlined dense').classes('w-full').mark('integ-assign-ticket')
+                            assigned_to = ui.input('Asignar a (email)').props('outlined dense').classes('w-full').mark('integ-assign-to')
+                            status = ui.input('Nuevo estado').props('outlined dense').classes('w-full').mark('integ-assign-status')
+
+                            async def save():
+                                ticket_value = (ticket.value or '').strip()
+                                if not ticket_value:
+                                    raise ValueError('Indica el ticket o work item')
+                                if not (assigned_to.value or '').strip() and not (status.value or '').strip():
+                                    raise ValueError('Indica a quién asignarlo, el nuevo estado, o ambos')
+                                if (assigned_to.value or '').strip():
+                                    await run.io_bound(integrations.update_assignment, i, ticket_value, assigned_to.value.strip())
+                                if (status.value or '').strip():
+                                    await run.io_bound(integrations.update_status, i, ticket_value, status.value.strip())
+                                ui.notify('Ticket actualizado', type='positive')
+                                dialog.close()
+                            with ui.row().classes('gap-2 justify-end w-full'):
+                                ui.button('Cancelar', on_click=dialog.close).props('flat')
+                                ui.button('Guardar', icon='save', on_click=guard(save)).props('color=primary').mark('integ-assign-save')
+                        dialog.open()
+                    ui.button('Asignar/Estado', icon='assignment_ind', on_click=lambda _, i=item: assign_dialog(i)).props('outline dense no-caps').mark('integ-assign-open')
                     ui.button(icon='edit', on_click=lambda _, i=item['id']: ui.navigate.to(f'/integrations/edit?id={i}')).props('flat round').tooltip('Editar')
 
                     def remove(i=item):

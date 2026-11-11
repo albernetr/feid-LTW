@@ -3,12 +3,12 @@ import json
 import re
 import pytest
 from nicegui.testing import User
-from app import core
+from app import core, integrations
 from app.pages.common import NAV, NAV_GROUPS
 
 ROUTES = ['/', '/resumen', '/projects', '/projects/edit', '/workspace', '/lab', '/observer', '/observer/interface', '/modules', '/modules/edit', '/environments', '/environments/edit', '/cases', '/cases/edit', '/ui-cases',
           '/suites', '/schedules', '/runs', '/portable', '/stories', '/stories/edit', '/stories/view', '/test-specs', '/test-specs/edit', '/test-specs/view',
-          '/spec-templates', '/spec-templates/edit']
+          '/spec-templates', '/spec-templates/edit', '/integrations', '/integrations/edit']
 
 
 async def test_every_page_renders_without_a_project(user: User):
@@ -1312,7 +1312,12 @@ async def test_user_story_renders_and_saves_a_custom_field_defined_by_its_input_
     custom_fields — sin tocar as_a/i_want/so_that, que siguen con su editor de siempre."""
     project = core.create_project('HU con campo custom')
     core.set_active_project(project['id'])
+    # Incluye 'title' en su propio grupo: desde el cambio de arquitectura de metadatos, Título ya no es fijo —
+    # una plantilla que no lo liste no lo muestra (ver core.DEFAULT_SPEC_TEMPLATES/grupo 'general'), y esta
+    # plantilla puede terminar elegida por defecto (heurístico de contenido) antes de que el test la seleccione
+    # explícitamente más abajo.
     tpl = core.create_spec_template('INVEST + presupuesto', 'input', 'user_story', project_id=project['id'], body=[
+        {'kind': 'group', 'id': 'general', 'label': 'General', 'children': [{'kind': 'field', 'label': 'Título', 'field_key': 'title'}]},
         {'kind': 'field', 'label': 'Como', 'field_key': 'as_a'}, {'kind': 'field', 'label': 'Quiero', 'field_key': 'i_want'},
         {'kind': 'field', 'label': 'Para', 'field_key': 'so_that'},
         {'kind': 'field', 'label': 'Presupuesto estimado', 'field_key': 'presupuesto', 'field_type': 'text'}])
@@ -1337,7 +1342,9 @@ async def test_user_story_renders_and_saves_a_custom_field_defined_by_its_input_
 async def test_test_case_spec_renders_and_saves_a_custom_field_defined_by_its_input_template(user: User):
     project = core.create_project('Caso con campo custom')
     core.set_active_project(project['id'])
+    # Incluye 'title' en su propio grupo — ver el comentario equivalente en la HU de arriba.
     tpl = core.create_spec_template('ISTQB + severidad', 'input', 'test_case', project_id=project['id'], body=[
+        {'kind': 'group', 'id': 'general', 'label': 'General', 'children': [{'kind': 'field', 'label': 'Título', 'field_key': 'title'}]},
         {'kind': 'field', 'label': 'Precondición', 'field_key': 'preconditions'}, {'kind': 'field', 'label': 'Pasos', 'field_key': 'steps'},
         {'kind': 'field', 'label': 'Severidad técnica', 'field_key': 'severidad', 'field_type': 'text'}])
 
@@ -1473,6 +1480,79 @@ async def test_user_story_input_template_groups_reshape_the_rail(user: User):
 
     user.find(marker='story-rail-beta').click()
     await user.should_see(marker='story-risks')
+
+
+async def test_user_story_metadata_fields_disappear_when_the_template_has_no_general_group(user: User):
+    """Cambio de arquitectura de metadatos: Título/Prioridad/Estado/... dejaron de ser fijos fuera de toda
+    plantilla — son campos conocidos más (ver core.KNOWN_STORY_FIELDS), que la plantilla ubica donde quiera.
+    Si la elegida no los incluye en ningún grupo, no aparecen — ni el campo ni su pestaña del riel."""
+    project = core.create_project('Metadatos por plantilla')
+    core.set_active_project(project['id'])
+    tpl = core.create_spec_template('Sin metadatos', 'input', 'user_story', project_id=project['id'], body=[
+        {'kind': 'group', 'id': 'contenido', 'label': 'Contenido', 'children': [{'kind': 'field', 'label': 'Reglas', 'field_key': 'business_rules'}]}])
+
+    await user.open('/stories/edit')
+    await user.should_see(marker='story-title')   # INVEST por defecto: su grupo "general" trae el Título
+    assert user.find(marker='story-rail-general').elements
+
+    _by_marker(user, 'story-input-template')[0].set_value(tpl['id'])
+    await user.should_see(marker='story-rail-contenido', retries=30)
+    with pytest.raises(AssertionError):
+        user.find(marker='story-title')   # sin grupo "general": el Título desaparece del todo, no solo su pestaña
+    with pytest.raises(AssertionError):
+        user.find(marker='story-rail-general')
+
+
+async def test_user_story_input_template_choice_persists_across_reload(user: User):
+    """input_template_id se guarda con el registro y se respeta al reabrir — no vuelve a calcularse con el
+    heurístico por forma de contenido (bug real encontrado en vivo: sin esto, una historia con una plantilla
+    propia "parecida" a INVEST volvía a mostrarse con INVEST en cada recarga)."""
+    project = core.create_project('Plantilla persistente')
+    core.set_active_project(project['id'])
+    tpl = core.create_spec_template('A medida', 'input', 'user_story', project_id=project['id'], body=[
+        {'kind': 'group', 'id': 'alpha', 'label': 'Alfa', 'children': [{'kind': 'field', 'label': 'Reglas', 'field_key': 'business_rules'}]}])
+
+    await user.open('/stories/edit')
+    user.find(marker='story-title').type('Con plantilla propia')
+    _by_marker(user, 'story-input-template')[0].set_value(tpl['id'])
+    await user.should_see(marker='story-rail-alpha', retries=30)
+    user.find(marker='story-save').click()
+    await user.should_see('Historia creada')
+
+    [story] = core.list_items('user_stories')
+    assert story['input_template_id'] == tpl['id']
+
+    await user.open(f'/stories/edit?id={story["id"]}')
+    await user.should_see(marker='story-rail-alpha', retries=30)   # no volvió a INVEST por defecto
+    assert _by_marker(user, 'story-input-template')[0].value == tpl['id']
+
+
+async def test_custom_fields_marked_width_half_still_render_and_save_side_by_side(user: User):
+    """Ancho='Mitad' en un campo personalizado (ver core.pair_rows / pages.common.render_template_tree): dos
+    campos hermanos consecutivos quedan en la misma fila del panel de Campos — acá se confirma que los DOS
+    siguen funcionando igual (aparecen, se editan, se guardan), no que uno tape o reemplace al otro."""
+    project = core.create_project('Campos en columnas')
+    core.set_active_project(project['id'])
+    tpl = core.create_spec_template('Dos columnas', 'input', 'user_story', project_id=project['id'], body=[
+        {'kind': 'group', 'id': 'general', 'label': 'General', 'children': [{'kind': 'field', 'field_key': 'title', 'label': 'Título'}]},
+        {'kind': 'group', 'id': 'columnas', 'label': 'Columnas', 'children': [
+            {'kind': 'field', 'field_key': 'canal', 'label': 'Canal', 'field_type': 'text', 'width': 'half'},
+            {'kind': 'field', 'field_key': 'region', 'label': 'Región', 'field_type': 'text', 'width': 'half'}]},
+    ])
+
+    await user.open('/stories/edit')
+    _by_marker(user, 'story-input-template')[0].set_value(tpl['id'])
+    await user.should_see(marker='story-rail-columnas', retries=30)
+    user.find(marker='story-rail-columnas').click()
+    await user.should_see('Canal')
+    user.find(marker='story-title').type('HU con columnas')
+    _by_label(user, 'Canal').set_value('WhatsApp')
+    _by_label(user, 'Región').set_value('LatAm')
+    user.find(marker='story-save').click()
+    await user.should_see('Historia creada')
+
+    [story] = core.list_items('user_stories')
+    assert story['custom_fields'] == {'canal': 'WhatsApp', 'region': 'LatAm'}
 
 
 async def test_spec_templates_come_preseeded_and_support_adopt_and_promote(user: User):
@@ -1833,6 +1913,47 @@ async def test_stories_list_can_export_the_traceability_matrix(user: User):
     assert 'trazabilidad' in user.find(marker='matrix-export-template').elements.pop()._props['model-value']['label'].lower()
     user.find(marker='matrix-export-confirm').click()   # no debe reventar (cubre el render+descarga completo, ver test_spec_report.py)
     await user.should_see(marker='matrix-export-confirm', retries=5)   # sigue en la página, sin errores sin capturar
+
+
+async def test_integrations_assign_dialog_calls_update_assignment_and_update_status(user: User, monkeypatch):
+    project = core.create_project('Integraciones asignar')
+    core.set_active_project(project['id'])
+    core.secret_set('azdo-pat-ui-test', 'pat-123')
+    core.save_integration('AZDO UI', project['id'], 'azdo', {'organization': 'acme', 'project': 'proj', 'secret': 'azdo-pat-ui-test'})
+
+    calls = []
+    monkeypatch.setattr(integrations, 'update_assignment', lambda i, ticket, value: calls.append(('assign', ticket, value)))
+    monkeypatch.setattr(integrations, 'update_status', lambda i, ticket, value: calls.append(('status', ticket, value)))
+
+    await user.open('/integrations')
+    user.find(marker='integ-assign-open').click()
+    await user.should_see(marker='integ-assign-ticket')
+    user.find(marker='integ-assign-ticket').type('42')
+    user.find(marker='integ-assign-to').type('qa@acme.com')
+    user.find(marker='integ-assign-status').type('Doing')
+    user.find(marker='integ-assign-save').click()
+    await user.should_see('Ticket actualizado')
+    assert ('assign', '42', 'qa@acme.com') in calls
+    assert ('status', '42', 'Doing') in calls
+
+
+async def test_integrations_assign_dialog_requires_at_least_one_of_assignment_or_status(user: User, monkeypatch):
+    project = core.create_project('Integraciones asignar vacío')
+    core.set_active_project(project['id'])
+    core.secret_set('azdo-pat-ui-test2', 'pat-123')
+    core.save_integration('AZDO UI 2', project['id'], 'azdo', {'organization': 'acme', 'project': 'proj', 'secret': 'azdo-pat-ui-test2'})
+
+    calls = []
+    monkeypatch.setattr(integrations, 'update_assignment', lambda *a: calls.append('assign'))
+    monkeypatch.setattr(integrations, 'update_status', lambda *a: calls.append('status'))
+
+    await user.open('/integrations')
+    user.find(marker='integ-assign-open').click()
+    await user.should_see(marker='integ-assign-ticket')
+    user.find(marker='integ-assign-ticket').type('42')
+    user.find(marker='integ-assign-save').click()
+    await user.should_see('Indica a quién asignarlo')
+    assert calls == []
 
 
 async def test_spec_template_preview_renders_sample_data_without_saving_anything(user: User):

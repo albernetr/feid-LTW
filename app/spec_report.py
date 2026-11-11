@@ -417,6 +417,16 @@ def _story_field_view_html(field_key, story):
     if field_key in ('business_rules', 'assumptions', 'risks', 'out_of_scope'):
         label = {'business_rules': 'Reglas de negocio', 'assumptions': 'Supuestos', 'risks': 'Riesgos', 'out_of_scope': 'Fuera de alcance'}[field_key]
         return _h3(label) + f'<p style="margin:0">{e(story[field_key])}</p>' if story.get(field_key) else ''
+    if field_key == 'priority':
+        return f'<p style="margin:0 0 10px;font-size:13px;color:#6b7280">Prioridad: {e(core.PRIORITY_LABELS.get(story["priority"], story["priority"]))}</p>' \
+            if story.get('priority') else ''
+    if field_key == 'story_points':
+        return f'<p style="margin:0 0 10px;font-size:13px;color:#6b7280">{story["story_points"]} story points</p>' \
+            if story.get('story_points') not in (None, '') else ''
+    if field_key == 'depends_on':
+        return _h3('Depende de') + _render_content_html(story['dependency_titles']) if story.get('dependency_titles') else ''
+    # 'title'/'status'/'feature_id'/'assigned_to': metadatos de registro sin redacción propia en el documento —
+    # ya están en otro lado (el título del documento, la lista de Historias, ...), no se repiten acá adentro.
     return ''
 
 
@@ -425,20 +435,12 @@ def render_story_view_html(story, fields, custom_fields=None):
     business_rules/assumptions/risks/out_of_scope tal como viven en la base — más `dependency_titles` (lista de
     strings, no ids: títulos ya resueltos por el caller, para no tener que ir a buscarlos acá). `fields`: nodos
     'field' de la plantilla de ENTRADA elegida, en orden (ver core.iter_template_fields) — define QUÉ secciones
-    de abajo se muestran (nada que la plantilla no incluya) y en qué orden; `custom_fields`: sus valores vividos
-    (custom_fields del registro). priority/story_points/dependency_titles son metadatos de registro: siempre se
-    muestran, no dependen de la plantilla (igual que en el panel de Campos — ver Decisión 1 del refactor)."""
+    de abajo se muestran (nada que la plantilla no incluya, ni siquiera priority/story_points/depends_on: son
+    campos conocidos más, no hay metadatos "siempre fijos") y en qué orden; `custom_fields`: sus valores vividos
+    (custom_fields del registro)."""
     e = html.escape
     custom_fields = custom_fields or {}
     parts = []
-    meta = []
-    if story.get('priority'):
-        meta.append(f'Prioridad: {core.PRIORITY_LABELS.get(story["priority"], story["priority"])}')
-    if story.get('story_points') not in (None, ''):
-        meta.append(f'{story["story_points"]} story points')
-    if meta:
-        parts.append(f'<p style="margin:0 0 10px;font-size:13px;color:#6b7280">{e(" · ".join(meta))}</p>')
-
     narrative_done = False
     for node in (fields or []):
         field_key, field_type = node.get('field_key'), node.get('field_type')
@@ -461,10 +463,6 @@ def render_story_view_html(story, fields, custom_fields=None):
                 parts.append('</div>')
         else:
             parts.append(_story_field_view_html(field_key, story))
-
-    if story.get('dependency_titles'):
-        parts.append(_h3('Depende de'))
-        parts.append(_render_content_html(story['dependency_titles']))
     return ''.join(parts)
 
 
@@ -491,6 +489,12 @@ def render_test_case_view_html(spec, fields, custom_fields=None):
             else:
                 parts.append('<ol style="margin:0;padding-left:22px">' + ''.join(
                     f'<li style="margin:8px 0">{e(s.get("action", "")) or "—"} <span style="color:#9ca3af">→</span> {e(s.get("expected", "")) or "—"}</li>' for s in steps) + '</ol>')
+        elif field_key == 'priority' and spec.get('priority'):
+            parts.append(f'<p style="margin:0 0 10px;font-size:13px;color:#6b7280">Prioridad: {e(core.PRIORITY_LABELS.get(spec["priority"], spec["priority"]))}</p>')
+        elif field_key == 'type' and spec.get('type'):
+            parts.append(f'<p style="margin:0 0 10px;font-size:13px;color:#6b7280">Tipo: {e(_TYPE_ES.get(spec["type"], spec["type"]))}</p>')
+        # 'title'/'story_id'/'feature_id'/'linked_case_id': metadatos sin redacción propia en el documento —
+        # ya están en otro lado (el título del documento, la lista de Casos de prueba, ...).
     return ''.join(parts)
 
 
