@@ -1,8 +1,10 @@
 """Reportes de salida de la Especificación (Historia de usuario sola, o Matriz de trazabilidad de todo el
 proyecto), con el mismo espíritu que evidence_report.py: una sola normalización de datos, tres formatos
 (HTML/PDF/DOCX/MD) que no se desalinean entre sí. La plantilla de salida (`spec_templates`, kind='output') decide
-qué secciones entran y en qué orden — su `body` es una lista `{field, label}`; cada campo se resuelve contra el
-registro real (reporte/exportación) o contra datos de ejemplo (previsualizador de la plantilla sola)."""
+qué secciones entran, en qué orden, agrupadas en qué secciones/subsecciones y con qué layout — su `body` es un
+ÁRBOL de nodos (ver core.py) — cada campo FIJO conocido se resuelve contra el registro real (reporte/exportación)
+o contra datos de ejemplo (previsualizador de la plantilla sola); cada campo CUSTOM (field_type declarado) se
+resuelve contra `custom_fields` del registro."""
 import html
 import io
 import json
@@ -16,6 +18,9 @@ _STORY_STATUS_ES = {'draft': 'Borrador', 'ready': 'Lista', 'done': 'Terminada'}
 DEFAULT_STORY_TEMPLATE_BODY = [{'field': 'story', 'label': 'Historia de usuario'}, {'field': 'criteria', 'label': 'Criterios de aceptación'},
                                {'field': 'test_cases', 'label': 'Casos de prueba'}, {'field': 'traceability', 'label': 'Trazabilidad'}]
 DEFAULT_MATRIX_TEMPLATE_BODY = [{'field': 'matrix', 'label': 'Matriz HU → Casos de prueba → Estado'}]
+# (formato plano viejo — sigue funcionando: _build_tree_sections lee 'field'/'label' igual que un nodo nuevo
+# con field_type=None, solo que sin pasar por _clean_template_body porque estos dos nunca se guardan en una
+# plantilla real, son el *fallback* cuando no se eligió ninguna.)
 
 PLACEHOLDER_STORY = {
     'title': 'Recuperar contraseña por email', 'as_a': 'usuario registrado',
@@ -130,8 +135,45 @@ def _resolve_test_case_field(field, record):
     return None
 
 
-def _build_section(field, label, resolve):
-    return {'field': field, 'label': label, 'content': resolve(field)}
+def _validate_custom_value(value, field_type):
+    """Un campo custom (field_type declarado por la plantilla) se resuelve desde `custom_fields[field_key]` —
+    el tipo con el que se guardó viaja implícito en la FORMA del valor, nunca se re-infiere de ninguna
+    plantilla: si el valor no matchea la forma que este field_type espera (p. ej. quedó guardado por una
+    plantilla distinta que declaraba otro tipo para la misma clave), se trata como vacío — nunca revienta."""
+    if field_type in ('text', 'textarea'):
+        return value if isinstance(value, str) and value else None
+    if field_type == 'list':
+        return value if isinstance(value, list) and value else None
+    if field_type == 'table':
+        return value if isinstance(value, dict) and isinstance(value.get('headers'), list) and value['headers'] else None
+    if field_type in ('image', 'attachment'):
+        return value if isinstance(value, dict) and value.get('id') and value.get('filename') else None
+    return None
+
+
+def _build_tree_sections(body, resolve_known, custom_fields):
+    """Construye, recursivamente, el árbol de SECCIONES de un reporte a partir del árbol `body` de una
+    plantilla (ver core.py) — un nodo 'field' con field_type=None resuelve contra un campo FIJO conocido
+    (resolve_known, el mismo resolvedor de siempre); con field_type declarado, resuelve contra `custom_fields`
+    (el dict guardado en el registro). Un nodo 'group' solo agrupa: label + as_tab + sus children recursivos."""
+    sections = []
+    for node in (body or []):
+        if not isinstance(node, dict):
+            continue
+        if node.get('kind') == 'group':
+            sections.append({'kind': 'group', 'label': node.get('label') or '', 'width': node.get('width', 'full'),
+                             'as_tab': bool(node.get('as_tab')), 'children': _build_tree_sections(node.get('children') or [], resolve_known, custom_fields)})
+            continue
+        # `node` puede venir del editor EN VIVO (vista previa mientras se edita una plantilla, ver
+        # spec_templates.py::live_preview), todavía sin pasar por core._clean_template_body — un campo recién
+        # agregado y sin nombrar aún puede tener field_key/label vacíos; `or ''` evita que lleguen a None
+        # (html.escape(None) revienta) en vez de exigir que el nodo ya esté "limpio".
+        field_key = node.get('field_key') or node.get('field') or ''
+        field_type = node.get('field_type')
+        content = resolve_known(field_key) if field_type is None else _validate_custom_value((custom_fields or {}).get(field_key), field_type)
+        sections.append({'kind': 'field', 'field': field_key, 'label': node.get('label') or field_key or '',
+                         'width': node.get('width', 'full'), 'field_type': field_type, 'content': content})
+    return sections
 
 
 # --------------------------------------------------------------------------- construcción del reporte
@@ -144,24 +186,53 @@ def build_story_report_data(story, template=None, sample=False):
     source = PLACEHOLDER_STORY if sample else story
     rows = ([{'spec': tc, 'last_run': None} for tc in PLACEHOLDER_CASES] if sample else core.story_coverage(story['id'])['rows'])
     ctx = {'story': source, 'stories': [source], 'rows': rows}
-    resolve = lambda f: _resolve_field(f, ctx)   # noqa: E731
+    resolve_known = lambda f: _resolve_field(f, ctx)   # noqa: E731
     body = (template or {}).get('body') or DEFAULT_STORY_TEMPLATE_BODY
-    sections = [_build_section(f.get('field'), f.get('label') or f.get('field'), resolve) for f in body]
+    sections = _build_tree_sections(body, resolve_known, source.get('custom_fields'))
     return {'format': FORMAT, 'kind': 'story', 'title': source['title'], 'generated_at': core.now(), 'sample': sample,
             'template_name': (template or {}).get('name') or 'Especificación detallada (por defecto)', 'sections': sections}
 
 
 def build_test_matrix_report_data(project_id, template=None):
     """Matriz de trazabilidad de TODO el proyecto: cada Historia con sus Casos de prueba y, si están ligados a
-    un Caso automatizado, el estado de su última corrida."""
+    un Caso automatizado, el estado de su última corrida. Es un agregado de muchas Historias — un campo custom
+    en la plantilla no tiene una sola Historia de la que resolverse, así que siempre queda vacío acá (se trata
+    igual que cualquier otro valor ausente, nunca revienta)."""
     stories = core.list_project_items('user_stories', project_id)
     rows = [{'story': s, 'spec': r['spec'], 'last_run': r['last_run']} for s in stories for r in core.story_coverage(s['id'])['rows']]
     ctx = {'story': None, 'stories': stories, 'rows': rows}
-    resolve = lambda f: _resolve_field(f, ctx)   # noqa: E731
+    resolve_known = lambda f: _resolve_field(f, ctx)   # noqa: E731
     body = (template or {}).get('body') or DEFAULT_MATRIX_TEMPLATE_BODY
-    sections = [_build_section(f.get('field'), f.get('label') or f.get('field'), resolve) for f in body]
+    sections = _build_tree_sections(body, resolve_known, None)
     return {'format': FORMAT, 'kind': 'matrix', 'title': 'Matriz de trazabilidad', 'generated_at': core.now(), 'sample': False,
             'template_name': (template or {}).get('name') or 'Matriz de trazabilidad (por defecto)', 'sections': sections}
+
+
+def _resolve_test_case_report_field(field, spec):
+    """Campos de un reporte de UN Caso de prueba suelto (visor interactivo) — 'steps'/'test_cases' reusan la
+    misma forma (lista de un test-case-dict) que ya sabe dibujar _render_content_html/_markdown/_docx."""
+    if field == 'preconditions':
+        return spec.get('preconditions') or None
+    if field == 'priority':
+        return core.PRIORITY_LABELS.get(spec.get('priority'), spec.get('priority', ''))
+    if field == 'type':
+        return _TYPE_ES.get(spec.get('type'), spec.get('type', ''))
+    if field in ('steps', 'test_cases'):
+        return [spec] if (spec.get('steps') or spec.get('preconditions')) else []
+    return None
+
+
+def build_test_case_report_data(spec, template=None, sample=False):
+    """Reporte de UN Caso de prueba — mismo espíritu que build_story_report_data, para el visor interactivo.
+    Cualquier plantilla de salida (kind='output', applies_to='report') sirve — un campo fijo que no aplica a
+    un Caso de prueba (p. ej. 'story') simplemente resuelve a None, como cualquier campo ausente."""
+    sample = sample or spec is None
+    source = PLACEHOLDER_CASES[0] if sample else spec
+    resolve_known = lambda f: _resolve_test_case_report_field(f, source)   # noqa: E731
+    body = (template or {}).get('body') or [{'field': 'preconditions', 'label': 'Precondición'}, {'field': 'steps', 'label': 'Pasos de ejecución'}]
+    sections = _build_tree_sections(body, resolve_known, source.get('custom_fields'))
+    return {'format': FORMAT, 'kind': 'test_case', 'title': source['title'], 'generated_at': core.now(), 'sample': sample,
+            'template_name': (template or {}).get('name') or 'Caso de prueba', 'sections': sections}
 
 
 def build_template_preview(template, story=None, spec=None):
@@ -171,19 +242,22 @@ def build_template_preview(template, story=None, spec=None):
     applies_to = template.get('applies_to', 'report')
     if applies_to == 'test_case':
         record, sample = (spec or PLACEHOLDER_CASES[0]), spec is None
-        resolve = lambda f: _resolve_test_case_field(f, record)   # noqa: E731
-        title = record['title']
+        resolve_known = lambda f: _resolve_test_case_field(f, record)   # noqa: E731
+        title, custom = record['title'], record.get('custom_fields')
     elif applies_to == 'user_story':
         record, sample = (story or PLACEHOLDER_STORY), story is None
         rows = [{'spec': tc, 'last_run': None} for tc in PLACEHOLDER_CASES] if sample else core.story_coverage(record['id'])['rows']
         ctx = {'story': record, 'stories': [record], 'rows': rows}
-        resolve = lambda f: _resolve_field(f, ctx)   # noqa: E731
-        title = record['title']
+        resolve_known = lambda f: _resolve_field(f, ctx)   # noqa: E731
+        title, custom = record['title'], record.get('custom_fields')
     else:
         return build_story_report_data(story, template, sample=story is None)
-    sections = [_build_section(f.get('field'), f.get('label') or f.get('field'), resolve) for f in (template.get('body') or [])]
+    sections = _build_tree_sections(template.get('body') or [], resolve_known, custom)
     return {'format': FORMAT, 'kind': applies_to, 'title': title, 'generated_at': core.now(), 'sample': sample,
             'template_name': template.get('name', ''), 'sections': sections}
+
+
+_pair_rows = core.pair_rows   # alias local: ver core.pair_rows (compartido con pages/common.render_template_tree)
 
 
 # --------------------------------------------------------------------------- HTML / PDF
@@ -255,6 +329,61 @@ def _render_content_html(content):
     return f'<pre>{e(json.dumps(content, ensure_ascii=False, indent=2))}</pre>'
 
 
+def _file_url(value):
+    return f'/evidence/{value["id"]}/{value["id"]}-{value["filename"]}'
+
+
+def _render_typed_content_html(content, field_type):
+    """Mismo espíritu que _render_content_html, pero para los 5 tipos CUSTOM que puede declarar una plantilla
+    (ver core.CUSTOM_FIELD_TYPES) — un campo fijo conocido (field_type=None) sigue usando _render_content_html."""
+    e = html.escape
+    if content is None:
+        return '<p class="muted">No aplica a este documento.</p>'
+    if field_type in ('text', 'textarea'):
+        style = ' style="white-space:pre-wrap"' if field_type == 'textarea' else ''
+        return f'<p{style}>{e(content)}</p>'
+    if field_type == 'list':
+        items = []
+        for it in content:
+            it = it if isinstance(it, dict) else {'text': str(it), 'done': False}
+            label = e(it.get('text', '')) or '<i style="color:#9ca3af">(vacío)</i>'
+            items.append(f'<li style="margin:4px 0"><label><input type="checkbox" disabled{" checked" if it.get("done") else ""} '
+                        f'style="margin-right:6px;vertical-align:middle">{label}</label></li>')
+        return '<ul style="list-style:none;padding-left:0;margin:0">' + ''.join(items) + '</ul>'
+    if field_type == 'table':
+        headers, rows = content.get('headers') or [], content.get('rows') or []
+        head = ''.join(f'<th>{e(str(h))}</th>' for h in headers)
+        body = ''.join('<tr>' + ''.join(f'<td>{e(str(c))}</td>' for c in row) + '</tr>' for row in rows)
+        return f'<table><tr>{head}</tr>{body}</table>'
+    if field_type == 'image':
+        return f'<img src="{e(_file_url(content))}" alt="{e(content["filename"])}" style="max-width:100%;border-radius:8px">'
+    if field_type == 'attachment':
+        return f'<p><a href="{e(_file_url(content))}">{e(content["filename"])}</a> ({content.get("size", 0)} bytes)</p>'
+    return '<p class="muted">(sin datos)</p>'
+
+
+def _render_section_html(section, level=2):
+    e = html.escape
+    tag = f'h{min(level, 6)}'
+    if section['kind'] == 'group':
+        head = f'<{tag}>{e(section["label"])}</{tag}>' if section['label'] else ''
+        return head + _render_sections_html(section['children'], level + 1)
+    head = f'<{tag}>{e(section["label"])}</{tag}>'
+    body = _render_typed_content_html(section['content'], section['field_type']) if section['field_type'] else _render_content_html(section['content'])
+    return head + body
+
+
+def _render_sections_html(sections, level=2):
+    parts = []
+    for row in _pair_rows(sections):
+        if len(row) == 2:
+            cols = ''.join(f'<div style="flex:1 1 0;min-width:0">{_render_section_html(n, level)}</div>' for n in row)
+            parts.append(f'<div style="display:flex;gap:16px;align-items:flex-start">{cols}</div>')
+        else:
+            parts.append(_render_section_html(row[0], level))
+    return ''.join(parts)
+
+
 # --------------------------------------------------------------------------- vista de lectura en la propia pantalla
 # (no exportación): un fragmento HTML — sin <html>/<head>, para incrustar con ui.html() tal cual, con estilos en
 # línea (no depende de HTML_CSS, que solo se carga en el documento exportado) — que muestra la Historia o el Caso
@@ -262,43 +391,76 @@ def _render_content_html(content):
 # nunca se desalinee del reporte que de verdad se exporta.
 
 def _h3(label):
-    return f'<h3 style="margin:18px 0 8px;font-size:15px;font-weight:600;color:#374151">{label}</h3>'
+    # var(--ltw-doc-size)/var(--ltw-doc-gap): responde al mismo control de tipografía que la vista en vivo
+    # (ver common.py: live_doc_html/typography_button) — el valor fijo después de la coma es el que queda si
+    # este HTML se usa fuera de ese contenedor (nunca pasa hoy, pero así no depende de que siempre lo esté).
+    return (f'<h3 style="margin:var(--ltw-doc-gap,18px) 0 8px;font-size:calc(var(--ltw-doc-size,15px) + 1px);'
+           f'font-weight:600;color:#374151">{label}</h3>')
 
 
-def render_story_view_html(story):
-    """`story`: as_a/i_want/so_that/priority/story_points/criteria/definition_of_ready/definition_of_done/
-    business_rules/assumptions/risks/out_of_scope tal como viven en la base — más `dependency_titles` (lista de
-    strings, no ids: títulos ya resueltos por el caller, para no tener que ir a buscarlos acá)."""
+def _story_field_view_html(field_key, story):
+    """Fragmento HTML para un campo FIJO de Historia de usuario (uno de core.KNOWN_STORY_FIELDS), o '' si no
+    corresponde mostrar nada (campo opcional vacío). as_a/i_want/so_that/content se resuelven juntos, aparte
+    (ver render_story_view_html) — acá devuelven '' para no imprimirse dos veces. 'linked_test_cases' es un
+    slot de solo-UI (la matriz de Casos de prueba ligados) sin representación de documento."""
     e = html.escape
+    if field_key in ('as_a', 'i_want', 'so_that', 'content'):
+        return ''
+    if field_key == 'criteria':
+        return _h3('Criterios de aceptación') + _render_content_html(story.get('criteria') or [])
+    if field_key in ('definition_of_ready', 'definition_of_done'):
+        label = 'Definición de Listo' if field_key == 'definition_of_ready' else 'Definición de Hecho'
+        items = story.get(field_key) or []
+        if not items:
+            return ''
+        return _h3(label) + _render_content_html([{'text': i['text'], 'status': 'met' if i.get('done') else 'pending'} for i in items])
+    if field_key in ('business_rules', 'assumptions', 'risks', 'out_of_scope'):
+        label = {'business_rules': 'Reglas de negocio', 'assumptions': 'Supuestos', 'risks': 'Riesgos', 'out_of_scope': 'Fuera de alcance'}[field_key]
+        return _h3(label) + f'<p style="margin:0">{e(story[field_key])}</p>' if story.get(field_key) else ''
+    return ''
+
+
+def render_story_view_html(story, fields, custom_fields=None):
+    """`story`: as_a/i_want/so_that/content/priority/story_points/criteria/definition_of_ready/definition_of_done/
+    business_rules/assumptions/risks/out_of_scope tal como viven en la base — más `dependency_titles` (lista de
+    strings, no ids: títulos ya resueltos por el caller, para no tener que ir a buscarlos acá). `fields`: nodos
+    'field' de la plantilla de ENTRADA elegida, en orden (ver core.iter_template_fields) — define QUÉ secciones
+    de abajo se muestran (nada que la plantilla no incluya) y en qué orden; `custom_fields`: sus valores vividos
+    (custom_fields del registro). priority/story_points/dependency_titles son metadatos de registro: siempre se
+    muestran, no dependen de la plantilla (igual que en el panel de Campos — ver Decisión 1 del refactor)."""
+    e = html.escape
+    custom_fields = custom_fields or {}
     parts = []
-    if story.get('content'):
-        parts.append(f'<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;white-space:pre-wrap">{e(story["content"])}</div>')
-    elif story.get('as_a') or story.get('i_want') or story.get('so_that'):
-        parts.append('<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:4px 0 2px">')
-        parts.append(f'<p style="margin:6px 0"><b>Como</b> {e(story.get("as_a", "")) or "—"}</p>')
-        parts.append(f'<p style="margin:6px 0"><b>Quiero</b> {e(story.get("i_want", "")) or "—"}</p>')
-        parts.append(f'<p style="margin:6px 0"><b>Para</b> {e(story.get("so_that", "")) or "—"}</p>')
-        parts.append('</div>')
     meta = []
     if story.get('priority'):
         meta.append(f'Prioridad: {core.PRIORITY_LABELS.get(story["priority"], story["priority"])}')
     if story.get('story_points') not in (None, ''):
         meta.append(f'{story["story_points"]} story points')
     if meta:
-        parts.append(f'<p style="margin:10px 0 0;font-size:13px;color:#6b7280">{e(" · ".join(meta))}</p>')
+        parts.append(f'<p style="margin:0 0 10px;font-size:13px;color:#6b7280">{e(" · ".join(meta))}</p>')
 
-    parts.append(_h3('Criterios de aceptación'))
-    parts.append(_render_content_html(story.get('criteria') or []))
-
-    for field, label in (('definition_of_ready', 'Definición de Listo'), ('definition_of_done', 'Definición de Hecho')):
-        items = story.get(field) or []
-        if items:
-            parts.append(_h3(label))
-            parts.append(_render_content_html([{'text': i['text'], 'status': 'met' if i.get('done') else 'pending'} for i in items]))
-
-    for field, label in (('business_rules', 'Reglas de negocio'), ('assumptions', 'Supuestos'), ('risks', 'Riesgos'), ('out_of_scope', 'Fuera de alcance')):
-        if story.get(field):
-            parts.append(_h3(label) + f'<p style="margin:0">{e(story[field])}</p>')
+    narrative_done = False
+    for node in (fields or []):
+        field_key, field_type = node.get('field_key'), node.get('field_type')
+        if field_type is not None:
+            value = custom_fields.get(field_key)
+            if value not in (None, '', [], {}):
+                parts.append(_h3(node.get('label') or field_key) + _render_typed_content_html(value, field_type))
+            continue
+        if field_key in ('as_a', 'i_want', 'so_that', 'content'):
+            if narrative_done:
+                continue
+            narrative_done = True
+            if story.get('content'):
+                parts.append(f'<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;white-space:pre-wrap">{e(story["content"])}</div>')
+            elif story.get('as_a') or story.get('i_want') or story.get('so_that'):
+                parts.append('<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:4px 0 2px">')
+                parts.append(f'<p style="margin:6px 0"><b>Como</b> {e(story.get("as_a", "")) or "—"}</p>')
+                parts.append(f'<p style="margin:6px 0"><b>Quiero</b> {e(story.get("i_want", "")) or "—"}</p>')
+                parts.append(f'<p style="margin:6px 0"><b>Para</b> {e(story.get("so_that", "")) or "—"}</p>')
+                parts.append('</div>')
+        else:
+            parts.append(_story_field_view_html(field_key, story))
 
     if story.get('dependency_titles'):
         parts.append(_h3('Depende de'))
@@ -306,18 +468,29 @@ def render_story_view_html(story):
     return ''.join(parts)
 
 
-def render_test_case_view_html(spec):
+def render_test_case_view_html(spec, fields, custom_fields=None):
+    """`spec`: preconditions/steps tal como viven en la base. `fields`/`custom_fields`: ver render_story_view_html
+    — mismo contrato, aplicado a Caso de prueba (preconditions/steps son sus únicos campos FIJOS hoy)."""
     e = html.escape
+    custom_fields = custom_fields or {}
     parts = []
-    if spec.get('preconditions'):
-        parts.append(f'<p style="margin:6px 0"><b>Precondición</b><br>{e(spec["preconditions"])}</p>')
-    parts.append('<h3 style="margin:18px 0 8px;font-size:15px;font-weight:600;color:#374151">Pasos de ejecución y resultado esperado</h3>')
-    steps = spec.get('steps') or []
-    if not steps:
-        parts.append('<p style="color:#9ca3af;font-size:13px">Ninguno todavía.</p>')
-    else:
-        parts.append('<ol style="margin:0;padding-left:22px">' + ''.join(
-            f'<li style="margin:8px 0">{e(s.get("action", "")) or "—"} <span style="color:#9ca3af">→</span> {e(s.get("expected", "")) or "—"}</li>' for s in steps) + '</ol>')
+    for node in (fields or []):
+        field_key, field_type = node.get('field_key'), node.get('field_type')
+        if field_type is not None:
+            value = custom_fields.get(field_key)
+            if value not in (None, '', [], {}):
+                parts.append(_h3(node.get('label') or field_key) + _render_typed_content_html(value, field_type))
+        elif field_key == 'preconditions':
+            if spec.get('preconditions'):
+                parts.append(f'<p style="margin:6px 0"><b>Precondición</b><br>{e(spec["preconditions"])}</p>')
+        elif field_key == 'steps':
+            parts.append(_h3('Pasos de ejecución y resultado esperado'))
+            steps = spec.get('steps') or []
+            if not steps:
+                parts.append('<p style="color:#9ca3af;font-size:13px">Ninguno todavía.</p>')
+            else:
+                parts.append('<ol style="margin:0;padding-left:22px">' + ''.join(
+                    f'<li style="margin:8px 0">{e(s.get("action", "")) or "—"} <span style="color:#9ca3af">→</span> {e(s.get("expected", "")) or "—"}</li>' for s in steps) + '</ol>')
     return ''.join(parts)
 
 
@@ -326,14 +499,20 @@ def render_spec_html(data):
     parts = [f'<h1>{e(data["title"])}</h1>', f'<div class="meta">Plantilla: {e(data["template_name"])} · generado {e(data["generated_at"])}</div>']
     if data.get('sample'):
         parts.append('<div class="sample">Vista previa con datos de ejemplo — no corresponde a un registro real.</div>')
-    for section in data['sections']:
-        parts.append(f'<h2>{e(section["label"])}</h2>{_render_content_html(section["content"])}')
+    parts.append(_render_sections_html(data['sections']))
     return (f'<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>{e(data["title"])}</title><style>{HTML_CSS}</style></head><body><main>{"".join(parts)}</main></body></html>')
 
 
 def render_spec_pdf(html_text, destination):
     return reporting.render_pdf(html_text, destination)
+
+
+def render_sections_html(sections):
+    """Wrapper público de _render_sections_html — para el visor interactivo (pages/spec_viewer.py), que necesita
+    renderizar un SUBÁRBOL de secciones suelto (el contenido de una pestaña, o lo que queda fuera de todas las
+    pestañas) en vez del documento completo de render_spec_html."""
+    return _render_sections_html(sections)
 
 
 # --------------------------------------------------------------------------- Markdown
@@ -369,17 +548,62 @@ def _render_content_markdown(content):
     if isinstance(content, list) and isinstance(content[0], str):
         return [f'- {c}' for c in content] + ['']
     if isinstance(content, list) and 'case' in content[0]:
-        lines = ['| Historia | Caso de prueba | Tipo | Prioridad | Estado |', '|---|---|---|---|---|']
-        return lines + [f'| {r["story"]} | {r["case"]} | {r["type"]} | {r["priority"]} | {r["status"]} |' for r in content] + ['']
+        return _markdown_table(['Historia', 'Caso de prueba', 'Tipo', 'Prioridad', 'Estado'],
+                               [[r['story'], r['case'], r['type'], r['priority'], r['status']] for r in content])
     return ['```json', json.dumps(content, indent=2, ensure_ascii=False), '```', '']
+
+
+def _markdown_table(headers, rows):
+    if not headers:
+        return ['_Tabla vacía._', '']
+    lines = ['| ' + ' | '.join(str(h) for h in headers) + ' |', '|' + '---|' * len(headers)]
+    lines += ['| ' + ' | '.join(str(c) for c in row) + ' |' for row in rows]
+    return lines + ['']
+
+
+def _render_typed_content_markdown(content, field_type):
+    """Mismo espíritu que _render_content_markdown, para los 5 tipos custom. `width` (una/dos columnas) se
+    ignora en Markdown — no tiene columnas nativas, cae a secuencial siempre (limitación documentada, no bug)."""
+    if content is None:
+        return ['_No aplica a este documento._', '']
+    if field_type in ('text', 'textarea'):
+        return [content, '']
+    if field_type == 'list':
+        lines = []
+        for it in content:
+            it = it if isinstance(it, dict) else {'text': str(it), 'done': False}
+            lines.append(('- [x] ' if it.get('done') else '- [ ] ') + (it.get('text') or '(vacío)'))
+        return lines + ['']
+    if field_type == 'table':
+        return _markdown_table(content.get('headers') or [], content.get('rows') or [])
+    if field_type == 'image':
+        return [f'![{content["filename"]}]({_file_url(content)})', '']
+    if field_type == 'attachment':
+        return [f'[{content["filename"]}]({_file_url(content)}) ({content.get("size", 0)} bytes)', '']
+    return ['_(sin datos)_', '']
+
+
+def _render_section_markdown(section, level=2):
+    if section['kind'] == 'group':
+        lines = [f'{"#" * min(level, 6)} {section["label"]}', ''] if section['label'] else []
+        return lines + _render_sections_markdown(section['children'], level + 1)
+    lines = [f'{"#" * min(level, 6)} {section["label"]}', '']
+    return lines + (_render_typed_content_markdown(section['content'], section['field_type']) if section['field_type']
+                    else _render_content_markdown(section['content']))
+
+
+def _render_sections_markdown(sections, level=2):
+    lines = []
+    for section in sections:   # width se ignora acá (ver _render_typed_content_markdown) — siempre secuencial
+        lines += _render_section_markdown(section, level)
+    return lines
 
 
 def render_spec_markdown(data):
     lines = [f'# {data["title"]}', '', f'Plantilla: {data["template_name"]} · Generado: {data["generated_at"]}', '']
     if data.get('sample'):
         lines += ['> Vista previa con datos de ejemplo — no corresponde a un registro real.', '']
-    for section in data['sections']:
-        lines += [f'## {section["label"]}', ''] + _render_content_markdown(section['content'])
+    lines += _render_sections_markdown(data['sections'])
     return '\n'.join(lines) + '\n'
 
 
@@ -436,6 +660,84 @@ def _write_content_docx(doc, content):
     doc.add_paragraph(json.dumps(content, ensure_ascii=False, indent=2))
 
 
+def _write_typed_content_docx(sink, content, field_type):
+    """Mismo espíritu que _write_content_docx, para los 5 tipos custom. `sink` es un Document (sección normal,
+    a ancho completo) o una celda de tabla (la mitad emparejada de una fila `width='half'`, ver
+    _write_sections_docx) — ambos soportan add_paragraph/add_table igual; solo Document tiene add_picture
+    (hasattr lo distingue), así que una imagen dentro de una celda emparejada cae a una referencia de texto."""
+    if content is None:
+        sink.add_paragraph('No aplica a este documento.')
+        return
+    if field_type in ('text', 'textarea'):
+        sink.add_paragraph(content)
+        return
+    if field_type == 'list':
+        for it in content:
+            it = it if isinstance(it, dict) else {'text': str(it), 'done': False}
+            sink.add_paragraph(('[x] ' if it.get('done') else '[ ] ') + (it.get('text') or '(vacío)'))
+        return
+    if field_type == 'table':
+        headers, rows = content.get('headers') or [], content.get('rows') or []
+        table = sink.add_table(rows=1, cols=len(headers))
+        for cell, text in zip(table.rows[0].cells, headers):
+            cell.text = str(text)
+        for row in rows:
+            cells = table.add_row().cells
+            for cell, value in zip(cells, row):
+                cell.text = str(value)
+        return
+    if field_type == 'image':
+        if hasattr(sink, 'add_picture'):
+            from docx.shared import Inches
+            path = core.ARTIFACTS / f'{content["id"]}-{content["filename"]}'
+            if path.is_file():
+                try:
+                    sink.add_picture(str(path), width=Inches(4))
+                    return
+                except Exception:
+                    pass
+            sink.add_paragraph(f'[imagen no disponible: {content.get("filename", "")}]')
+        else:
+            sink.add_paragraph(f'[imagen: {content.get("filename", "")} — ver la versión HTML]')
+        return
+    if field_type == 'attachment':
+        sink.add_paragraph(f'Adjunto: {content.get("filename", "")} (descargar desde el registro)')
+        return
+    sink.add_paragraph('(sin datos)')
+
+
+def _write_section_docx(doc, section, level=2):
+    if section['kind'] == 'group':
+        if section['label']:
+            doc.add_heading(section['label'], level=min(level, 9))
+        _write_sections_docx(doc, section['children'], level + 1)
+        return
+    doc.add_heading(section['label'], level=min(level, 9))
+    if section['field_type']:
+        _write_typed_content_docx(doc, section['content'], section['field_type'])
+    else:
+        _write_content_docx(doc, section['content'])
+
+
+def _write_sections_docx(doc, sections, level=2):
+    """`doc` es un Document (ancho completo) o una celda de tabla (recursión dentro de una mitad ya
+    emparejada) — una fila `width='half'` se escribe como una tabla de 1 fila/2 celdas, cada celda con su
+    encabezado en negrita (las celdas no tienen add_heading) seguido del contenido normal."""
+    for row in _pair_rows(sections):
+        if len(row) == 2:
+            table = doc.add_table(rows=1, cols=2)
+            for cell, node in zip(table.rows[0].cells, row):
+                cell.paragraphs[0].add_run(node['label']).bold = True
+                if node['kind'] == 'group':
+                    _write_sections_docx(cell, node['children'], level + 1)
+                elif node['field_type']:
+                    _write_typed_content_docx(cell, node['content'], node['field_type'])
+                else:
+                    _write_content_docx(cell, node['content'])
+        else:
+            _write_section_docx(doc, row[0], level)
+
+
 def render_spec_docx(data):
     from docx import Document
     doc = Document()
@@ -443,9 +745,7 @@ def render_spec_docx(data):
     doc.add_paragraph(f'Plantilla: {data["template_name"]} · Generado: {data["generated_at"]}')
     if data.get('sample'):
         doc.add_paragraph('Vista previa con datos de ejemplo — no corresponde a un registro real.')
-    for section in data['sections']:
-        doc.add_heading(section['label'], level=2)
-        _write_content_docx(doc, section['content'])
+    _write_sections_docx(doc, data['sections'])
     buffer = io.BytesIO()
     doc.save(buffer)
     return buffer.getvalue()

@@ -1,6 +1,7 @@
+import copy
 from nicegui import ui, run
 from .. import core, llm, spec_report
-from .common import frame, guard, confirm, empty_state, require_project, protected_page
+from .common import frame, guard, confirm, empty_state, require_project, protected_page, render_template_tree, doc_typography, live_doc_html, typography_button, remembered
 
 STATUS_LABELS = {'draft': 'Borrador', 'ready': 'Listo', 'automated': 'Automatizado'}
 TYPE_LABELS = {'functional': 'Funcional', 'regression': 'Regresión', 'smoke': 'Smoke', 'exploratory': 'Exploratorio'}
@@ -66,95 +67,219 @@ def test_specs_list():
 
 @protected_page('/test-specs/edit')
 def test_spec_detail(id: str = '', story_id: str = ''):
-    with frame('Caso de prueba' if id else 'Nuevo caso de prueba', '/test-specs', doc_style=True):
+    with frame('Caso de prueba' if id else 'Nuevo caso de prueba', '/test-specs', full_width=True, doc_style=True):
         if not require_project():
             return
         pid = core.get_active_project_id()
-        ui.link('← Volver a Casos de prueba', '/test-specs').classes('text-sm')
+        # Mismo layout que Historias de usuario/Plantillas (ver user_stories.py::story_detail,
+        # spec_templates.py::spec_template_detail): vista previa en vivo al centro-izquierda, "Campos" a la
+        # derecha con riel de pestañas gobernado por la plantilla de entrada elegida, separador ajustable,
+        # colapsable con un clic en el ícono ya activo, modo compacto/scroll completo.
+        compact, set_compact = remembered('spec_layout_compact', default=True)
+        main_split_value, set_main_split_value_pref = remembered('spec_split_width', default=75)
+        S = {'active_field_tab': '__meta__', 'fields_collapsed': False}
+
+        def handle_rail_click(key):
+            if S['active_field_tab'] == key:
+                S['fields_collapsed'] = not S['fields_collapsed']
+            else:
+                S['active_field_tab'] = key
+                S['fields_collapsed'] = False
+            field_panels.set_visibility(not S['fields_collapsed'])
+            if S['fields_collapsed']:
+                S['split_before_collapse'] = main_split.value
+                main_split.set_value(95)
+            else:
+                main_split.set_value(S.get('split_before_collapse', main_split_value))
+
+        def toggle_compact():
+            set_compact(not compact)
+            ui.navigate.reload()
 
         current = core.get('test_case_specs', id) if id else None
         if id and (current is None or current.get('project_id') != pid):
-            ui.label('Este caso de prueba ya no existe en el proyecto activo.').classes('text-amber-700')
+            with ui.column().classes('w-full p-4 gap-2'):
+                ui.link('← Volver a Casos de prueba', '/test-specs').classes('text-sm')
+                ui.label('Este caso de prueba ya no existe en el proyecto activo.').classes('text-amber-700')
             return
 
-        d = {'steps': [dict(s) for s in (current or {}).get('steps', [])]}
+        d = {'steps': [dict(s) for s in (current or {}).get('steps', [])],
+            'custom': copy.deepcopy((current or {}).get('custom_fields') or {}),
+            # Metadatos de registro (nunca gobernados por la plantilla, ver user_stories.py::story_detail):
+            # viven en su propia pestaña fija del riel ("General") — se re-crea entera en cada cambio de
+            # plantilla, así que cada widget lee/escribe acá en vez de en `current` directamente.
+            'meta': {'title': (current or {}).get('title', ''), 'story_id': (current or {}).get('story_id') or (story_id or None),
+                     'feature_id': (current or {}).get('feature_id'), 'priority': (current or {}).get('priority', 'medium'),
+                     'type': (current or {}).get('type', 'functional'), 'linked_case_id': (current or {}).get('linked_case_id')}}
+        preconditions = None
+        title = story = feature = priority = type_ = linked = input_template = None
 
-        # Mismo espíritu que /stories/edit: a la derecha los campos, al centro la redacción (mismo renderer que
-        # el reporte exportado), actualizada en vivo — ver el comentario de user_stories.py:story_detail.
-        with ui.row().classes('w-full gap-4 items-start no-wrap'):
-            with ui.column().classes('w-full md:w-96 shrink-0 gap-4 order-2'):
-                with ui.card().classes('w-full'):
-                    with ui.row().classes('items-center gap-2'):
-                        ui.icon('edit_note', color='primary').classes('text-2xl')
-                        ui.label('Campos').classes('text-xl font-semibold')
+        def _v(el):
+            return el.value if el else ''
 
-                    title = ui.input('Título', value=(current or {}).get('title', '')).props('outlined dense').classes('w-full') \
-                        .mark('spec-title').on_value_change(lambda e: document_view.refresh())
-                    stories = core.list_project_items('user_stories', pid)
-                    default_story = (current or {}).get('story_id') or (story_id or None)
-                    story = ui.select({s['id']: s['title'] for s in stories}, value=default_story,
-                                      label='Historia de usuario (opcional)', clearable=True).props('outlined dense').classes('w-full').mark('spec-story')
-                    features = core.list_project_items('features', pid)
-                    feature = ui.select({f['id']: f['name'] for f in features}, value=(current or {}).get('feature_id'),
-                                        label='Funcionalidad (opcional)', clearable=True).props('outlined dense').classes('w-full')
-                    with ui.row().classes('w-full gap-3'):
-                        priority = ui.select(core.PRIORITY_LABELS, value=(current or {}).get('priority', 'medium'), label='Prioridad').props('outlined dense').classes('grow')
-                        type_ = ui.select(TYPE_LABELS, value=(current or {}).get('type', 'functional'), label='Tipo').props('outlined dense').classes('grow')
-                    cases = core.list_project_items('cases', pid)
-                    linked = ui.select({c['id']: c['name'] for c in cases}, value=(current or {}).get('linked_case_id'),
-                                       label='Caso API/UI automatizado (opcional)', clearable=True).props('outlined dense').classes('w-full').mark('spec-linked-case')
-
-                    preconditions = ui.textarea('Precondición', value=(current or {}).get('preconditions', '')).props('outlined dense autogrow') \
-                        .classes('w-full').on_value_change(lambda e: document_view.refresh())
-
-                    ui.separator().classes('my-2')
-                    ui.label('Pasos de ejecución y resultado esperado').classes('font-semibold')
-
-                    @ui.refreshable
-                    def step_rows():
-                        if not d['steps']:
-                            ui.label('Ninguno todavía.').classes('text-sm text-gray-400')
-                        for index, s in enumerate(d['steps']):
-                            with ui.row().classes('items-start gap-2 w-full no-wrap'):
-                                ui.label(str(index + 1)).classes('w-6 text-gray-500 pt-3')
-                                ui.textarea('Paso', value=s.get('action', '')).props('outlined dense autogrow').classes('grow').mark('spec-step-action') \
-                                    .on_value_change(lambda e, s=s: (s.__setitem__('action', e.value), document_view.refresh()))
-                                ui.textarea('Resultado esperado', value=s.get('expected', '')).props('outlined dense autogrow').classes('grow').mark('spec-step-expected') \
-                                    .on_value_change(lambda e, s=s: (s.__setitem__('expected', e.value), document_view.refresh()))
-                                ui.button(icon='delete', on_click=lambda _, s=s: (d['steps'].remove(s), step_rows.refresh(), document_view.refresh())) \
-                                    .props('flat round dense color=negative').classes('mt-1')
-                    step_rows()
-                    ui.button('Agregar paso', icon='add', on_click=lambda: (d['steps'].append({'action': '', 'expected': ''}),
-                              step_rows.refresh(), document_view.refresh())).props('outline dense color=primary').mark('spec-add-step')
-
-                    def save():
-                        if current:
-                            core.update_test_case_spec(current['id'], title.value, story.value, feature.value, preconditions.value,
-                                                       d['steps'], priority.value, type_.value, linked.value)
-                            ui.notify('Caso de prueba actualizado', type='positive')
-                            ui.navigate.to(f'/test-specs/edit?id={current["id"]}')
-                        else:
-                            spec = core.create_test_case_spec(title.value, pid, story.value, feature.value, preconditions.value,
-                                                               d['steps'], priority.value, type_.value, linked.value)
-                            ui.notify('Caso de prueba creado', type='positive')
-                            ui.navigate.to(f'/test-specs/edit?id={spec["id"]}')
-                    ui.button('Guardar cambios' if current else 'Crear caso de prueba', icon='save', on_click=guard(save)).props('color=primary mt-2').mark('spec-save')
-
+        with ui.column().classes('w-full p-4 gap-4 ltw-doc'):
+            with ui.row().classes('w-full items-center justify-between no-wrap'):
+                with ui.column().classes('gap-0'):
+                    ui.link('← Volver a Casos de prueba', '/test-specs').classes('text-sm')
+                    ui.label('Caso de prueba' if current else 'Nuevo caso de prueba').classes('ltw-doc-title text-2xl font-semibold')
+                with ui.row().classes('gap-1 shrink-0'):
                     if current:
-                        def remove(s=current):
-                            core.delete_test_case_spec(s['id'])
-                            ui.notify('Caso de prueba eliminado', type='positive')
-                            ui.navigate.to('/test-specs')
-                        ui.button('Eliminar caso de prueba', icon='delete', on_click=lambda: confirm(f'¿Eliminar el caso de prueba «{current["title"]}»?', remove)) \
-                            .props('flat dense color=negative mt-2').mark('spec-delete')
+                        ui.button(icon='tab', on_click=lambda: ui.navigate.to(f'/test-specs/view?id={current["id"]}', new_tab=True)) \
+                            .props('flat round dense').mark('spec-open-viewer').tooltip('Abrir el visor interactivo del reporte')
+                    ui.button(icon='fullscreen_exit' if compact else 'fullscreen', on_click=toggle_compact) \
+                        .props('flat round dense').mark('spec-toggle-compact') \
+                        .tooltip('Cambiar a modo con scroll completo' if compact else 'Cambiar a modo compacto (sin scroll, ancho completo)')
+                    typography_button(lambda: document_view.refresh())
 
-            with ui.column().classes('grow gap-4 order-1 min-w-0'):
-                with ui.card().classes('w-full').mark('spec-document'):
-                    @ui.refreshable
-                    def document_view():
-                        ui.label(title.value or 'Nuevo caso de prueba').classes('text-2xl font-bold')
-                        ui.html(spec_report.render_test_case_view_html({'preconditions': preconditions.value, 'steps': d['steps']})).classes('w-full')
-                    document_view()
+            with ui.element('div').classes('w-full').style('height: calc(100vh - 210px)' if compact else ''):
+                with ui.splitter(value=main_split_value, limits=(40, 96), on_change=lambda e: set_main_split_value_pref(e.value)) \
+                        .classes('w-full').style('height:100%' if compact else '') as main_split:
+                    with main_split.after:
+                        with ui.column().classes('w-full gap-4').style('height:100%;overflow:auto' if compact else ''):
+                            with ui.card().classes('w-full p-0').style('overflow:visible' if compact else ''):
+                                with ui.row().classes('items-center gap-2 p-4 pb-0'):
+                                    ui.icon('edit_note', color='primary').classes('text-2xl')
+                                    ui.label('Campos').classes('text-xl font-semibold')
+
+                                with ui.column().classes('w-full gap-3 p-4 pt-2'):
+                                    # Plantilla de ENTRADA elegida: cada grupo de primer nivel de su `body` es una
+                                    # pestaña del riel (ver core.template_top_level_groups) — ya no precondición/
+                                    # pasos fijos siempre visibles fuera de toda plantilla.
+                                    input_templates = [t for t in core.list_items('spec_templates') if t.get('kind') == 'input' and t.get('applies_to') == 'test_case'
+                                                      and (t.get('project_id') is None or t.get('project_id') == pid)]
+                                    # Misma idea que user_stories.py::story_detail: preferir la plantilla guardada
+                                    # la última vez, si todavía existe entre las visibles del proyecto.
+                                    saved_tpl_id = (current or {}).get('input_template_id')
+                                    d['meta'].setdefault('input_template_id',
+                                        saved_tpl_id if any(t['id'] == saved_tpl_id for t in input_templates) else (input_templates[0]['id'] if input_templates else None))
+
+                                    field_panels = None
+                                    known_renderers = {}
+
+                                    # Metadatos de registro: su propia pestaña fija del riel ("General", primera,
+                                    # nunca arrastrable al centro) — igual patrón que user_stories.py::story_detail.
+                                    def render_meta_panel():
+                                        nonlocal title, story, feature, priority, type_, linked, input_template
+                                        title = ui.input('Título', value=d['meta']['title']).props('outlined dense').classes('w-full') \
+                                            .mark('spec-title').on_value_change(lambda e: (d['meta'].__setitem__('title', e.value), document_view.refresh()))
+                                        stories = core.list_project_items('user_stories', pid)
+                                        story = ui.select({s['id']: s['title'] for s in stories}, value=d['meta']['story_id'],
+                                                          label='Historia de usuario (opcional)', clearable=True).props('outlined dense').classes('w-full').mark('spec-story') \
+                                            .on_value_change(lambda e: d['meta'].__setitem__('story_id', e.value))
+                                        features = core.list_project_items('features', pid)
+                                        feature = ui.select({f['id']: f['name'] for f in features}, value=d['meta']['feature_id'],
+                                                            label='Funcionalidad (opcional)', clearable=True).props('outlined dense').classes('w-full') \
+                                            .on_value_change(lambda e: d['meta'].__setitem__('feature_id', e.value))
+                                        with ui.row().classes('w-full gap-3'):
+                                            priority = ui.select(core.PRIORITY_LABELS, value=d['meta']['priority'], label='Prioridad').props('outlined dense').classes('grow') \
+                                                .on_value_change(lambda e: d['meta'].__setitem__('priority', e.value))
+                                            type_ = ui.select(TYPE_LABELS, value=d['meta']['type'], label='Tipo').props('outlined dense').classes('grow') \
+                                                .on_value_change(lambda e: d['meta'].__setitem__('type', e.value))
+                                        cases = core.list_project_items('cases', pid)
+                                        linked = ui.select({c['id']: c['name'] for c in cases}, value=d['meta']['linked_case_id'],
+                                                           label='Caso API/UI automatizado (opcional)', clearable=True).props('outlined dense').classes('w-full').mark('spec-linked-case') \
+                                            .on_value_change(lambda e: d['meta'].__setitem__('linked_case_id', e.value))
+                                        if input_templates:
+                                            ui.separator().classes('my-1')
+                                            input_template = ui.select({t['id']: t['name'] for t in input_templates}, value=d['meta']['input_template_id'],
+                                                                       label='Plantilla de entrada').props('outlined dense').classes('w-full mt-2').mark('spec-input-template')
+                                            input_template.on_value_change(lambda e: (d['meta'].__setitem__('input_template_id', e.value), fields_section.refresh(), document_view.refresh()))
+                                        else:
+                                            input_template = None
+
+                                    def render_preconditions():
+                                        nonlocal preconditions
+                                        preconditions = ui.textarea('Precondición', value=(current or {}).get('preconditions', '')).props('outlined dense autogrow') \
+                                            .classes('w-full').mark('spec-preconditions').on_value_change(lambda e: document_view.refresh())
+                                    known_renderers['preconditions'] = render_preconditions
+
+                                    @ui.refreshable
+                                    def step_rows():
+                                        if not d['steps']:
+                                            ui.label('Ninguno todavía.').classes('text-sm text-gray-400')
+                                        for index, s in enumerate(d['steps']):
+                                            with ui.row().classes('items-start gap-2 w-full no-wrap'):
+                                                ui.label(str(index + 1)).classes('w-6 text-gray-500 pt-3')
+                                                ui.textarea('Paso', value=s.get('action', '')).props('outlined dense autogrow').classes('grow').mark('spec-step-action') \
+                                                    .on_value_change(lambda e, s=s: (s.__setitem__('action', e.value), document_view.refresh()))
+                                                ui.textarea('Resultado esperado', value=s.get('expected', '')).props('outlined dense autogrow').classes('grow').mark('spec-step-expected') \
+                                                    .on_value_change(lambda e, s=s: (s.__setitem__('expected', e.value), document_view.refresh()))
+                                                ui.button(icon='delete', on_click=lambda _, s=s: (d['steps'].remove(s), step_rows.refresh(), document_view.refresh())) \
+                                                    .props('flat round dense color=negative').classes('mt-1')
+
+                                    def render_steps():
+                                        ui.label('Pasos de ejecución y resultado esperado').classes('font-semibold')
+                                        step_rows()
+                                        ui.button('Agregar paso', icon='add', on_click=lambda: (d['steps'].append({'action': '', 'expected': ''}),
+                                                  step_rows.refresh(), document_view.refresh())).props('outline dense color=primary').mark('spec-add-step')
+                                    known_renderers['steps'] = render_steps
+
+                                    @ui.refreshable
+                                    def fields_section():
+                                        nonlocal field_panels
+                                        # Ver el comentario equivalente en user_stories.py::fields_section: lee
+                                        # d['meta'], no input_template.value (todavía None en la primera pasada).
+                                        tpl = core.get('spec_templates', d['meta'].get('input_template_id')) if d['meta'].get('input_template_id') else None
+                                        groups = core.template_top_level_groups(tpl.get('body')) if tpl else [
+                                            {'id': 'contenido', 'label': 'Contenido', 'icon': 'science', 'children': [
+                                                {'kind': 'field', 'field_key': 'preconditions', 'field_type': None, 'label': 'Precondición'},
+                                                {'kind': 'field', 'field_key': 'steps', 'field_type': None, 'label': 'Pasos de ejecución'}]}]
+                                        if S['active_field_tab'] != '__meta__' and not any(g['id'] == S['active_field_tab'] for g in groups):
+                                            S['active_field_tab'] = groups[0]['id'] if groups else '__meta__'
+                                        with ui.row().classes('w-full no-wrap gap-0').style('min-height:260px;justify-content:flex-end'):
+                                            with ui.tab_panels(None, value=S['active_field_tab']).props('vertical').style('flex:1 1 0;min-width:0;padding:8px 0') as field_panels:
+                                                with ui.tab_panel('__meta__').classes('gap-3 p-0'):
+                                                    render_meta_panel()
+                                                for group in groups:
+                                                    with ui.tab_panel(group['id']).classes('gap-3 p-0'):
+                                                        render_template_tree(group['children'], d['custom'], known_renderers, on_change=lambda: document_view.refresh())
+                                            with ui.tabs().props('vertical dense no-caps').classes('shrink-0').style('width:56px;border-left:1px solid #e5e7eb') as field_rail:
+                                                ui.tab('__meta__', label='', icon='edit_note').tooltip('General').mark('spec-rail-meta') \
+                                                    .on('click', lambda: handle_rail_click('__meta__'))
+                                                for group in groups:
+                                                    ui.tab(group['id'], label='', icon=group['icon'] or 'folder').tooltip(group['label']).mark(f'spec-rail-{group["id"]}') \
+                                                        .on('click', lambda gid=group['id']: handle_rail_click(gid))
+                                            field_panels.bind_value_from(field_rail, 'value')
+                                            field_rail.set_value(S['active_field_tab'])
+                                    fields_section()
+
+                                def save():
+                                    if current:
+                                        core.update_test_case_spec(current['id'], title.value, story.value, feature.value, _v(preconditions),
+                                                                   d['steps'], priority.value, type_.value, linked.value, custom_fields=d['custom'],
+                                                                   input_template_id=input_template.value if input_template else None)
+                                        ui.notify('Caso de prueba actualizado', type='positive')
+                                        ui.navigate.to(f'/test-specs/edit?id={current["id"]}')
+                                    else:
+                                        spec = core.create_test_case_spec(title.value, pid, story.value, feature.value, _v(preconditions),
+                                                                           d['steps'], priority.value, type_.value, linked.value, custom_fields=d['custom'],
+                                                                           input_template_id=input_template.value if input_template else None)
+                                        ui.notify('Caso de prueba creado', type='positive')
+                                        ui.navigate.to(f'/test-specs/edit?id={spec["id"]}')
+                                ui.button('Guardar cambios' if current else 'Crear caso de prueba', icon='save', on_click=guard(save)).props('color=primary mt-2').mark('spec-save')
+
+                                if current:
+                                    def remove(s=current):
+                                        core.delete_test_case_spec(s['id'])
+                                        ui.notify('Caso de prueba eliminado', type='positive')
+                                        ui.navigate.to('/test-specs')
+                                    ui.button('Eliminar caso de prueba', icon='delete', on_click=lambda: confirm(f'¿Eliminar el caso de prueba «{current["title"]}»?', remove)) \
+                                        .props('flat dense color=negative mt-2').mark('spec-delete')
+
+                    with main_split.before:
+                        with ui.column().classes('w-full gap-4 min-w-0').style('height:100%' if compact else ''):
+                            with ui.card().classes('w-full').mark('spec-document').style('height:100%;overflow:auto' if compact else ''):
+                                @ui.refreshable
+                                def document_view():
+                                    ui.label(title.value or 'Nuevo caso de prueba').classes('text-2xl font-bold')
+                                    # Solo lo que la plantilla de entrada elegida define, en su orden (antes era
+                                    # fijo: siempre precondición + pasos, nunca los campos personalizados).
+                                    tpl = core.get('spec_templates', input_template.value) if input_template and input_template.value else None
+                                    fields = list(core.iter_template_fields(tpl.get('body'))) if tpl else \
+                                        [{'kind': 'field', 'field_key': k, 'field_type': None} for k in ('preconditions', 'steps')]
+                                    fragment = spec_report.render_test_case_view_html({'preconditions': _v(preconditions), 'steps': d['steps']}, fields, d['custom'])
+                                    ui.html(live_doc_html(fragment, doc_typography()[0])).classes('w-full')
+                                document_view()
 
         # ------------------------------------------------------------ Asistente de IA (Fase 2)
         thread_key = current['id'] if current else 'new'
@@ -165,7 +290,8 @@ def test_spec_detail(id: str = '', story_id: str = ''):
             if not tc:
                 raise ValueError('; '.join(errors) or 'El modelo no devolvió un caso de prueba válido')
             title.set_value(tc['title'])
-            preconditions.set_value(tc['preconditions'])
+            if preconditions:
+                preconditions.set_value(tc['preconditions'])
             priority.set_value(tc['priority'])
             type_.set_value(tc['type'])
             d['steps'] = [dict(s) for s in tc['steps']]
@@ -218,7 +344,7 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                 lowered = text.lower()
                 try:
                     if any(k in lowered for k in llm.SPEC_REFINE_KEYWORDS):
-                        item = {'title': title.value, 'preconditions': preconditions.value, 'steps': d['steps'],
+                        item = {'title': title.value, 'preconditions': _v(preconditions), 'steps': d['steps'],
                                'priority': priority.value, 'type': type_.value}
                         result = await run.io_bound(llm.refine_spec_item, 'test_case', item, text)
                         _apply_case_draft(result['item'], result['errors'])
@@ -234,7 +360,7 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                         candidates_view.refresh()
                         reply = f'Generé {len(result["test_cases"])} candidato(s) — elegí uno abajo para cargarlo arriba.'
                     else:
-                        context = {'kind': 'caso de prueba', 'current': {'title': title.value, 'preconditions': preconditions.value, 'steps': d['steps']}}
+                        context = {'kind': 'caso de prueba', 'current': {'title': title.value, 'preconditions': _v(preconditions), 'steps': d['steps']}}
                         reply = await run.io_bound(llm.spec_chat_reply, thread[:-1], text, context)
                 except (llm.LLMError, ValueError) as exc:
                     reply = f'No pude: {exc}'

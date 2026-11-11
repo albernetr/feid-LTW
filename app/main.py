@@ -4,7 +4,7 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from nicegui import app, ui
 from . import core, logs
-from .pages import observer_page, workspace_page, summary, home, projects, module_groups, modules, environments, cases, ui_cases, features, suites, suite_groups, schedules, runs, portable, llm_models, chat_page, sequences, datasets, integrations as integrations_page, login, users, storage_settings, user_stories, test_case_specs, spec_templates  # noqa: F401  (registers routes)
+from .pages import observer_page, workspace_page, summary, home, projects, module_groups, modules, environments, cases, ui_cases, features, suites, suite_groups, schedules, runs, portable, llm_models, chat_page, sequences, datasets, integrations as integrations_page, login, users, storage_settings, user_stories, test_case_specs, spec_templates, spec_viewer  # noqa: F401  (registers routes)
 
 if core.migrate_legacy_data():
     logs.event('workspace.migrated', source=str(core.LEGACY_ROOT), target=str(core.ROOT))

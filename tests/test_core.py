@@ -769,6 +769,52 @@ def test_initialize_seeds_seven_default_global_templates_idempotently():
     assert len([t for t in core.list_items('spec_templates') if t.get('project_id') is None]) == 7
 
 
+def test_seed_resyncs_a_pre_existing_builtin_templates_body_with_the_current_default():
+    """Un builtin global nunca es editable por nadie (el editor lo deja `disabled`) — la única forma en que su
+    `body` guardado puede divergir de DEFAULT_SPEC_TEMPLATES es haber quedado sembrado por una versión anterior
+    del código: antes del árbol de nodos (bug real reportado en vivo — KeyError al abrir una plantilla así en
+    el editor), o, como en este caso, antes de que esta plantilla agrupara sus campos fijos en secciones. Por
+    eso `seed_default_spec_templates` RE-SINCRONIZA sin condición, no solo corrige el formato."""
+    builtin = next(t for t in core.list_items('spec_templates') if t.get('project_id') is None and t.get('is_builtin')
+                  and t['name'] == 'Criterios de aceptación (Gherkin)')
+    builtin['body'] = [{'field': 'given', 'label': 'Dado (contexto inicial)'}]   # simula una fila vieja, incompleta
+    core.save('spec_templates', builtin)   # nunca se vuelve a guardar sola (seed solo CREA las que faltan, por nombre)
+    assert 'kind' not in builtin['body'][0]
+
+    # core.initialize() solo llama a seed_default_spec_templates() UNA vez por proceso/DB (memoizado en
+    # _SEEDED_TEMPLATES_FOR, ver core.py) — el caso real (una base vieja que arranca en un proceso NUEVO del
+    # servidor) ya pasa por ese primer llamado; acá se invoca el seeder directo para no depender de esa cache.
+    core.seed_default_spec_templates()   # debe restaurar el body canónico completo, sin duplicar ni tocar otra plantilla
+    upgraded = core.get('spec_templates', builtin['id'])
+    assert len(upgraded['body']) == 3 and all(n.get('kind') == 'field' for n in upgraded['body'])
+    assert [n['field_key'] for n in upgraded['body']] == ['given', 'when', 'then']
+    assert len([t for t in core.list_items('spec_templates') if t.get('project_id') is None]) == 7   # nada duplicado
+
+    core.seed_default_spec_templates()   # idempotente (salvo el 'id' de un campo sin id propio en
+    # DEFAULT_SPEC_TEMPLATES, que se regenera en cada limpieza — irrelevante, nada lo direcciona por fuera)
+    resynced = core.get('spec_templates', builtin['id'])['body']
+    assert [{k: v for k, v in n.items() if k != 'id'} for n in resynced] == \
+           [{k: v for k, v in n.items() if k != 'id'} for n in upgraded['body']]
+
+
+def test_promote_and_adopt_normalize_a_legacy_flat_body_on_copy():
+    """promote_template/adopt_template copian `template.get('body')` tal cual venía guardado — si la plantilla
+    ORIGEN todavía está en el formato plano viejo (p. ej. una global sembrada antes de este esquema), la copia
+    debe salir ya en el árbol nuevo, no arrastrar el problema a un registro más."""
+    project = core.create_project('Copiar legado')
+    local = core.create_spec_template('Legado', 'input', 'user_story', project_id=project['id'], body=[{'field': 'as_a', 'label': 'Como'}])
+    stored = core.get('spec_templates', local['id'])
+    stored['body'] = [{'field': 'as_a', 'label': 'Como'}]   # fuerza el registro de vuelta al formato plano viejo
+    core.save('spec_templates', stored)
+
+    promoted = core.promote_template(local['id'])
+    assert promoted['body'][0].get('kind') == 'field' and promoted['body'][0]['field_key'] == 'as_a'
+
+    project2 = core.create_project('Copiar legado 2')
+    adopted = core.adopt_template(promoted['id'], project2['id'])
+    assert adopted['body'][0].get('kind') == 'field' and adopted['body'][0]['field_key'] == 'as_a'
+
+
 def test_new_project_automatically_adopts_the_seven_default_templates():
     project = core.create_project('Adopta plantillas')
     adopted = [t for t in core.list_items('spec_templates') if t.get('project_id') == project['id']]
@@ -886,6 +932,95 @@ def test_user_story_business_context_fields_round_trip():
     assert story['risks'] == 'Picos de tráfico en campañas' and story['out_of_scope'] == 'No cubre pagos en cuotas'
 
 
+def test_user_story_custom_fields_round_trip_through_create_update_and_list_items():
+    """custom_fields no pide ninguna migración de esquema — core.save()/list_items() son agnósticos (json.dumps
+    del dict completo), así que un dict arbitrario (texto, lista, tabla, referencia de archivo) va y vuelve
+    intacto por create/update/get/list_items, sin tocar core.py más allá de limpiar claves vacías."""
+    project = core.create_project('Custom fields')
+    custom = {'presupuesto': '5000 USD', 'riesgos_extra': [{'text': 'Proveedor único', 'done': False}],
+             'matriz': {'headers': ['A', 'B'], 'rows': [['1', '2']]}, '': 'se descarta (clave vacía)'}
+    story = core.create_user_story('Con campos custom', project['id'], custom_fields=custom)
+    assert story['custom_fields'] == {'presupuesto': '5000 USD', 'riesgos_extra': [{'text': 'Proveedor único', 'done': False}],
+                                      'matriz': {'headers': ['A', 'B'], 'rows': [['1', '2']]}}
+    assert core.get('user_stories', story['id'])['custom_fields'] == story['custom_fields']
+    assert next(s for s in core.list_items('user_stories') if s['id'] == story['id'])['custom_fields'] == story['custom_fields']
+
+    updated = core.update_user_story(story['id'], 'Con campos custom', custom_fields={'presupuesto': '7000 USD'})
+    assert updated['custom_fields'] == {'presupuesto': '7000 USD'}   # reemplaza entero, igual que criteria/dor/dod
+
+
+def test_test_case_spec_custom_fields_round_trip():
+    project = core.create_project('CP custom')
+    spec = core.create_test_case_spec('x', project['id'], custom_fields={'severidad': 'alta'})
+    assert spec['custom_fields'] == {'severidad': 'alta'}
+    updated = core.update_test_case_spec(spec['id'], 'x', custom_fields={'severidad': 'baja'})
+    assert updated['custom_fields'] == {'severidad': 'baja'}
+
+
+def test_save_custom_field_file_writes_to_artifacts_and_is_servable_via_evidence_path():
+    result = core.save_custom_field_file(b'contenido-binario', 'Mi Reporte Final.png', content_type='image/png')
+    assert result['filename'] == 'Mi Reporte Final.png' and result['content_type'] == 'image/png' and result['size'] == len(b'contenido-binario')
+    served = core.evidence_path(result['id'], f'{result["id"]}-Mi Reporte Final.png')
+    assert served.is_file() and served.read_bytes() == b'contenido-binario'
+    served.unlink()
+
+
+def test_iter_template_fields_flattens_groups_and_template_field_keys_collects_custom_and_known():
+    body = core.create_spec_template('Con grupos', 'input', 'user_story', project_id=core.create_project('Grupos')['id'], body=[
+        {'kind': 'field', 'label': 'Como', 'field_key': 'as_a'},
+        {'kind': 'group', 'label': 'Extra', 'children': [
+            {'kind': 'field', 'label': 'Presupuesto', 'field_key': 'presupuesto', 'field_type': 'text'},
+            {'kind': 'group', 'label': 'Sub', 'children': [{'kind': 'field', 'label': 'Riesgo extra', 'field_key': 'riesgo_extra', 'field_type': 'textarea'}]}]},
+    ])['body']
+    keys = core.template_field_keys(body)
+    assert keys == {'as_a', 'presupuesto', 'riesgo_extra'}
+    fields = list(core.iter_template_fields(body))
+    assert [f['field_key'] for f in fields] == ['as_a', 'presupuesto', 'riesgo_extra']
+
+
+def test_template_top_level_groups_wraps_stray_fields_and_keeps_explicit_groups():
+    pid = core.create_project('Grupos de primer nivel')['id']
+    # Totalmente plana (sin ningún 'group'): todo cae en UN solo grupo implícito — mismo comportamiento de
+    # siempre (un solo panel) para cualquier plantilla custom creada antes de este mecanismo.
+    flat = core.create_spec_template('Plana', 'input', 'user_story', project_id=pid, body=[
+        {'kind': 'field', 'label': 'Como', 'field_key': 'as_a'}, {'kind': 'field', 'label': 'Quiero', 'field_key': 'i_want'}])
+    groups = core.template_top_level_groups(flat['body'])
+    assert len(groups) == 1 and len(groups[0]['children']) == 2 and groups[0]['icon'] is None
+
+    # Con grupos explícitos (como la Historia de usuario (INVEST) sembrada): cada uno es su propia pestaña,
+    # con su id/label/icon tal cual los declaró la plantilla.
+    rich = core.create_spec_template('Con grupos', 'input', 'user_story', project_id=pid, body=[
+        {'kind': 'group', 'id': 'g1', 'label': 'Narrativa', 'icon': 'edit_note', 'children': [{'kind': 'field', 'label': 'Como', 'field_key': 'as_a'}]},
+        {'kind': 'field', 'label': 'Suelto', 'field_key': 'i_want'},   # un campo suelto DESPUÉS de un grupo explícito
+        {'kind': 'group', 'id': 'g2', 'label': 'Negocio', 'icon': 'business_center', 'children': []},
+    ])
+    groups = core.template_top_level_groups(rich['body'])
+    assert [g['id'] for g in groups[:1]] == ['g1'] and groups[0]['icon'] == 'edit_note'
+    implicit = groups[1]
+    assert implicit['id'] != 'g1' and implicit['id'] != 'g2' and implicit['children'][0]['field_key'] == 'i_want'
+    assert groups[2]['id'] == 'g2' and groups[2]['icon'] == 'business_center' and groups[2]['children'] == []
+
+
+def test_custom_field_catalog_lists_custom_fields_from_input_templates_without_deduplicating():
+    pid = core.create_project('Catálogo de campos')['id']
+    core.create_spec_template('HU con presupuesto', 'input', 'user_story', project_id=pid, body=[
+        {'kind': 'field', 'label': 'Presupuesto', 'field_key': 'presupuesto', 'field_type': 'text'}])
+    core.create_spec_template('Caso con presupuesto', 'input', 'test_case', project_id=pid, body=[
+        {'kind': 'field', 'label': 'Presupuesto (número)', 'field_key': 'presupuesto', 'field_type': 'table'}])
+    other_project = core.create_project('Otro proyecto')['id']
+    core.create_spec_template('No debería aparecer', 'input', 'user_story', project_id=other_project, body=[
+        {'kind': 'field', 'label': 'Ajeno', 'field_key': 'ajeno', 'field_type': 'text'}])
+
+    catalog = core.custom_field_catalog(pid)
+    keys = [(c['field_key'], c['field_type'], c['template_name']) for c in catalog]
+    assert ('presupuesto', 'text', 'HU con presupuesto') in keys
+    assert ('presupuesto', 'table', 'Caso con presupuesto') in keys   # mismo field_key, tipos distintos: las DOS, sin pisarse
+    assert all(c['template_name'] != 'No debería aparecer' for c in catalog)
+
+    only_test_case = core.custom_field_catalog(pid, applies_to='test_case')
+    assert {c['template_name'] for c in only_test_case} == {'Caso con presupuesto'}
+
+
 def test_create_test_case_spec_requires_existing_links_and_cleans_empty_steps():
     project = core.create_project('CP')
     with pytest.raises(ValueError):
@@ -915,8 +1050,32 @@ def test_spec_template_crud_validates_kind_and_applies_to():
         core.create_spec_template('x', 'bogus', 'user_story', project_id=project['id'])
     with pytest.raises(ValueError):
         core.create_spec_template('x', 'input', 'bogus', project_id=project['id'])
+    # Esquema nuevo (árbol de nodos, Rediseño de Plantillas): un nodo plano viejo {field, label} se sube de
+    # versión a un nodo 'field' que referencia ese field_key fijo (field_type=None) — con etiqueta vacía
+    # completada desde la clave, igual que antes.
     template = core.create_spec_template('Mi HU', 'input', 'user_story', body=[{'field': 'x', 'label': ' '}, {'field': '', 'label': ''}], project_id=project['id'])
-    assert template['body'] == [{'field': 'x', 'label': 'x'}]   # etiqueta vacía se completa desde la clave
+    assert len(template['body']) == 1
+    node = template['body'][0]
+    assert node['kind'] == 'field' and node['field_key'] == 'x' and node['label'] == 'x' and node['field_type'] is None
+
+    # field_type=None SIEMPRE se acepta, sin exigir que field_key esté en la lista de fijos conocidos — mismo
+    # trato que un nodo plano viejo (sin 'kind'); si no, re-normalizar un nodo ya limpio (promote_template/
+    # adopt_template/re-seed, ver core.py) rompería en la segunda pasada lo que la primera había aceptado.
+    sin_tipo = core.create_spec_template('Mi HU 2', 'input', 'user_story', body=[{'kind': 'field', 'label': 'Presupuesto', 'field_key': 'presupuesto'}], project_id=project['id'])
+    assert sin_tipo['body'][0]['field_type'] is None and sin_tipo['body'][0]['field_key'] == 'presupuesto'
+    with pytest.raises(ValueError):   # un field_type explícito pero inválido: inválido
+        core.create_spec_template('Mi HU 2b', 'input', 'user_story',
+                                  body=[{'kind': 'field', 'label': 'Presupuesto', 'field_key': 'presupuesto', 'field_type': 'bogus'}], project_id=project['id'])
+    with pytest.raises(ValueError):   # colisión: un campo custom no puede usar el field_key de uno fijo
+        core.create_spec_template('Mi HU 3', 'input', 'user_story',
+                                  body=[{'kind': 'field', 'label': 'Como', 'field_key': 'as_a', 'field_type': 'text'}], project_id=project['id'])
+    rich = core.create_spec_template('Mi HU 4', 'input', 'user_story', project_id=project['id'], body=[
+        {'kind': 'field', 'label': 'Como (rol)', 'field_key': 'as_a'},
+        {'kind': 'group', 'label': 'Contexto adicional', 'as_tab': True, 'children': [
+            {'kind': 'field', 'label': 'Presupuesto', 'field_key': 'presupuesto', 'field_type': 'text'}]}])
+    assert rich['body'][0] == {'id': rich['body'][0]['id'], 'kind': 'field', 'label': 'Como (rol)', 'field_key': 'as_a', 'field_type': None, 'width': 'full'}
+    group = rich['body'][1]
+    assert group['kind'] == 'group' and group['as_tab'] is True and group['children'][0]['field_type'] == 'text'
 
 
 def test_global_templates_are_read_only_and_only_local_ones_can_be_deleted():

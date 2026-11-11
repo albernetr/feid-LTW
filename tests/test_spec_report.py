@@ -24,6 +24,19 @@ def _template(name):
     return next(t for t in core.list_items('spec_templates') if t['name'] == name)
 
 
+def _flatten(sections):
+    """Historia de usuario (INVEST) y Caso de prueba (ISTQB) ahora agrupan sus campos fijos en secciones
+    (ver core.DEFAULT_SPEC_TEMPLATES/core.template_top_level_groups) — aplana recursivamente para poder seguir
+    indexando por 'field' como antes, sin que un nodo 'group' (sin esa clave) rompa el dict comprehension."""
+    flat = {}
+    for s in sections:
+        if s.get('kind') == 'group':
+            flat.update(_flatten(s['children']))
+        else:
+            flat[s['field']] = s['content']
+    return flat
+
+
 def test_build_story_report_data_resolves_every_known_field(world):
     tpl = _template('Especificación detallada')
     data = spec_report.build_story_report_data(world['story'], tpl)
@@ -76,8 +89,8 @@ def test_build_template_preview_for_a_test_case_template_uses_placeholder_steps(
     tpl = _template('Caso de prueba (ISTQB)')
     data = spec_report.build_template_preview(tpl)
     assert data['sample'] is True and data['kind'] == 'test_case'
-    sections = {s['field']: s['content'] for s in data['sections']}
-    assert sections['preconditions'] and sections['steps'] and sections['expected']
+    sections = _flatten(data['sections'])
+    assert sections['preconditions'] and sections['steps']
 
 
 def test_build_template_preview_for_a_user_story_template(world):
@@ -86,7 +99,7 @@ def test_build_template_preview_for_a_user_story_template(world):
     assert sample['sample'] is True
     real = spec_report.build_template_preview(tpl, story=world['story'])
     assert real['sample'] is False and real['title'] == 'Recuperar contraseña'
-    sections = {s['field']: s['content'] for s in real['sections']}
+    sections = _flatten(real['sections'])
     assert sections['as_a'] == 'usuario' and [c['text'] for c in sections['criteria']] == ['Se envía un email', 'El link expira']
 
 
@@ -130,3 +143,98 @@ def test_render_spec_pdf_uses_reporting_render_pdf(tmp_path, monkeypatch):
     monkeypatch.setattr(spec_report.reporting, 'render_pdf', lambda html_text, destination: calls.append((html_text, destination)))
     spec_report.render_spec_pdf('<html></html>', tmp_path / 'r.pdf')
     assert calls and calls[0][0] == '<html></html>'
+
+
+# --------------------------------------------------------------------------- Rediseño de Plantillas: campos
+# tipados custom, secciones/subsecciones, layout de dos columnas y as_tab (ver core.py y el nuevo
+# _build_tree_sections/_render_sections_*/_write_sections_docx).
+
+def _output_template_with_custom_fields(pid):
+    return core.create_spec_template('Con campos custom', 'output', 'report', project_id=pid, body=[
+        {'kind': 'field', 'label': 'Historia de usuario', 'field_key': 'story'},
+        {'kind': 'group', 'label': 'Contexto adicional', 'as_tab': True, 'children': [
+            {'kind': 'field', 'label': 'Presupuesto', 'field_key': 'presupuesto', 'field_type': 'text', 'width': 'half'},
+            {'kind': 'field', 'label': 'Riesgo extra', 'field_key': 'riesgo_extra', 'field_type': 'textarea', 'width': 'half'},
+            {'kind': 'field', 'label': 'Checklist', 'field_key': 'checklist', 'field_type': 'list'},
+            {'kind': 'field', 'label': 'Matriz propia', 'field_key': 'matriz_propia', 'field_type': 'table'},
+            {'kind': 'field', 'label': 'Captura', 'field_key': 'captura', 'field_type': 'image'},
+            {'kind': 'field', 'label': 'Anexo', 'field_key': 'anexo', 'field_type': 'attachment'}]},
+    ])
+
+
+def _custom_fields_sample():
+    file_ref = core.save_custom_field_file(b'fake-png-bytes', 'captura.png', content_type='image/png')
+    attach_ref = core.save_custom_field_file(b'fake-pdf-bytes', 'anexo.pdf', content_type='application/pdf')
+    return {'presupuesto': '5000 USD', 'riesgo_extra': 'Proveedor único de email', 'checklist': [{'text': 'Aprobado por legal', 'done': True}],
+           'matriz_propia': {'headers': ['Riesgo', 'Impacto'], 'rows': [['Latencia', 'Alto']]}, 'captura': file_ref, 'anexo': attach_ref}
+
+
+def test_custom_field_types_resolve_and_render_in_html_markdown_and_docx(world):
+    tpl = _output_template_with_custom_fields(world['pid'])
+    s0 = world['story']
+    story = core.update_user_story(s0['id'], s0['title'], s0['as_a'], s0['i_want'], s0['so_that'], criteria=s0['criteria'],
+                                   custom_fields=_custom_fields_sample())
+    data = spec_report.build_story_report_data(story, tpl)
+
+    group = next(s for s in data['sections'] if s['kind'] == 'group')
+    assert group['label'] == 'Contexto adicional' and group['as_tab'] is True
+    by_field = {c['field']: c for c in group['children']}
+    assert by_field['presupuesto']['content'] == '5000 USD' and by_field['presupuesto']['width'] == 'half'
+    assert by_field['checklist']['content'] == [{'text': 'Aprobado por legal', 'done': True}]
+    assert by_field['matriz_propia']['content']['headers'] == ['Riesgo', 'Impacto']
+    assert by_field['captura']['content']['filename'] == 'captura.png'
+    assert by_field['anexo']['content']['filename'] == 'anexo.pdf'
+
+    html_out = spec_report.render_spec_html(data)
+    assert '5000 USD' in html_out and 'Proveedor único de email' in html_out and 'Aprobado por legal' in html_out
+    assert '<table>' in html_out and 'Latencia' in html_out
+    assert '<img src="/evidence/' in html_out and 'captura.png' in html_out
+    assert 'anexo.pdf' in html_out
+
+    md_out = spec_report.render_spec_markdown(data)
+    assert '5000 USD' in md_out and '| Riesgo | Impacto |' in md_out and '![captura.png]' in md_out and '[anexo.pdf]' in md_out
+
+    docx_bytes = spec_report.render_spec_docx(data)
+    assert docx_bytes[:2] == b'PK'
+
+
+def test_custom_field_value_shape_mismatch_is_treated_as_empty_not_a_crash(world):
+    """Si una plantilla distinta guardó otro tipo bajo la misma field_key, el valor existente no matchea la
+    forma que este field_type espera — se trata como vacío, nunca revienta (ver _validate_custom_value)."""
+    tpl = _output_template_with_custom_fields(world['pid'])
+    s0 = world['story']
+    story = core.update_user_story(s0['id'], s0['title'], s0['as_a'], s0['i_want'], s0['so_that'], criteria=s0['criteria'],
+                                   custom_fields={'presupuesto': {'headers': [], 'rows': []}, 'matriz_propia': 'no es una tabla'})
+    data = spec_report.build_story_report_data(story, tpl)
+    group = next(s for s in data['sections'] if s['kind'] == 'group')
+    by_field = {c['field']: c for c in group['children']}
+    assert by_field['presupuesto']['content'] is None   # un dict donde se esperaba un string: vacío, no error
+    assert by_field['matriz_propia']['content'] is None   # un string donde se esperaba {headers, rows}: vacío
+    for render in (spec_report.render_spec_html, spec_report.render_spec_markdown):
+        render(data)   # no debe reventar
+    assert spec_report.render_spec_docx(data)[:2] == b'PK'
+
+
+def test_width_half_pairs_consecutive_siblings_into_a_two_column_row_in_html():
+    rows = spec_report._pair_rows([
+        {'width': 'half', 'field': 'a'}, {'width': 'half', 'field': 'b'}, {'width': 'full', 'field': 'c'}, {'width': 'half', 'field': 'd'}])
+    assert [len(r) for r in rows] == [2, 1, 1]
+    assert [n['field'] for n in rows[0]] == ['a', 'b'] and rows[1][0]['field'] == 'c' and rows[2][0]['field'] == 'd'
+
+
+def test_as_tab_group_metadata_survives_into_the_built_report_tree(world):
+    tpl = _output_template_with_custom_fields(world['pid'])
+    data = spec_report.build_story_report_data(world['story'], tpl)
+    group = next(s for s in data['sections'] if s['kind'] == 'group')
+    assert group['as_tab'] is True
+    assert {c['field'] for c in group['children']} == {'presupuesto', 'riesgo_extra', 'checklist', 'matriz_propia', 'captura', 'anexo'}
+
+
+def test_build_test_case_report_data_resolves_preconditions_and_steps(world):
+    data = spec_report.build_test_case_report_data(world['manual_spec'])
+    sections = {s['field']: s['content'] for s in data['sections']}
+    assert sections['preconditions'] == 'cuenta activa'
+    [tc] = sections['steps']
+    assert tc['title'] == 'Enviar email de recuperación'
+    assert spec_report.render_spec_html(data) and spec_report.render_spec_markdown(data)
+    assert spec_report.render_spec_docx(data)[:2] == b'PK'

@@ -576,7 +576,7 @@ STORY_SOURCES = ('manual', 'ai', 'import', 'agent')
 
 def create_user_story(title, project_id, as_a='', i_want='', so_that='', feature_id=None, priority='medium', criteria=None, source='manual',
                       definition_of_ready=None, definition_of_done=None, depends_on=None, story_points=None, assigned_to=None,
-                      business_rules='', assumptions='', risks='', out_of_scope='', content=''):
+                      business_rules='', assumptions='', risks='', out_of_scope='', content='', custom_fields=None, input_template_id=None):
     title = (title or '').strip()
     if not title:
         raise ValueError('El título de la historia de usuario es obligatorio')
@@ -590,17 +590,19 @@ def create_user_story(title, project_id, as_a='', i_want='', so_that='', feature
             'definition_of_ready': _clean_checklist(definition_of_ready), 'definition_of_done': _clean_checklist(definition_of_done),
             'depends_on': _clean_depends_on(depends_on, project_id), 'story_points': _clean_story_points(story_points),
             'business_rules': (business_rules or '').strip(), 'assumptions': (assumptions or '').strip(),
-            'risks': (risks or '').strip(), 'out_of_scope': (out_of_scope or '').strip()}
+            'risks': (risks or '').strip(), 'out_of_scope': (out_of_scope or '').strip(), 'custom_fields': _clean_custom_fields(custom_fields)}
     if feature_id:
         item['feature_id'] = feature_id
     if assigned_to:
         item['assigned_to'] = assigned_to
+    if input_template_id:
+        item['input_template_id'] = input_template_id
     return save('user_stories', item)
 
 
 def update_user_story(story_id, title, as_a='', i_want='', so_that='', feature_id=None, priority='medium', criteria=None, status=None,
                       definition_of_ready=None, definition_of_done=None, depends_on=None, story_points=None, assigned_to=None,
-                      business_rules='', assumptions='', risks='', out_of_scope='', content=''):
+                      business_rules='', assumptions='', risks='', out_of_scope='', content='', custom_fields=None, input_template_id=None):
     story = get('user_stories', story_id)
     if story is None:
         raise ValueError('Historia de usuario inexistente')
@@ -616,9 +618,10 @@ def update_user_story(story_id, title, as_a='', i_want='', so_that='', feature_i
                   'definition_of_ready': _clean_checklist(definition_of_ready), 'definition_of_done': _clean_checklist(definition_of_done),
                   'depends_on': _clean_depends_on(depends_on, story['project_id'], exclude_id=story_id), 'story_points': _clean_story_points(story_points),
                   'business_rules': (business_rules or '').strip(), 'assumptions': (assumptions or '').strip(),
-                  'risks': (risks or '').strip(), 'out_of_scope': (out_of_scope or '').strip()})
+                  'risks': (risks or '').strip(), 'out_of_scope': (out_of_scope or '').strip(), 'custom_fields': _clean_custom_fields(custom_fields)})
     story['feature_id'] = feature_id or None
     story['assigned_to'] = assigned_to or None
+    story['input_template_id'] = input_template_id or None
     if status:
         story['status'] = status
     return save('user_stories', story)
@@ -693,7 +696,7 @@ TEST_CASE_STATUSES = ('draft', 'ready', 'automated')
 
 
 def create_test_case_spec(title, project_id, story_id=None, feature_id=None, preconditions='', steps=None,
-                          priority='medium', type='functional', linked_case_id=None, source='manual'):
+                          priority='medium', type='functional', linked_case_id=None, source='manual', custom_fields=None, input_template_id=None):
     title = (title or '').strip()
     if not title:
         raise ValueError('El título del caso de prueba es obligatorio')
@@ -705,15 +708,16 @@ def create_test_case_spec(title, project_id, story_id=None, feature_id=None, pre
         raise ValueError('Caso API/UI inexistente')
     item = {'title': title, 'preconditions': (preconditions or '').strip(), 'steps': _clean_test_steps(steps),
             'priority': priority if priority in PRIORITIES else 'medium', 'type': type if type in TEST_CASE_TYPES else 'functional',
-            'status': 'automated' if linked_case_id else 'draft', 'source': source if source in STORY_SOURCES else 'manual', 'project_id': project_id}
-    for key, value in (('story_id', story_id), ('feature_id', feature_id), ('linked_case_id', linked_case_id)):
+            'status': 'automated' if linked_case_id else 'draft', 'source': source if source in STORY_SOURCES else 'manual', 'project_id': project_id,
+            'custom_fields': _clean_custom_fields(custom_fields)}
+    for key, value in (('story_id', story_id), ('feature_id', feature_id), ('linked_case_id', linked_case_id), ('input_template_id', input_template_id)):
         if value:
             item[key] = value
     return save('test_case_specs', item)
 
 
 def update_test_case_spec(spec_id, title, story_id=None, feature_id=None, preconditions='', steps=None,
-                          priority='medium', type='functional', linked_case_id=None, status=None):
+                          priority='medium', type='functional', linked_case_id=None, status=None, custom_fields=None, input_template_id=None):
     spec = get('test_case_specs', spec_id)
     if spec is None:
         raise ValueError('Caso de prueba inexistente')
@@ -727,10 +731,12 @@ def update_test_case_spec(spec_id, title, story_id=None, feature_id=None, precon
     if linked_case_id and get('cases', linked_case_id) is None:
         raise ValueError('Caso API/UI inexistente')
     spec.update({'title': title, 'preconditions': (preconditions or '').strip(), 'steps': _clean_test_steps(steps),
-                'priority': priority if priority in PRIORITIES else 'medium', 'type': type if type in TEST_CASE_TYPES else 'functional'})
+                'priority': priority if priority in PRIORITIES else 'medium', 'type': type if type in TEST_CASE_TYPES else 'functional',
+                'custom_fields': _clean_custom_fields(custom_fields)})
     spec['story_id'] = story_id or None
     spec['feature_id'] = feature_id or None
     spec['linked_case_id'] = linked_case_id or None
+    spec['input_template_id'] = input_template_id or None
     if status in TEST_CASE_STATUSES:
         spec['status'] = status
     elif linked_case_id:
@@ -771,25 +777,80 @@ def _clean_test_steps(steps):
 
 
 # --------------------------------------------------------------------------- plantillas (biblioteca global +
-# propias por proyecto): `project_id=None` = global. `body` es una lista ordenada de secciones/campos
-# `{'field': clave, 'label': etiqueta}` — nunca un motor de plantillas tipo Jinja, no hace falta para esto.
+# propias por proyecto): `project_id=None` = global. `body` es un ÁRBOL ordenado de nodos — nunca un motor de
+# plantillas tipo Jinja, no hace falta para esto. Cada nodo:
+#   {'id', 'kind': 'field'|'group', 'label', 'width': 'full'|'half' (solo con efecto en plantillas de salida),
+#    # kind == 'field':
+#    'field_key', 'field_type': None | uno de CUSTOM_FIELD_TYPES
+#       # field_type es None SOLO para un campo FIJO conocido (KNOWN_FIELDS_BY_APPLIES_TO) — ese sigue usando su
+#       # editor/renderer especializado ya construido (as_a/i_want/so_that, criterios Gherkin, DoR/DoD, pasos de
+#       # Caso de prueba, ...). Para un campo NUEVO que la plantilla define, field_type es obligatorio.
+#    # kind == 'group' (una sección o subsección — anidable sin límite de profundidad):
+#    'as_tab': bool,   # solo con efecto en plantillas de salida: True => pestaña propia en el visor interactivo
+#    'children': [...]}  # nodos del mismo tipo
+# Una plantilla vieja (antes de este esquema) solo tenía `{'field': clave, 'label': etiqueta}` planos — `_clean_
+# template_body` los sigue aceptando y los sube de versión automáticamente (ver abajo), así que no hace falta
+# ninguna migración de datos.
 
 TEMPLATE_KINDS = ('input', 'output')
 TEMPLATE_APPLIES_TO = ('user_story', 'test_case', 'report')
 
+CUSTOM_FIELD_TYPES = ('text', 'textarea', 'list', 'table', 'image', 'attachment')
+CUSTOM_FIELD_TYPE_LABELS = {'text': 'Texto corto', 'textarea': 'Texto largo', 'list': 'Lista',
+                            'table': 'Tabla', 'image': 'Imagen', 'attachment': 'Adjunto'}
+
+# Campos FIJOS de cada `applies_to`: los que ya tienen su propio editor/renderer especializado, no un `field_type`
+# genérico. Una plantilla puede referenciar cualquiera de estos (field_type=None) además de definir los suyos.
+KNOWN_STORY_FIELDS = ('as_a', 'i_want', 'so_that', 'content', 'criteria', 'given', 'when', 'then', 'definition_of_ready',
+                      'definition_of_done', 'business_rules', 'assumptions', 'risks', 'out_of_scope', 'story_points',
+                      'assigned_to', 'depends_on',
+                      'linked_test_cases')   # slot de solo-UI: gestión de Casos de prueba ligados — no es un
+                                              # atributo de la Historia (la relación ya vive en test_case_specs.
+                                              # story_id), solo una sección que una plantilla de entrada puede
+                                              # ubicar en su árbol, igual que 'given'/'when'/'then' no aplican a
+                                              # todas las plantillas de HU.
+KNOWN_TEST_CASE_FIELDS = ('preconditions', 'steps', 'expected', 'priority', 'type')
+KNOWN_REPORT_FIELDS = ('story', 'as_a', 'i_want', 'so_that', 'content', 'criteria', 'definition_of_ready', 'definition_of_done',
+                       'business_rules', 'assumptions', 'business_risks', 'out_of_scope', 'dependencies', 'test_cases',
+                       'traceability', 'matrix', 'summary', 'coverage', 'risks', 'story_points', 'assigned_to',
+                       'preconditions', 'steps', 'expected', 'priority', 'type')
+KNOWN_FIELDS_BY_APPLIES_TO = {'user_story': KNOWN_STORY_FIELDS, 'test_case': KNOWN_TEST_CASE_FIELDS, 'report': KNOWN_REPORT_FIELDS}
+
 DEFAULT_SPEC_TEMPLATES = [
     {'name': 'Historia de usuario (INVEST)', 'kind': 'input', 'applies_to': 'user_story',
      'description': 'Formato clásico Como/Quiero/Para, con sus criterios de aceptación.',
-     'body': [{'field': 'as_a', 'label': 'Como (rol)'}, {'field': 'i_want', 'label': 'Quiero (acción o funcionalidad)'},
-              {'field': 'so_that', 'label': 'Para (beneficio o razón)'}, {'field': 'criteria', 'label': 'Criterios de aceptación'}]},
+     # Grupos de primer nivel con `id` FIJO (resumen/criteria/dor_dod/business/tests) — user_stories.py arma el
+     # riel de pestañas a partir de estos grupos (ver core.template_top_level_groups); el id fijo es a propósito
+     # el mismo que usaban las pestañas hardcodeadas de antes (salvo 'resumen', antes 'general': ese nombre/
+     # ícono ahora los usa la pestaña fija de Metadatos que arma la propia página — no un grupo de la plantilla),
+     # para que las marcas `story-rail-*` y el comportamiento por defecto no cambien. Una plantilla propia que
+     # cree un usuario no necesita esto — sus grupos generan un id al azar, sin que le importe a ningún test.
+     'body': [
+         {'kind': 'group', 'id': 'resumen', 'label': 'Resumen', 'icon': 'description', 'children': [
+             {'field': 'as_a', 'label': 'Como (rol)'}, {'field': 'i_want', 'label': 'Quiero (acción o funcionalidad)'},
+             {'field': 'so_that', 'label': 'Para (beneficio o razón)'}]},
+         {'kind': 'group', 'id': 'criteria', 'label': 'Criterios de aceptación', 'icon': 'checklist', 'children': [
+             {'field': 'criteria', 'label': 'Criterios de aceptación'}]},
+         {'kind': 'group', 'id': 'dor_dod', 'label': 'Listo / Hecho', 'icon': 'fact_check', 'children': [
+             {'field': 'definition_of_ready', 'label': 'Definición de Listo'}, {'field': 'definition_of_done', 'label': 'Definición de Hecho'}]},
+         {'kind': 'group', 'id': 'business', 'label': 'Negocio', 'icon': 'business_center', 'children': [
+             {'field': 'business_rules', 'label': 'Reglas de negocio'}, {'field': 'assumptions', 'label': 'Supuestos'},
+             {'field': 'risks', 'label': 'Riesgos'}, {'field': 'out_of_scope', 'label': 'Fuera de alcance'}]},
+         {'kind': 'group', 'id': 'tests', 'label': 'Casos de prueba', 'icon': 'science', 'children': [
+             {'field': 'linked_test_cases', 'label': 'Casos de prueba'}]},
+     ]},
     {'name': 'Criterios de aceptación (Gherkin)', 'kind': 'input', 'applies_to': 'user_story',
      'description': 'Dado/Cuando/Entonces, para criterios de aceptación ejecutables.',
      'body': [{'field': 'given', 'label': 'Dado (contexto inicial)'}, {'field': 'when', 'label': 'Cuando (acción)'},
               {'field': 'then', 'label': 'Entonces (resultado esperado)'}]},
     {'name': 'Caso de prueba (ISTQB)', 'kind': 'input', 'applies_to': 'test_case',
      'description': 'Precondición, pasos y resultado esperado, con prioridad.',
-     'body': [{'field': 'preconditions', 'label': 'Precondición'}, {'field': 'steps', 'label': 'Pasos de ejecución'},
-              {'field': 'expected', 'label': 'Resultado esperado'}, {'field': 'priority', 'label': 'Prioridad'}]},
+     # id 'contenido' (antes 'general'): ese nombre/ícono ahora los usa la pestaña fija de Metadatos de la
+     # propia página, no un grupo de la plantilla — ver el comentario equivalente en la HU (INVEST) de arriba.
+     'body': [
+         {'kind': 'group', 'id': 'contenido', 'label': 'Contenido', 'icon': 'science', 'children': [
+             {'field': 'preconditions', 'label': 'Precondición'}, {'field': 'steps', 'label': 'Pasos de ejecución'}]},
+     ]},
     {'name': 'Formato libre', 'kind': 'input', 'applies_to': 'user_story',
      'description': 'Un solo campo de texto libre, para cuando la HU ya viene en un formato propio (de la organización o de otra herramienta) y no hace falta forzarla a Como/Quiero/Para.',
      'body': [{'field': 'content', 'label': 'Contenido (formato libre)'}]},
@@ -812,14 +873,24 @@ DEFAULT_SPEC_TEMPLATES = [
 
 
 def seed_default_spec_templates():
-    """Idempotente: solo crea las que falten (por nombre, entre las globales `is_builtin`) — se puede llamar en
-    cada `initialize()` sin duplicar nada."""
-    existing = {t['name'] for t in list_items('spec_templates') if t.get('project_id') is None and t.get('is_builtin')}
+    """Idempotente: CREA las que falten (por nombre, entre las globales `is_builtin`) y re-sincroniza el `body`
+    de las que ya existen con la definición ACTUAL de DEFAULT_SPEC_TEMPLATES — se puede llamar en cada
+    `initialize()` sin duplicar nada. Un builtin global nunca es editable por nadie (el editor las deja
+    `disabled`, ver spec_templates.py) — la ÚNICA forma en que su `body` guardado puede divergir de
+    DEFAULT_SPEC_TEMPLATES es que haya quedado sembrado por una versión anterior del código (antes del árbol de
+    nodos; o, como ahora, antes de que esta plantilla agrupara sus campos fijos en secciones de primer nivel)
+    — por eso re-sincronizar sin condición es seguro y, a diferencia de detectar "¿le falta 'kind'?", cubre
+    también los cambios de ESTRUCTURA (no solo de formato) de una ronda a la siguiente."""
+    existing = {t['name']: t for t in list_items('spec_templates') if t.get('project_id') is None and t.get('is_builtin')}
     for tpl in DEFAULT_SPEC_TEMPLATES:
-        if tpl['name'] in existing:
-            continue
-        save('spec_templates', {'name': tpl['name'], 'description': tpl['description'], 'kind': tpl['kind'],
-                                'applies_to': tpl['applies_to'], 'body': tpl['body'], 'is_builtin': True, 'project_id': None})
+        current = existing.get(tpl['name'])
+        cleaned_body = _clean_template_body(tpl['body'], tpl['applies_to'])
+        if current is None:
+            save('spec_templates', {'name': tpl['name'], 'description': tpl['description'], 'kind': tpl['kind'],
+                                    'applies_to': tpl['applies_to'], 'body': cleaned_body, 'is_builtin': True, 'project_id': None})
+        else:
+            current['body'] = cleaned_body
+            save('spec_templates', current)
 
 
 def create_spec_template(name, kind, applies_to, body=None, project_id=None, description=''):
@@ -831,7 +902,7 @@ def create_spec_template(name, kind, applies_to, body=None, project_id=None, des
     if applies_to not in TEMPLATE_APPLIES_TO:
         raise ValueError('«Aplica a» inválido')
     item = {'name': name, 'description': (description or '').strip(), 'kind': kind, 'applies_to': applies_to,
-            'body': _clean_template_body(body), 'is_builtin': False, 'project_id': project_id}
+            'body': _clean_template_body(body, applies_to), 'is_builtin': False, 'project_id': project_id}
     return save('spec_templates', item)
 
 
@@ -844,7 +915,8 @@ def update_spec_template(template_id, name, description='', body=None):
     name = (name or '').strip()
     if not name:
         raise ValueError('El nombre de la plantilla es obligatorio')
-    template.update({'name': name, 'description': (description or '').strip(), 'body': _clean_template_body(body)})
+    template.update({'name': name, 'description': (description or '').strip(),
+                     'body': _clean_template_body(body, template['applies_to'])})
     return save('spec_templates', template)
 
 
@@ -857,14 +929,180 @@ def delete_spec_template(template_id):
     delete('spec_templates', template_id)
 
 
-def _clean_template_body(body):
-    result = []
-    for entry in (body or []):
-        field = (entry.get('field', '') if isinstance(entry, dict) else '').strip()
-        label = (entry.get('label', '') if isinstance(entry, dict) else '').strip()
-        if not field and not label:
+def _slugify_field_key(label):
+    return re.sub(r'[^a-z0-9]+', '_', (label or '').strip().lower()).strip('_') or uid()
+
+
+def _clean_template_node(entry, known):
+    """Normaliza UN nodo del árbol — recursivo para 'group'. Devuelve None si el nodo queda vacío (se descarta).
+    Un nodo viejo (plano, sin 'kind') se sube de versión a un campo que referencia un field_key fijo conocido
+    (field_type=None) — nunca se le inventa un tipo, porque las plantillas de antes de este esquema solo
+    señalaban campos fijos, nunca definían uno propio."""
+    if not isinstance(entry, dict):
+        return None
+    label = (entry.get('label') or '').strip()
+    kind = entry.get('kind')
+    width = entry.get('width') if entry.get('width') in ('full', 'half') else 'full'
+    if kind not in ('field', 'group'):
+        field_key = (entry.get('field') or '').strip()
+        if not field_key and not label:
+            return None
+        return {'id': entry.get('id') or uid(), 'kind': 'field', 'label': label or field_key,
+               'field_key': field_key or _slugify_field_key(label), 'field_type': None, 'width': width}
+    node_id = entry.get('id') or uid()
+    if kind == 'group':
+        children = [n for n in (_clean_template_node(c, known) for c in (entry.get('children') or [])) if n]
+        if not label and not children:
+            return None
+        icon = (entry.get('icon') or '').strip() or None
+        return {'id': node_id, 'kind': 'group', 'label': label or 'Sección', 'width': width, 'icon': icon,
+               'as_tab': bool(entry.get('as_tab')), 'children': children}
+    # kind == 'field'
+    field_key = (entry.get('field_key') or entry.get('field') or '').strip()
+    if not field_key and not label:
+        return None
+    field_key = field_key or _slugify_field_key(label)
+    field_type = entry.get('field_type')
+    # field_type=None SIEMPRE se acepta sin validar field_key contra `known` — es la misma confianza que ya le
+    # da la rama de arriba a un nodo plano viejo (sin 'kind'): el resolvedor de siempre (_resolve_field/
+    # _resolve_test_case_field) ya tolera cualquier nombre, devolviendo None en silencio si no lo reconoce, así
+    # que no hace falta (ni conviene) que el validador sea más estricto que el resolvedor. Esto también es lo
+    # que mantiene idempotente volver a limpiar un nodo YA limpio (promote_template/adopt_template/re-seed) —
+    # si se exigiera que field_key esté en `known`, un campo fijo legítimo pero fuera de la lista (algo que la
+    # plantilla original ya traía antes de este esquema) se rompería recién en la SEGUNDA pasada, no en la
+    # primera. Solo cuando se declara un field_type CUSTOM de verdad hace falta la colisión: ahí sí define un
+    # campo nuevo, y ese nuevo campo no puede pisar la clave de uno fijo.
+    if field_type is not None:
+        if field_type not in CUSTOM_FIELD_TYPES:
+            raise ValueError(f'El campo «{field_key}» declara un field_type inválido — debe ser uno de: {", ".join(CUSTOM_FIELD_TYPES)}')
+        if field_key in known:
+            raise ValueError(f'«{field_key}» ya es un campo fijo — no puede declarar un tipo propio (field_type)')
+    return {'id': node_id, 'kind': 'field', 'label': label or field_key, 'field_key': field_key, 'field_type': field_type, 'width': width}
+
+
+def _clean_template_body(body, applies_to='report'):
+    known = KNOWN_FIELDS_BY_APPLIES_TO.get(applies_to, ())
+    return [n for n in (_clean_template_node(entry, known) for entry in (body or [])) if n]
+
+
+def normalize_template_body(body, applies_to='report'):
+    """Versión pública de _clean_template_body — para un caller que lee el `body` de un registro DIRECTO de
+    almacenamiento (no a través de create/update_spec_template) y necesita garantizar la forma de árbol nueva,
+    aunque ese registro en particular nunca se haya vuelto a guardar desde antes de este esquema (p. ej. el
+    editor de plantillas, al cargar una plantilla existente para mostrarla)."""
+    return _clean_template_body(body, applies_to)
+
+
+def iter_template_fields(body):
+    """Recorre el árbol de una plantilla y devuelve, en orden, cada nodo 'field' (nunca los 'group', pero SÍ
+    entra a sus `children`) — para quien solo necesita "qué field_keys toca esta plantilla", sin la jerarquía."""
+    for node in (body or []):
+        if not isinstance(node, dict):
             continue
-        result.append({'field': field or label.lower().replace(' ', '_'), 'label': label or field})
+        if node.get('kind') == 'group':
+            yield from iter_template_fields(node.get('children') or [])
+        elif node.get('kind') == 'field':
+            yield node
+        elif 'field' in node:   # plantilla vieja, todavía sin pasar por _clean_template_body
+            yield {'id': node.get('id'), 'kind': 'field', 'label': node.get('label'),
+                  'field_key': node.get('field'), 'field_type': None, 'width': 'full'}
+
+
+def template_field_keys(body):
+    return {n['field_key'] for n in iter_template_fields(body) if n.get('field_key')}
+
+
+def template_top_level_groups(body):
+    """Normaliza el PRIMER NIVEL de un `body` ya limpio a una lista de grupos — cada uno garantizado
+    `{'id', 'kind': 'group', 'label', 'icon', 'children'}` — para que una página (Historia de usuario, Caso de
+    prueba) pueda construir un riel de pestañas dinámico, una por grupo de primer nivel. Los campos sueltos de
+    la raíz (una plantilla vieja, o cualquiera que no envuelva sus campos en secciones) se AGRUPAN consecutivos
+    en un único grupo implícito «General» — no uno por campo — para que una plantilla totalmente plana siga
+    viéndose como un solo panel, igual que el comportamiento de siempre; solo una plantilla que de verdad
+    declara varias secciones (`kind: 'group'`) obtiene varias pestañas. Los grupos ANIDADOS (no de primer
+    nivel) no se tocan: siguen siendo subtítulos visuales dentro de su pestaña, vía render_template_tree."""
+    groups = []
+    pending = []
+
+    def flush():
+        if pending:
+            groups.append({'id': f'__implicit_{len(groups)}__', 'kind': 'group', 'label': 'General',
+                           'icon': None, 'children': list(pending)})
+            pending.clear()
+
+    for node in (body or []):
+        if not isinstance(node, dict):
+            continue
+        if node.get('kind') == 'group':
+            flush()
+            groups.append({'id': node.get('id'), 'kind': 'group', 'label': node.get('label') or 'Sección',
+                           'icon': node.get('icon'), 'children': node.get('children') or []})
+        elif node.get('kind') == 'field':
+            pending.append(node)
+    flush()
+    return groups
+
+
+def pair_rows(nodes):
+    """Agrupa nodos HERMANOS consecutivos con `width == 'half'` de dos en dos (fila de 2 columnas); el resto,
+    uno por fila — layout compartido por el documento EXPORTADO (spec_report._render_sections_html) y por el
+    panel de Campos en vivo (pages/common.render_template_tree): el mismo `width` de un nodo decide lo mismo
+    en los dos lugares, no son dos conceptos separados."""
+    rows, i = [], 0
+    while i < len(nodes):
+        node = nodes[i]
+        if node.get('width') == 'half' and i + 1 < len(nodes) and nodes[i + 1].get('width') == 'half':
+            rows.append([node, nodes[i + 1]])
+            i += 2
+        else:
+            rows.append([node])
+            i += 1
+    return rows
+
+
+def custom_field_catalog(project_id, applies_to=None):
+    """Campos CUSTOM (field_type declarado) ya definidos por las plantillas de ENTRADA visibles en este
+    proyecto (globales + propias) — para que el editor de una plantilla de SALIDA pueda sugerir reusar uno en
+    vez de que quien la edita tenga que escribir a mano un field_key y confiar en que coincida. No deduplica:
+    si dos plantillas definen el mismo field_key con tipos distintos, se listan las dos, cada una con el
+    nombre de su plantilla de origen, para que la elección sea informada en vez de que una pise a la otra."""
+    entries = []
+    for tpl in list_items('spec_templates'):
+        if tpl.get('kind') != 'input' or (tpl.get('project_id') is not None and tpl.get('project_id') != project_id):
+            continue
+        if applies_to and tpl.get('applies_to') != applies_to:
+            continue
+        for node in iter_template_fields(tpl.get('body')):
+            if node.get('field_type'):
+                entries.append({'field_key': node['field_key'], 'field_type': node['field_type'], 'label': node.get('label') or node['field_key'],
+                                'applies_to': tpl.get('applies_to'), 'template_name': tpl.get('name', '')})
+    return entries
+
+
+def save_custom_field_file(raw_bytes, filename, content_type=None):
+    """Guarda el archivo de un campo custom tipo imagen/adjunto en core.ARTIFACTS (la misma carpeta que ya usan
+    capturas/videos de evidencia) — nunca el blob inline en el registro. El nombre arranca con un uid propio
+    (no reutiliza ningún run_id de 'runs') para que evidence_path lo pueda servir vía /evidence/{id}/{filename}
+    exigiendo solo que el nombre de archivo empiece con ese id, igual que ya hace con las capturas de pantalla."""
+    initialize()
+    file_id = uid()
+    safe_name = re.sub(r'[\\/:*?"<>|]+', '_', filename or 'archivo').strip() or 'archivo'
+    target = ARTIFACTS / f'{file_id}-{safe_name}'
+    target.write_bytes(raw_bytes)
+    return {'id': file_id, 'filename': safe_name, 'content_type': content_type or '', 'size': len(raw_bytes)}
+
+
+def _clean_custom_fields(custom_fields):
+    """Valores de los campos custom definidos por la plantilla de entrada activa — el tipo con el que se
+    editaron viaja implícito en la FORMA del valor (string/lista/tabla/referencia de archivo), nunca se vuelve a
+    inferir de ninguna plantilla en particular al leer: si una plantilla distinta define esa misma field_key con
+    otro tipo, el renderer que la lee es quien decide tratar una forma inesperada como vacía (ver spec_report.py
+    y render_template_tree en pages/common.py) — nunca asume la forma, nunca revienta."""
+    result = {}
+    for key, value in (custom_fields or {}).items():
+        key = (key or '').strip()
+        if key:
+            result[key] = value
     return result
 
 
@@ -876,8 +1114,8 @@ def promote_template(template_id):
     if template.get('project_id') is None:
         raise ValueError('Esta plantilla ya es global')
     return save('spec_templates', {'name': template['name'], 'description': template.get('description', ''), 'kind': template['kind'],
-                                   'applies_to': template['applies_to'], 'body': template.get('body', []), 'is_builtin': False,
-                                   'project_id': None, 'promoted_from': template_id})
+                                   'applies_to': template['applies_to'], 'body': _clean_template_body(template.get('body'), template['applies_to']),
+                                   'is_builtin': False, 'project_id': None, 'promoted_from': template_id})
 
 
 def adopt_template(template_id, project_id):
@@ -890,8 +1128,8 @@ def adopt_template(template_id, project_id):
     if project_id is None:
         raise ValueError('Proyecto inexistente')
     return save('spec_templates', {'name': template['name'], 'description': template.get('description', ''), 'kind': template['kind'],
-                                   'applies_to': template['applies_to'], 'body': template.get('body', []), 'is_builtin': False,
-                                   'project_id': project_id, 'cloned_from': template_id})
+                                   'applies_to': template['applies_to'], 'body': _clean_template_body(template.get('body'), template['applies_to']),
+                                   'is_builtin': False, 'project_id': project_id, 'cloned_from': template_id})
 
 
 def suite_steps(suite):

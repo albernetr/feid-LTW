@@ -7,7 +7,8 @@ from app import core
 from app.pages.common import NAV, NAV_GROUPS
 
 ROUTES = ['/', '/resumen', '/projects', '/projects/edit', '/workspace', '/lab', '/observer', '/observer/interface', '/modules', '/modules/edit', '/environments', '/environments/edit', '/cases', '/cases/edit', '/ui-cases',
-          '/suites', '/schedules', '/runs', '/portable', '/stories', '/stories/edit', '/test-specs', '/test-specs/edit', '/spec-templates', '/spec-templates/edit']
+          '/suites', '/schedules', '/runs', '/portable', '/stories', '/stories/edit', '/stories/view', '/test-specs', '/test-specs/edit', '/test-specs/view',
+          '/spec-templates', '/spec-templates/edit']
 
 
 async def test_every_page_renders_without_a_project(user: User):
@@ -122,6 +123,11 @@ async def test_creating_and_running_a_case_from_the_ui_stamps_created_by_and_exe
     case = next(c for c in core.list_items('cases') if c['name'] == 'Caso de autoría')
     test_account = core.get_user_by_email('test@ltw.local')
     assert case['created_by'] == test_account['id']
+    # "Guardar y ejecutar" guarda el caso y DESPUÉS ejecuta la corrida de forma asíncrona (save_and_run en
+    # cases.py: `await run_case(...)` corre como tarea en segundo plano respecto al click() del test, que no
+    # la espera) — el caso puede existir antes de que la corrida termine de crearse. Sin este eventually acá
+    # también, next() podía caer justo en ese hueco y tirar StopIteration (flake real, visto en CI/local).
+    await eventually(lambda: any(r.get('case_id') == case['id'] for r in core.list_items('runs')))
     run = next(r for r in core.list_items('runs') if r.get('case_id') == case['id'])
     assert run['executed_by'] == test_account['id']
 
@@ -1208,6 +1214,28 @@ async def test_home_shows_the_maturity_disclaimer(user: User):
 
 # --------------------------------------------------------------------------- especificación: HU, casos de prueba, plantillas
 
+async def test_doc_typography_control_changes_the_shared_preference_and_survives_reopening(user: User):
+    """El control de tipografía (tamaño/tipo de letra/espaciado) es UNA sola preferencia compartida entre las
+    4 vistas de documento en vivo — cambiarla desde Historias de usuario debe reflejarse también al reabrir
+    Casos de prueba, sin volver a elegirla ahí."""
+    project = core.create_project('Tipografía compartida')
+    core.set_active_project(project['id'])
+    spec = core.create_test_case_spec('Caso cualquiera', project['id'])
+
+    await user.open('/stories/edit')
+    await user.should_see(marker='doc-typography-button')
+    user.find(marker='doc-typography-button').click()
+    await user.should_see(marker='doc-typography-size')
+    _by_id(user.find(marker='doc-typography-size'))[0].set_value('large')
+    _by_id(user.find(marker='doc-typography-font'))[0].set_value('serif')
+    _by_id(user.find(marker='doc-typography-spacing'))[0].set_value('relaxed')
+
+    await user.open(f'/test-specs/edit?id={spec["id"]}')
+    user.find(marker='doc-typography-button').click()
+    size_select = _by_id(user.find(marker='doc-typography-size'))[0]
+    assert size_select.value == 'large'
+
+
 async def test_user_story_can_be_created_linked_to_a_feature_and_deleted(user: User):
     project = core.create_project('Historias UI')
     core.set_active_project(project['id'])
@@ -1265,6 +1293,83 @@ async def test_test_case_spec_can_be_created_from_a_story_and_linked_to_an_autom
 
     await user.open(f'/stories/edit?id={story["id"]}')
     await user.should_see('Pagar con tarjeta válida')                 # ligado, se ve desde la historia también
+
+
+def _by_marker(user, marker):
+    return sorted(user.find(marker=marker).elements, key=lambda e: e.id)
+
+
+def _by_label(user, label):
+    """Un campo custom genérico (ver common.render_template_tree) no tiene marker propio — se arma desde la
+    plantilla, con cualquier label — así que se ubica por su prop `label` de Quasar entre todos los elementos
+    vivos del cliente."""
+    return next(e for e in user.client.elements.values() if getattr(e, '_props', {}).get('label') == label)
+
+
+async def test_user_story_renders_and_saves_a_custom_field_defined_by_its_input_template(user: User):
+    """Rediseño de Plantillas: un campo NUEVO (field_type declarado) que la plantilla de entrada define debe
+    aparecer en el formulario de la Historia (motor genérico, ver common.render_template_tree) y guardarse en
+    custom_fields — sin tocar as_a/i_want/so_that, que siguen con su editor de siempre."""
+    project = core.create_project('HU con campo custom')
+    core.set_active_project(project['id'])
+    tpl = core.create_spec_template('INVEST + presupuesto', 'input', 'user_story', project_id=project['id'], body=[
+        {'kind': 'field', 'label': 'Como', 'field_key': 'as_a'}, {'kind': 'field', 'label': 'Quiero', 'field_key': 'i_want'},
+        {'kind': 'field', 'label': 'Para', 'field_key': 'so_that'},
+        {'kind': 'field', 'label': 'Presupuesto estimado', 'field_key': 'presupuesto', 'field_type': 'text'}])
+
+    await user.open('/stories/edit')
+    user.find(marker='story-title').type('Campaña con presupuesto')
+    _by_marker(user, 'story-input-template')[0].set_value(tpl['id'])
+    await user.should_see('Presupuesto estimado')
+    user.find(marker='story-as-a').type('marketing')
+    _by_label(user, 'Presupuesto estimado').set_value('12000 USD')
+    user.find(marker='story-save').click()
+    await user.should_see('Historia creada')
+
+    [story] = core.list_items('user_stories')
+    assert story['as_a'] == 'marketing' and story['custom_fields'] == {'presupuesto': '12000 USD'}
+
+    await user.open(f'/stories/edit?id={story["id"]}')
+    await user.should_see('Presupuesto estimado')
+    assert _by_label(user, 'Presupuesto estimado').value == '12000 USD'
+
+
+async def test_test_case_spec_renders_and_saves_a_custom_field_defined_by_its_input_template(user: User):
+    project = core.create_project('Caso con campo custom')
+    core.set_active_project(project['id'])
+    tpl = core.create_spec_template('ISTQB + severidad', 'input', 'test_case', project_id=project['id'], body=[
+        {'kind': 'field', 'label': 'Precondición', 'field_key': 'preconditions'}, {'kind': 'field', 'label': 'Pasos', 'field_key': 'steps'},
+        {'kind': 'field', 'label': 'Severidad técnica', 'field_key': 'severidad', 'field_type': 'text'}])
+
+    await user.open('/test-specs/edit')
+    user.find(marker='spec-title').type('Caso con severidad')
+    _by_marker(user, 'spec-input-template')[0].set_value(tpl['id'])
+    await user.should_see('Severidad técnica')
+    _by_label(user, 'Severidad técnica').set_value('crítica')
+    user.find(marker='spec-save').click()
+    await user.should_see('Caso de prueba creado')
+
+    [spec] = core.list_items('test_case_specs')
+    assert spec['custom_fields'] == {'severidad': 'crítica'}
+
+
+async def test_story_viewer_shows_an_as_tab_group_as_its_own_tab(user: User):
+    """Visor interactivo (/stories/view): un grupo as_tab=True de la plantilla de salida elegida se vuelve una
+    pestaña propia — mismo mecanismo de pestañas que ya construyó Historias de usuario (Fase 6), reusado vía
+    common.tabbed_split_view."""
+    project = core.create_project('Visor interactivo')
+    core.set_active_project(project['id'])
+    story = core.create_user_story('Con visor', project['id'], as_a='cliente', i_want='ver su historia', so_that='confiar en el sistema')
+    tpl = core.create_spec_template('Salida con pestaña', 'output', 'report', project_id=project['id'], body=[
+        {'kind': 'field', 'label': 'Historia de usuario', 'field_key': 'story'},
+        {'kind': 'group', 'label': 'Riesgos y cobertura', 'as_tab': True, 'children': [{'kind': 'field', 'label': 'Cobertura', 'field_key': 'coverage'}]}])
+
+    await user.open(f'/stories/view?id={story["id"]}')
+    await user.should_see('Con visor')
+    # Hay plantillas globales cuyo nombre contiene "detallada" (desempatador por defecto del visor) — se elige
+    # la propia explícitamente para no depender de cuál quedó seleccionada por defecto.
+    _by_marker(user, 'viewer-template')[0].set_value(tpl['id'])
+    await user.should_see('Riesgos y cobertura')   # el label del grupo as_tab aparece como pestaña
 
 
 async def test_user_story_professional_fields_round_trip_through_save(user: User):
@@ -1342,6 +1447,34 @@ async def test_user_story_switching_the_input_template_reshapes_the_form(user: U
         user.find(marker='story-as-a')
 
 
+async def test_user_story_input_template_groups_reshape_the_rail(user: User):
+    """Linealidad plantilla <-> sección: cada grupo de primer nivel del `body` de la plantilla de entrada
+    elegida es una pestaña propia del riel (ver core.template_top_level_groups) — no la lista fija de
+    siempre. Cambiar de plantilla reconstruye el riel con los grupos de la nueva."""
+    project = core.create_project('Riel dinámico')
+    core.set_active_project(project['id'])
+    # field_key deliberadamente AJENOS a {as_a, i_want, so_that} — si se repitieran, esta plantilla también
+    # calificaría para el desempate "¿parece una INVEST estructurada?" (ver default_tpl_id) y podría quedar
+    # elegida por defecto, en vez de la sembrada, rompiendo el primer chequeo de abajo.
+    tpl = core.create_spec_template('A medida', 'input', 'user_story', project_id=project['id'], body=[
+        {'kind': 'group', 'id': 'alpha', 'label': 'Alfa', 'icon': 'flag', 'children': [{'kind': 'field', 'label': 'Reglas', 'field_key': 'business_rules'}]},
+        {'kind': 'group', 'id': 'beta', 'label': 'Beta', 'icon': 'security', 'children': [{'kind': 'field', 'label': 'Riesgos', 'field_key': 'risks'}]},
+    ])
+
+    await user.open('/stories/edit')
+    await user.should_see(marker='story-as-a')   # modo estructurado por defecto (Historia de usuario INVEST)
+    assert user.find(marker='story-rail-criteria').elements   # el riel sembrado de siempre sigue ahí
+
+    _by_marker(user, 'story-input-template')[0].set_value(tpl['id'])
+    await user.should_see(marker='story-rail-alpha', retries=30)
+    assert user.find(marker='story-rail-beta').elements
+    with pytest.raises(AssertionError):
+        user.find(marker='story-rail-criteria')   # el riel de INVEST ya no existe: se reconstruyó desde cero
+
+    user.find(marker='story-rail-beta').click()
+    await user.should_see(marker='story-risks')
+
+
 async def test_spec_templates_come_preseeded_and_support_adopt_and_promote(user: User):
     project = core.create_project('Plantillas UI')
     core.set_active_project(project['id'])
@@ -1381,6 +1514,84 @@ async def test_builtin_templates_cannot_be_edited_or_deleted_from_the_ui(user: U
         user.find(marker='template-save')
     with pytest.raises(AssertionError):
         user.find(marker='template-delete')
+
+
+async def test_spec_template_editor_opens_a_template_still_in_the_old_flat_body_shape_without_crashing(user: User):
+    """Bug real reportado en vivo: una plantilla (sobre todo una global, sembrada antes de este esquema y nunca
+    vuelta a guardar) con `body` todavía plano (`{field, label}`, sin 'kind') reventaba el editor con
+    `KeyError: 'kind'` al abrirla — normalize_template_body la sube de versión al cargarla, sin tocar nada en
+    la base hasta que de verdad se guarde."""
+    project = core.create_project('Abrir plantilla vieja')
+    core.set_active_project(project['id'])
+    local = core.create_spec_template('Vieja', 'input', 'user_story', project_id=project['id'], body=[{'field': 'as_a', 'label': 'Como'}])
+    stored = core.get('spec_templates', local['id'])
+    stored['body'] = [{'field': 'as_a', 'label': 'Como'}, {'field': 'i_want', 'label': 'Quiero'}]   # formato plano viejo, a mano
+    core.save('spec_templates', stored)
+
+    await user.open(f'/spec-templates/edit?id={local["id"]}')
+    await user.should_see('Vieja')
+    await user.should_see(marker='template-node-label')   # el árbol ya se ve, no una página 500
+    user.find(marker='template-save').click()
+    await user.should_see('Plantilla actualizada')
+    saved = core.get('spec_templates', local['id'])
+    assert [n['field_key'] for n in saved['body']] == ['as_a', 'i_want'] and all(n['kind'] == 'field' for n in saved['body'])
+
+
+def _by_id(interaction):
+    """`UserInteraction.elements` es un `set` (orden no garantizado) — ordenar por `.id` (creciente con el
+    orden de creación, mismo criterio que usa `.click()` para elegir determinísticamente) da un orden estable
+    para apuntarle a un nodo específico entre varios con el mismo marker."""
+    return sorted(interaction.elements, key=lambda e: e.id)
+
+
+async def test_spec_template_editor_builds_a_tree_with_a_custom_field_group_and_as_tab(user: User):
+    """Rediseño de Plantillas: una plantilla de SALIDA puede agrupar campos bajo una sección marcada como
+    pestaña (`as_tab`), y definir un campo NUEVO (no fijo) con su propio tipo — el árbol completo debe
+    persistir tal cual al guardar."""
+    project = core.create_project('Plantilla árbol')
+    core.set_active_project(project['id'])
+
+    await user.open('/spec-templates/edit')
+    user.find(marker='template-name').type('Reporte con campos custom')
+    _by_id(user.find(marker='template-kind'))[0].set_value('output')
+    _by_id(user.find(marker='template-applies-to'))[0].set_value('report')
+
+    user.find(marker='template-add-group').click()
+    await user.should_see(marker='template-node-as-tab')
+    _by_id(user.find(marker='template-node-label'))[0].set_value('Contexto adicional')
+    user.find(marker='template-node-as-tab').click()
+
+    user.find(marker='template-add-child-field').click()
+    await user.should_see(marker='template-node-type')
+    _by_id(user.find(marker='template-node-label'))[-1].set_value('Presupuesto')
+    _by_id(user.find(marker='template-node-type'))[-1].set_value('table')
+
+    user.find(marker='template-save').click()
+    await user.should_see('Plantilla creada')
+
+    tpl = next(t for t in core.list_items('spec_templates') if t['name'] == 'Reporte con campos custom')
+    assert tpl['kind'] == 'output' and tpl['applies_to'] == 'report'
+    [group] = tpl['body']
+    assert group['kind'] == 'group' and group['label'] == 'Contexto adicional' and group['as_tab'] is True
+    [field] = group['children']
+    assert field['kind'] == 'field' and field['label'] == 'Presupuesto' and field['field_type'] == 'table'
+
+
+async def test_spec_template_editor_reorders_siblings_with_the_up_arrow(user: User):
+    project = core.create_project('Plantilla reordenar')
+    core.set_active_project(project['id'])
+    tpl = core.create_spec_template('Para reordenar', 'input', 'user_story', project_id=project['id'], body=[
+        {'kind': 'field', 'label': 'Como', 'field_key': 'as_a'}, {'kind': 'field', 'label': 'Quiero', 'field_key': 'i_want'}])
+
+    await user.open(f'/spec-templates/edit?id={tpl["id"]}')
+    await user.should_see('Quiero')
+    # .click() de UserInteraction ya elige determinísticamente el de id más chico entre los que matchean el
+    # marker — el botón "Bajar" del primer nodo creado ('Como'), sin ambigüedad.
+    user.find(marker='template-node-down').click()
+    user.find(marker='template-save').click()
+    await user.should_see('Plantilla actualizada')
+    saved = core.get('spec_templates', tpl['id'])
+    assert [n['field_key'] for n in saved['body']] == ['i_want', 'as_a']
 
 
 # --------------------------------------------------------------------------- Asistente de IA en Especificación (Fase 2)

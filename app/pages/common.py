@@ -64,7 +64,78 @@ body{background:#f3f4f6}
 .ltw-doc .q-card+.q-card{margin-top:4px}
 .ltw-doc>.q-page-title,.ltw-doc .ltw-doc-title{font-size:26px;font-weight:700;letter-spacing:-.01em;margin-bottom:2px}
 .ltw-doc .ltw-doc-subtitle{color:#6b7280;font-size:14px;margin-bottom:8px}
+/* ltw-live-doc: el fragmento HTML de un documento mostrado EN VIVO dentro de la app (vista previa de HU/Caso
+   de prueba/Plantillas, visor interactivo) — a diferencia del documento EXPORTADO (HTML_CSS en spec_report.py,
+   con su propio <head><style>), esto se inserta sin ningún CSS propio vía ui.html(), así que sin estas reglas
+   un <h2>/<h3> suelto queda con el tamaño gigante por defecto del navegador. Tamaño/tipo de letra/espaciado
+   son variables CSS que cada ui.html() fija inline según la preferencia guardada (ver typography_button) —
+   nunca afectan el documento exportado, que siempre se ve igual para quien lo reciba.*/
+.ltw-live-doc{font-family:var(--ltw-doc-font,'Segoe UI',Calibri,Arial,sans-serif);font-size:var(--ltw-doc-size,15px);line-height:1.5;color:#111827}
+/* Jerarquía por nivel (h1..h6, uno por profundidad de sección/subsección anidada — ver spec_report.py:
+   _render_section_html(section, level)): antes todos los niveles se veían idénticos (mismo tamaño/peso), así
+   que una subsección no se distinguía de su sección — ahora cada nivel baja de tamaño/peso y se indenta un
+   poco más, hasta volverse una etiqueta chica en mayúsculas para los niveles más profundos (h4+). */
+.ltw-live-doc h1,.ltw-live-doc h2{font-size:calc(var(--ltw-doc-size,15px) + 3px);font-weight:600;color:#374151;
+  margin:var(--ltw-doc-gap,20px) 0 8px;border-bottom:1px solid #e5e7eb;padding-bottom:4px}
+.ltw-live-doc h3{font-size:calc(var(--ltw-doc-size,15px) + 1px);font-weight:600;color:#4b5563;
+  margin:calc(var(--ltw-doc-gap,20px) * 0.75) 0 6px 10px;border-bottom:1px solid #eef0f2;padding-bottom:3px}
+.ltw-live-doc h4,.ltw-live-doc h5,.ltw-live-doc h6{font-size:var(--ltw-doc-size,15px);font-weight:600;color:#6b7280;
+  margin:calc(var(--ltw-doc-gap,20px) * 0.5) 0 4px 20px;text-transform:uppercase;letter-spacing:.03em}
+.ltw-live-doc h1:first-child,.ltw-live-doc h2:first-child,.ltw-live-doc h3:first-child{margin-top:0}
+.ltw-live-doc p,.ltw-live-doc ul,.ltw-live-doc ol{margin:6px 0}
+.ltw-live-doc table{width:100%;border-collapse:collapse;font-size:var(--ltw-doc-size,15px)}
+.ltw-live-doc th,.ltw-live-doc td{text-align:left;padding:4px 8px;border-bottom:1px solid #e5e7eb;vertical-align:top}
+.ltw-live-doc th{background:#f9fafb;color:#374151}
 </style>'''
+
+# Tamaño de texto, tipo de letra y espaciado entre secciones — UNA sola preferencia compartida (remembered())
+# entre las 4 vistas de documento en vivo (HU, Caso de prueba, Plantillas, Visor interactivo), no una por
+# pantalla, para que ajustarla en cualquiera de ellas se sienta consistente en las demás.
+DOC_SIZE_PX = {'small': 13, 'normal': 15, 'large': 17}
+DOC_SIZE_LABELS = {'small': 'Pequeño', 'normal': 'Normal', 'large': 'Grande'}
+DOC_FONT_STACKS = {'default': "'Segoe UI',Calibri,Arial,sans-serif", 'serif': "Georgia,'Times New Roman',serif", 'mono': "'Cascadia Code',Consolas,monospace"}
+DOC_FONT_LABELS = {'default': 'Predeterminada', 'serif': 'Serif', 'mono': 'Monoespaciada'}
+DOC_SPACING_PX = {'compact': 12, 'normal': 20, 'relaxed': 32}
+DOC_SPACING_LABELS = {'compact': 'Compacto', 'normal': 'Normal', 'relaxed': 'Amplio'}
+DOC_TYPOGRAPHY_DEFAULT = {'size': 'normal', 'font': 'default', 'spacing': 'normal'}
+
+
+def doc_typography():
+    """Devuelve (dict con 'size'/'font'/'spacing', set_fn) — mismo patrón que remembered() para cualquier otra
+    preferencia de layout (compacto, modo de centro, ...), pero esta la comparten las 4 pantallas."""
+    prefs, set_prefs = remembered('doc_typography', default=DOC_TYPOGRAPHY_DEFAULT)
+    return (dict(prefs) if isinstance(prefs, dict) else dict(DOC_TYPOGRAPHY_DEFAULT)), set_prefs
+
+
+def live_doc_html(fragment, typography):
+    """Envuelve un fragmento HTML (de spec_report: render_sections_html/render_story_view_html/
+    render_test_case_view_html) en el contenedor que aplica la tipografía elegida — pasar a ui.html() tal cual."""
+    size = DOC_SIZE_PX.get(typography.get('size'), DOC_SIZE_PX['normal'])
+    font = DOC_FONT_STACKS.get(typography.get('font'), DOC_FONT_STACKS['default'])
+    gap = DOC_SPACING_PX.get(typography.get('spacing'), DOC_SPACING_PX['normal'])
+    return f'<div class="ltw-live-doc" style="--ltw-doc-size:{size}px;--ltw-doc-font:{font};--ltw-doc-gap:{gap}px">{fragment}</div>'
+
+
+def typography_button(on_change):
+    """Botón compacto (icono) + menú con 3 selects — tamaño de texto, tipo de letra, espaciado entre secciones.
+    `on_change()` se llama después de cada cambio para que el caller refresque su propia vista de documento
+    (el nuevo valor ya quedó guardado en remembered(), así que el próximo live_doc_html() ya lo usa)."""
+    typography, set_typography = doc_typography()
+
+    def pick(dimension, e):
+        typography[dimension] = e.value
+        set_typography(typography)
+        on_change()
+    with ui.button(icon='format_size').props('flat round dense').mark('doc-typography-button') \
+            .tooltip('Tamaño de texto, tipo de letra y espaciado del documento'):
+        with ui.menu().props('anchor="bottom right" self="top right" persistent'):
+            with ui.column().classes('p-3 gap-2').style('min-width:220px'):
+                ui.select(DOC_SIZE_LABELS, value=typography['size'], label='Tamaño de texto').props('outlined dense').classes('w-full') \
+                    .mark('doc-typography-size').on_value_change(lambda e: pick('size', e))
+                ui.select(DOC_FONT_LABELS, value=typography['font'], label='Tipo de letra').props('outlined dense').classes('w-full') \
+                    .mark('doc-typography-font').on_value_change(lambda e: pick('font', e))
+                ui.select(DOC_SPACING_LABELS, value=typography['spacing'], label='Espaciado entre secciones').props('outlined dense').classes('w-full') \
+                    .mark('doc-typography-spacing').on_value_change(lambda e: pick('spacing', e))
 
 # Captura de pantalla y video «slideshow» del propio Chat/Espacio de trabajo (Fase D) — nunca Playwright (no hay
 # navegador de prueba del lado del servidor para esas dos pantallas, es la UI misma de LTW), así que se hace en
@@ -401,6 +472,193 @@ def kv_editor(state, key_label='Nombre', value_label='Valor'):
         ui.button('Agregar', icon='add', on_click=lambda: (state.setdefault(f'nuevo_{len(state) + 1}', ''), rows.refresh())).props('flat dense color=primary')
     rows()
     return rows
+
+
+# --------------------------------------------------------------------------- Rediseño de Plantillas: motor
+# genérico de ENTRADA (recorre el árbol `body` de una plantilla — ver core.py, sección «plantillas») y el
+# visor de pestañas/vista dividida reutilizable (mismo recipe que construyó Historias de usuario, Fase 6).
+
+def _custom_list_editor(values, key, on_change):
+    """Lista tipo checklist genérica — mismo shape que ya usan Definición de Listo/Hecho: [{text, done}]. Si el
+    valor guardado no tiene esa forma (p. ej. quedó de cuando este field_key era otro field_type), se trata
+    como vacío en vez de reventar — nunca se asume la forma de un valor ya existente."""
+    items = values.get(key)
+    if not isinstance(items, list):
+        items = []
+        values[key] = items
+
+    @ui.refreshable
+    def rows():
+        if not items:
+            ui.label('Ninguno todavía.').classes('text-sm text-gray-400')
+        for item in items:
+            if not isinstance(item, dict):
+                item = {'text': str(item), 'done': False}
+            with ui.row().classes('items-center gap-2 w-full no-wrap'):
+                ui.checkbox(value=bool(item.get('done'))).on_value_change(lambda e, item=item: (item.__setitem__('done', e.value), on_change()))
+                ui.input(value=item.get('text', '')).props('outlined dense').classes('grow') \
+                    .on_value_change(lambda e, item=item: (item.__setitem__('text', e.value), on_change()))
+                ui.button(icon='delete', on_click=lambda _, item=item: (items.remove(item) if item in items else None, rows.refresh(), on_change())) \
+                    .props('flat round dense color=negative')
+    rows()
+    ui.button('Agregar', icon='add', on_click=lambda: (items.append({'text': '', 'done': False}), rows.refresh(), on_change())) \
+        .props('outline dense color=primary')
+
+
+def _custom_table_editor(values, key, on_change):
+    """Tabla genérica {headers: [str], rows: [[str]]} — filas y columnas editables. Mismo criterio que la lista:
+    un valor existente que no matchea esa forma se trata como una tabla nueva, vacía."""
+    raw = values.get(key)
+    if not isinstance(raw, dict) or not isinstance(raw.get('headers'), list):
+        raw = {'headers': ['Columna 1', 'Columna 2'], 'rows': []}
+        values[key] = raw
+
+    @ui.refreshable
+    def grid():
+        with ui.row().classes('items-center gap-2 w-full no-wrap'):
+            for i, h in enumerate(raw['headers']):
+                ui.input(value=h).props('outlined dense').classes('grow') \
+                    .on_value_change(lambda e, i=i: (raw['headers'].__setitem__(i, e.value), on_change()))
+            ui.button(icon='add', on_click=lambda: (raw['headers'].append(f'Columna {len(raw["headers"]) + 1}'),
+                      [r.append('') for r in raw['rows']], grid.refresh(), on_change())).props('flat round dense').tooltip('Agregar columna')
+        for row in raw['rows']:
+            while len(row) < len(raw['headers']):
+                row.append('')
+            with ui.row().classes('items-center gap-2 w-full no-wrap'):
+                for c in range(len(raw['headers'])):
+                    ui.input(value=row[c]).props('outlined dense').classes('grow') \
+                        .on_value_change(lambda e, row=row, c=c: (row.__setitem__(c, e.value), on_change()))
+                ui.button(icon='delete', on_click=lambda _, row=row: (raw['rows'].remove(row) if row in raw['rows'] else None, grid.refresh(), on_change())) \
+                    .props('flat round dense color=negative')
+    grid()
+    ui.button('Agregar fila', icon='add', on_click=lambda: (raw['rows'].append([''] * len(raw['headers'])), grid.refresh(), on_change())) \
+        .props('outline dense color=primary')
+
+
+def _custom_file_editor(values, key, on_change, accept):
+    """Imagen/adjunto: sube el archivo a core.ARTIFACTS (core.save_custom_field_file) y guarda solo la
+    referencia {id, filename, content_type, size} en `values` — nunca el blob."""
+    label = ui.label('')
+
+    def refresh_label():
+        ref = values.get(key)
+        label.set_text(f'Archivo: {ref["filename"]} ({ref.get("size", 0)} bytes)' if isinstance(ref, dict) and ref.get('filename') else 'Ningún archivo todavía.')
+
+    async def on_upload(event):
+        try:
+            raw = await read_upload(event)
+            values[key] = core.save_custom_field_file(raw, event.file.name, event.file.content_type)
+            refresh_label()
+            on_change()
+        except Exception as exc:
+            ui.notify(str(exc) or type(exc).__name__, type='negative', multi_line=True)
+    ui.upload(on_upload=on_upload, auto_upload=True).props(f'flat bordered accept="{accept}"').classes('w-full')
+    refresh_label()
+
+    def remove():
+        values[key] = None
+        refresh_label()
+        on_change()
+    ui.button('Quitar archivo', icon='close', on_click=remove).props('flat dense color=negative')
+
+
+def render_template_tree(body, values, known_renderers, on_change=None):
+    """Renderer genérico de ENTRADA para el árbol `body` de una plantilla (ver core.py, constantes
+    CUSTOM_FIELD_TYPES/KNOWN_*_FIELDS y _clean_template_body): recorre los nodos y, por cada 'field' —
+    - con `field_type is None` (un campo FIJO conocido: as_a, criteria, preconditions, ...): delega al editor
+      especializado ya construido para ese field_key, tomado de `known_renderers` (dict {field_key: callable
+      sin argumentos}) — cero regresión en las UX ya existentes.
+    - con `field_type` declarado (un campo NUEVO definido por la plantilla): renderiza un editor genérico según
+      el tipo, guardando el valor en `values[field_key]` (el dict `custom_fields` del registro, mutado en el
+      lugar — el caller es quien lo persiste al guardar).
+    Un nodo 'group' (sección/subsección) solo agrega un encabezado y recursión sobre sus `children`.
+    `on_change()` (sin argumentos) se llama después de cada edición — mismo espíritu que el document_view.
+    refresh() que ya usa cada página de Especificación. Dos nodos HERMANOS consecutivos con `width == 'half'`
+    quedan lado a lado en una fila de dos columnas (ver core.pair_rows) — el mismo `width` que ya gobernaba
+    esto en el documento exportado, ahora también acá."""
+    on_change = on_change or (lambda: None)
+
+    def render_node(node):
+        if node.get('kind') == 'group':
+            if node.get('label'):
+                ui.label(node['label']).classes('font-semibold mt-2')
+            render_template_tree(node.get('children') or [], values, known_renderers, on_change)
+            return
+        field_key, field_type = node.get('field_key'), node.get('field_type')
+        if field_type is None:
+            renderer = known_renderers.get(field_key)
+            if renderer:
+                renderer()
+            return
+        label = node.get('label') or field_key
+        if field_type in ('text', 'textarea'):
+            # label directo en el widget (mismo estilo que el resto de la app, p. ej. ui.input('Nombre', ...))
+            # — no un ui.label aparte arriba: así el campo se puede ubicar por su propio prop `label`.
+            value = values.get(field_key) if isinstance(values.get(field_key), str) else ''
+            widget = ui.textarea if field_type == 'textarea' else ui.input
+            widget(label, value=value).props('outlined dense' + (' autogrow' if field_type == 'textarea' else '')).classes('w-full') \
+                .on_value_change(lambda e, k=field_key: (values.__setitem__(k, e.value), on_change()))
+        else:
+            ui.label(label).classes('text-sm text-gray-500 mt-1')
+            if field_type == 'list':
+                _custom_list_editor(values, field_key, on_change)
+            elif field_type == 'table':
+                _custom_table_editor(values, field_key, on_change)
+            elif field_type in ('image', 'attachment'):
+                _custom_file_editor(values, field_key, on_change, 'image/*' if field_type == 'image' else '*/*')
+
+    for row in core.pair_rows([n for n in (body or []) if isinstance(n, dict)]):
+        if len(row) == 2:
+            with ui.row().classes('w-full gap-3 no-wrap items-start'):
+                for node in row:
+                    with ui.column().classes('gap-1').style('flex:1 1 0;min-width:0'):
+                        render_node(node)
+        else:
+            render_node(row[0])
+
+
+def tabbed_split_view(panels, mode='tabs', max_open=3, compact=False):
+    """Visor de pestañas/vista dividida reutilizable — mismo recipe que Historias de usuario (Fase 6:
+    center_area/nested_split), factorizado para que lo use también el visor interactivo de reportes.
+    `panels`: lista de (key, label, icon, render) ya en el orden deseado; `render()` dibuja el contenido
+    completo de ese panel (esta función ya le pone su propia tarjeta con encabezado). `mode='tabs'` oculta la
+    barra si queda un solo panel; `mode='split'` los reparte en splitters anidados (hasta `max_open`, 2 o 3)."""
+    keys = [p[0] for p in panels][:max_open]
+    by_key = {p[0]: p for p in panels}
+
+    def panel_card(key):
+        _, label, icon, render = by_key[key]
+        with ui.card().classes('w-full').style('height:100%;overflow:auto' if compact else ''):
+            with ui.row().classes('items-center gap-1'):
+                ui.icon(icon, size='xs', color='grey')
+                ui.label(label).classes('text-xs text-gray-500')
+            render()
+
+    def nested_split(ks):
+        if len(ks) == 1:
+            panel_card(ks[0])
+            return
+        with ui.splitter(value=round(100 / len(ks))).classes('w-full').style('height:100%' if compact else '') as sp:
+            with sp.before:
+                panel_card(ks[0])
+            with sp.after:
+                nested_split(ks[1:])
+
+    if not keys:
+        ui.label('Nada para mostrar todavía.').classes('text-sm text-gray-400')
+    elif mode == 'split' and len(keys) >= 2:
+        nested_split(keys)
+    elif len(keys) == 1:
+        panel_card(keys[0])
+    else:
+        with ui.tabs().props('dense no-caps').classes('w-full') as tabs:
+            for key in keys:
+                _, label, icon, _ = by_key[key]
+                ui.tab(key, label=label, icon=icon)
+        with ui.tab_panels(tabs, value=keys[0]).classes('w-full').style('height:100%' if compact else ''):
+            for key in keys:
+                with ui.tab_panel(key).classes('p-0').style('height:100%' if compact else ''):
+                    panel_card(key)
 
 
 # --------------------------------------------------------------------------- run details
