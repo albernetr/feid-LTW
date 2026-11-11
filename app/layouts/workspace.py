@@ -18,7 +18,7 @@ class WorkspaceHandle:
     """Lo que `workspace_layout()` devuelve — para que la página anfitriona pueda, además de lo que ya hace el
     usuario con el mouse (clic en el riel, arrastrar al centro), disparar las mismas acciones por código (p.
     ej. un botón de menú "mover tal panel al centro")."""
-    add_to_center: Callable[[str], None]
+    add_to_center: Callable[[str], bool]
     remove_from_center: Callable[[str], None]
     toggle_center_mode: Callable[[], None]
 
@@ -55,6 +55,8 @@ def workspace_layout(
     side_title: str = 'Fields',
     side_icon: str = 'tune',
     side_extra: Optional[Callable[[], None]] = None,
+    side_footer: Optional[Callable[[], None]] = None,
+    center_footer: Optional[Callable[[], None]] = None,
     fill_height: bool = True,
 ) -> WorkspaceHandle:
     """Dibuja el layout completo (llamarlo directamente adentro de la página, no como context manager — todo
@@ -63,6 +65,12 @@ def workspace_layout(
     - `side_extra`: contenido fijo, SIEMPRE visible (no gobernado por ninguna pestaña), entre el título del
       panel lateral y el riel — para un control que tiene que verse pase lo que pase se seleccione en el riel
       (p. ej. un selector de qué conjunto de paneles usar).
+    - `side_footer`: contenido aparte, debajo de la tarjeta del panel lateral (su propia tarjeta/elemento, no
+      dentro de la misma) — para algo que convive con "Campos" pero no es un campo más (p. ej. un panel que
+      también puede vivir en el centro o abajo, y que acá es solo una de sus ubicaciones posibles).
+    - `center_footer`: contenido fijo al final de la columna del centro, después de los paneles abiertos —
+      para algo que se reparte el alto con el centro en vez de ocupar un lugar fijo de la página (requiere
+      `fill_height=True`: con `fill_height=False` no hay ningún alto que repartir).
 
     - `side_panels`: aparecen en el riel vertical de la derecha Y como pestaña del panel lateral; arrastrables
       al centro (una copia en vivo, no un movimiento — ver `Panel.render`) si `draggable=True`.
@@ -124,19 +132,25 @@ def workspace_layout(
             main_split.set_value(S.get('split_before_collapse', split_value))
 
     def add_to_center(key):
-        if not key or key not in all_panels or key in S['center_open']:
-            return
+        if not key or key not in all_panels:
+            return False
+        if key in S['center_open']:
+            return True
         if len(S['center_open']) >= max_center_panels:
             ui.notify(f'Ya tenés {max_center_panels} paneles abiertos en el centro — cerrá uno primero', type='warning')
-            return
+            return False
         S['center_open'].append(key)
         center_area.refresh()
+        return True
 
     def remove_from_center(key):
         if key == effective_fallback or key not in S['center_open']:
             return
+        panel = all_panels.get(key)
         S['center_open'].remove(key)
         center_area.refresh()
+        if panel and panel.on_remove:
+            panel.on_remove()
 
     def toggle_center_mode():
         S['center_mode'] = 'split' if S['center_mode'] == 'tabs' else 'tabs'
@@ -186,6 +200,8 @@ def workspace_layout(
                     for key in open_keys:
                         with ui.tab_panel(key).classes('p-0').style('height:100%'):
                             panel_card(key)
+            if center_footer and fill_height:
+                center_footer()
 
     @ui.refreshable
     def fields_section():
@@ -215,8 +231,8 @@ def workspace_layout(
                       on_change=lambda e: set_pref(f'{prefix}_split_value', e.value)) \
             .classes('w-full').style('height:100%' if fill_height else '').mark(f'{prefix}-main-split') as main_split:
         with main_split.after:
-            if side_panels:
-                with ui.column().classes('w-full gap-4').style('height:100%;overflow:auto' if fill_height else ''):
+            with ui.column().classes('w-full gap-4').style('height:100%;overflow:auto' if fill_height else ''):
+                if side_panels:
                     with ui.card().classes('w-full p-0').style('overflow:visible' if fill_height else ''):
                         with ui.row().classes('items-center gap-2 p-4 pb-0'):
                             ui.icon(side_icon, color='primary').classes('text-2xl')
@@ -225,6 +241,8 @@ def workspace_layout(
                             with ui.column().classes('w-full gap-3 px-4 pt-2'):
                                 side_extra()
                         fields_section()
+                if side_footer:
+                    side_footer()
         with main_split.before:
             with ui.column().classes('w-full gap-4 min-w-0').style('height:100%' if fill_height else ''):
                 center_area()
