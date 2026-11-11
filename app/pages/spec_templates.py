@@ -2,6 +2,7 @@ import re
 from nicegui import ui
 from .. import core, spec_report
 from .common import frame, guard, confirm, empty_state, require_project, open_evidence_in_new_tab, protected_page, remembered, doc_typography, live_doc_html, typography_button
+from ..layouts import Panel, workspace_layout
 
 KIND_LABELS = {'input': 'Entrada', 'output': 'Salida'}
 APPLIES_LABELS = {'user_story': 'Historia de usuario', 'test_case': 'Caso de prueba', 'report': 'Reporte'}
@@ -103,25 +104,19 @@ def spec_template_detail(id: str = ''):
         if not require_project():
             return
         pid = core.get_active_project_id()
-        # Mismo layout que Historias de usuario (ver user_stories.py::story_detail): documento/vista previa al
-        # centro-izquierda, "Campos" (acá: Configuración) a la derecha en pestañas con riel de íconos, separador
-        # ajustable, colapsable con un clic en el ícono ya activo (estilo VS Code), y modo compacto/scroll completo.
+        # Mismo layout que Historias de usuario (ver user_stories.py::story_detail) y Casos de prueba (ver
+        # test_case_specs.py::test_spec_detail), vía workspace_layout (Nivel 1): documento/vista previa al
+        # centro-izquierda, "Configuración" a la derecha en pestañas con riel de íconos (general/secciones),
+        # separador ajustable, colapsable con un clic en el ícono ya activo, modo compacto/scroll completo.
         compact, set_compact = remembered('template_layout_compact', default=True)
-        main_split_value, set_main_split_value_pref = remembered('template_split_width', default=75)
-        S = {'active_field_tab': 'general', 'fields_collapsed': False}
 
-        def handle_rail_click(key):
-            if S['active_field_tab'] == key:
-                S['fields_collapsed'] = not S['fields_collapsed']
-            else:
-                S['active_field_tab'] = key
-                S['fields_collapsed'] = False
-            field_panels.set_visibility(not S['fields_collapsed'])
-            if S['fields_collapsed']:
-                S['split_before_collapse'] = main_split.value
-                main_split.set_value(95)
-            else:
-                main_split.set_value(S.get('split_before_collapse', main_split_value))
+        # Persistencia de workspace_layout remapeada a la clave vieja de ancho de separador
+        # (template_split_width), para no perder la preferencia ya guardada de nadie con esta migración.
+        def get_pref(key, default):
+            return remembered('template_split_width' if key.endswith('_split_value') else key, default)[0]
+
+        def set_pref(key, value):
+            remembered('template_split_width' if key.endswith('_split_value') else key)[1](value)
 
         current = core.get('spec_templates', id) if id else None
         if id and current is None:
@@ -138,12 +133,14 @@ def spec_template_detail(id: str = ''):
         # garantiza que render_node (que sí asume la forma de árbol) nunca reciba uno crudo.
         d = {'body': core.normalize_template_body((current or {}).get('body', []), (current or {}).get('applies_to', 'report'))}
 
+        # name/description/kind/applies_to/body_rows: se asignan recién dentro de render_general/render_sections
+        # (nonlocal) — ambos corren durante la llamada a workspace_layout, antes de que el usuario pueda
+        # disparar _refresh/preview/save, así que están siempre asignados para cuando de verdad se necesitan.
+        name = description = kind = applies_to = body_rows = None
+
         def _refresh():
-            # body_rows/document_view se definen más abajo en esta misma función — Python resuelve nombres de
-            # alcance envolvente en el momento de la LLAMADA, no en el de la definición de este closure (mismo
-            # patrón ya usado en user_stories.py entre criteria_rows y document_view), así que referenciarlos
-            # acá arriba es seguro siempre que ya existan cuando el usuario de verdad haga clic en algo.
-            body_rows.refresh()
+            if body_rows:
+                body_rows.refresh()
             document_view.refresh()
 
         def toggle_compact():
@@ -173,208 +170,202 @@ def spec_template_detail(id: str = ''):
                         .tooltip('Cambiar a modo con scroll completo' if compact else 'Cambiar a modo compacto (sin scroll, ancho completo)')
                     typography_button(lambda: document_view.refresh())
 
-            with ui.element('div').classes('w-full').style('height: calc(100vh - 210px)' if compact else ''):
-                with ui.splitter(value=main_split_value, limits=(40, 96), on_change=lambda e: set_main_split_value_pref(e.value)) \
-                        .classes('w-full').style('height:100%' if compact else '') as main_split:
-                    with main_split.after:
-                        with ui.column().classes('w-full gap-4').style('height:100%;overflow:auto' if compact else ''):
-                            with ui.card().classes('w-full p-0').style('overflow:visible' if compact else ''):
-                                with ui.row().classes('items-center gap-2 p-4 pb-0'):
-                                    ui.icon('tune', color='primary').classes('text-2xl')
-                                    ui.label('Configuración').classes('text-xl font-semibold')
+            def render_general():
+                nonlocal name, description, kind, applies_to
+                name = ui.input('Nombre', value=(current or {}).get('name', '')).props('outlined dense').classes('w-full').mark('template-name')
+                description = ui.textarea('Descripción (opcional)', value=(current or {}).get('description', '')).props('outlined dense autogrow').classes('w-full')
+                with ui.row().classes('w-full gap-3'):
+                    kind = ui.select(KIND_LABELS, value=(current or {}).get('kind', 'input'), label='Tipo').props('outlined dense').classes('grow').mark('template-kind')
+                    applies_to = ui.select(APPLIES_LABELS, value=(current or {}).get('applies_to', 'user_story'), label='Aplica a').props('outlined dense').classes('grow').mark('template-applies-to')
+                if disabled:
+                    name.disable(); description.disable(); kind.disable(); applies_to.disable()
 
-                                with ui.row().classes('w-full no-wrap gap-0').style('min-height:420px;justify-content:flex-end'):
-                                    with ui.tab_panels(None, value='general').props('vertical').style('flex:1 1 0;min-width:0;padding:16px') as field_panels:
-                                        with ui.tab_panel('general').classes('gap-3 p-0'):
-                                            name = ui.input('Nombre', value=(current or {}).get('name', '')).props('outlined dense').classes('w-full').mark('template-name')
-                                            description = ui.textarea('Descripción (opcional)', value=(current or {}).get('description', '')).props('outlined dense autogrow').classes('w-full')
-                                            with ui.row().classes('w-full gap-3'):
-                                                kind = ui.select(KIND_LABELS, value=(current or {}).get('kind', 'input'), label='Tipo').props('outlined dense').classes('grow').mark('template-kind')
-                                                applies_to = ui.select(APPLIES_LABELS, value=(current or {}).get('applies_to', 'user_story'), label='Aplica a').props('outlined dense').classes('grow').mark('template-applies-to')
-                                            if disabled:
-                                                name.disable(); description.disable(); kind.disable(); applies_to.disable()
+            def render_sections():
+                nonlocal body_rows
+                with ui.row().classes('items-center justify-between w-full'):
+                    ui.label('Secciones y campos').classes('font-semibold')
+                    ui.icon('info', size='xs', color='grey').classes('cursor-help').tooltip(
+                        'Un «campo existente» ya tiene su propio editor (Como/Quiero/Para, criterios, pasos, ...) y no '
+                        'declara tipo. Un «campo nuevo» lo define esta plantilla: elegí qué tipo de dato es. Una '
+                        '«sección» agrupa campos (o subsecciones, anidables) bajo un nombre. Cualquier campo o sección '
+                        'puede ser Ancho completo o Mitad — dos nodos hermanos consecutivos en Mitad quedan lado a lado, '
+                        'tanto en el panel de Campos como en el documento; en una plantilla de salida, además puede '
+                        'mostrarse como pestaña propia en el visor interactivo.')
 
-                                        with ui.tab_panel('sections').classes('gap-3 p-0'):
-                                            with ui.row().classes('items-center justify-between w-full'):
-                                                ui.label('Secciones y campos').classes('font-semibold')
-                                                ui.icon('info', size='xs', color='grey').classes('cursor-help').tooltip(
-                                                    'Un «campo existente» ya tiene su propio editor (Como/Quiero/Para, criterios, pasos, ...) y no '
-                                                    'declara tipo. Un «campo nuevo» lo define esta plantilla: elegí qué tipo de dato es. Una '
-                                                    '«sección» agrupa campos (o subsecciones, anidables) bajo un nombre. Cualquier campo o sección '
-                                                    'puede ser Ancho completo o Mitad — dos nodos hermanos consecutivos en Mitad quedan lado a lado, '
-                                                    'tanto en el panel de Campos como en el documento; en una plantilla de salida, además puede '
-                                                    'mostrarse como pestaña propia en el visor interactivo.')
+                @ui.refreshable
+                def _body_rows():
+                    is_output = kind.value == 'output'
+                    known = core.KNOWN_FIELDS_BY_APPLIES_TO.get(applies_to.value, ())
+                    labels = KNOWN_FIELD_LABELS.get(applies_to.value, {})
+                    # Una plantilla de SALIDA puede sugerir reusar un campo custom que ya
+                    # existe en alguna plantilla de ENTRADA del proyecto, en vez de que
+                    # quien la edita tenga que escribir a mano un field_key y confiar en
+                    # que coincida — ver core.custom_field_catalog.
+                    suggestions = core.custom_field_catalog(pid) if is_output else []
 
-                                            @ui.refreshable
-                                            def body_rows():
-                                                is_output = kind.value == 'output'
-                                                known = core.KNOWN_FIELDS_BY_APPLIES_TO.get(applies_to.value, ())
-                                                labels = KNOWN_FIELD_LABELS.get(applies_to.value, {})
-                                                # Una plantilla de SALIDA puede sugerir reusar un campo custom que ya
-                                                # existe en alguna plantilla de ENTRADA del proyecto, en vez de que
-                                                # quien la edita tenga que escribir a mano un field_key y confiar en
-                                                # que coincida — ver core.custom_field_catalog.
-                                                suggestions = core.custom_field_catalog(pid) if is_output else []
+                    def render_node(node, siblings, index, depth):
+                        def move(delta, siblings=siblings, index=index):
+                            j = index + delta
+                            if 0 <= j < len(siblings):
+                                siblings[index], siblings[j] = siblings[j], siblings[index]
+                                _refresh()
 
-                                                def render_node(node, siblings, index, depth):
-                                                    def move(delta, siblings=siblings, index=index):
-                                                        j = index + delta
-                                                        if 0 <= j < len(siblings):
-                                                            siblings[index], siblings[j] = siblings[j], siblings[index]
-                                                            _refresh()
+                        with ui.column().classes('w-full gap-1').style(f'margin-left:{depth * 28}px'):
+                            with ui.row().classes('items-center gap-2 w-full no-wrap'):
+                                ui.icon((node.get('icon') or 'folder') if node['kind'] == 'group' else 'description', size='sm', color='grey')
+                                ui.input('Etiqueta', value=node.get('label', '')).props('outlined dense').classes('grow') \
+                                    .mark('template-node-label').on_value_change(lambda e, node=node: node.__setitem__('label', e.value)) \
+                                    .on('blur', lambda: document_view.refresh())
+                                if node['kind'] == 'group':
+                                    # 'option'/'selected-item': la lista (y el valor ya elegido) muestran el ícono real
+                                    # junto al nombre, no solo texto. OJO: para un ui.select con `options` dict, NiceGUI
+                                    # NUNCA manda la CLAVE al cliente — solo {value: índice, label: texto} (ver
+                                    # ChoiceElement._update_options) — así que `props.opt.value` es un índice, no 'folder'.
+                                    # Por eso el nombre del ícono va codificado DENTRO del label (separador IICON_SEP,
+                                    # nunca se muestra: el slot lo separa antes de pintar nada) en vez de leerlo de `value`.
+                                    # La variable del slot que expone el runtime de NiceGUI (ver static/nicegui.js:
+                                    # Vue.h({props: {props: {...}}}, {props: slotProps})) se llama `props`, NO `scope`
+                                    # (ese es el nombre habitual en ejemplos sueltos de Quasar/Vue, acá es otro).
+                                    icon_options = {k: f'{k}{_ICON_SEP}{v}' for k, v in GROUP_ICON_OPTIONS.items()}
+                                    icon_select = ui.select(icon_options, value=node.get('icon') or 'folder', label='Ícono') \
+                                        .props('outlined dense').classes('w-44').mark('template-node-icon') \
+                                        .on_value_change(lambda e, node=node: (node.__setitem__('icon', e.value), _refresh()))
+                                    icon_select.add_slot('option', '''
+                                        <q-item v-bind="props.itemProps">
+                                            <q-item-section avatar><q-icon :name="props.opt.label.split('@@')[0]" /></q-item-section>
+                                            <q-item-section><q-item-label>{{ props.opt.label.split('@@')[1] }}</q-item-label></q-item-section>
+                                        </q-item>
+                                    ''')
+                                    icon_select.add_slot('selected-item', '''
+                                        <div class="row items-center no-wrap">
+                                            <q-icon :name="props.opt.label.split('@@')[0]" class="q-mr-xs" />
+                                            <div>{{ props.opt.label.split('@@')[1] }}</div>
+                                        </div>
+                                    ''')
+                                if node['kind'] == 'field':
+                                    options = {k: labels.get(k, k) for k in known}
+                                    options[CUSTOM_SENTINEL] = 'Campo nuevo (definido por esta plantilla)'
+                                    for i, s in enumerate(suggestions):
+                                        options[f'{SUGGEST_PREFIX}{i}'] = (f'{s["field_key"]} · {core.CUSTOM_FIELD_TYPE_LABELS.get(s["field_type"], s["field_type"])} '
+                                                                           f'(de «{s["template_name"]}»)')
+                                    choice = node['field_key'] if node['field_key'] in known else CUSTOM_SENTINEL
 
-                                                    with ui.column().classes('w-full gap-1').style(f'margin-left:{depth * 28}px'):
-                                                        with ui.row().classes('items-center gap-2 w-full no-wrap'):
-                                                            ui.icon((node.get('icon') or 'folder') if node['kind'] == 'group' else 'description', size='sm', color='grey')
-                                                            ui.input('Etiqueta', value=node.get('label', '')).props('outlined dense').classes('grow') \
-                                                                .mark('template-node-label').on_value_change(lambda e, node=node: node.__setitem__('label', e.value)) \
-                                                                .on('blur', lambda: document_view.refresh())
-                                                            if node['kind'] == 'group':
-                                                                # 'option'/'selected-item': la lista (y el valor ya elegido) muestran el ícono real
-                                                                # junto al nombre, no solo texto. OJO: para un ui.select con `options` dict, NiceGUI
-                                                                # NUNCA manda la CLAVE al cliente — solo {value: índice, label: texto} (ver
-                                                                # ChoiceElement._update_options) — así que `props.opt.value` es un índice, no 'folder'.
-                                                                # Por eso el nombre del ícono va codificado DENTRO del label (separador IICON_SEP,
-                                                                # nunca se muestra: el slot lo separa antes de pintar nada) en vez de leerlo de `value`.
-                                                                # La variable del slot que expone el runtime de NiceGUI (ver static/nicegui.js:
-                                                                # Vue.h({props: {props: {...}}}, {props: slotProps})) se llama `props`, NO `scope`
-                                                                # (ese es el nombre habitual en ejemplos sueltos de Quasar/Vue, acá es otro).
-                                                                icon_options = {k: f'{k}{_ICON_SEP}{v}' for k, v in GROUP_ICON_OPTIONS.items()}
-                                                                icon_select = ui.select(icon_options, value=node.get('icon') or 'folder', label='Ícono') \
-                                                                    .props('outlined dense').classes('w-44').mark('template-node-icon') \
-                                                                    .on_value_change(lambda e, node=node: (node.__setitem__('icon', e.value), _refresh()))
-                                                                icon_select.add_slot('option', '''
-                                                                    <q-item v-bind="props.itemProps">
-                                                                        <q-item-section avatar><q-icon :name="props.opt.label.split('@@')[0]" /></q-item-section>
-                                                                        <q-item-section><q-item-label>{{ props.opt.label.split('@@')[1] }}</q-item-label></q-item-section>
-                                                                    </q-item>
-                                                                ''')
-                                                                icon_select.add_slot('selected-item', '''
-                                                                    <div class="row items-center no-wrap">
-                                                                        <q-icon :name="props.opt.label.split('@@')[0]" class="q-mr-xs" />
-                                                                        <div>{{ props.opt.label.split('@@')[1] }}</div>
-                                                                    </div>
-                                                                ''')
-                                                            if node['kind'] == 'field':
-                                                                options = {k: labels.get(k, k) for k in known}
-                                                                options[CUSTOM_SENTINEL] = 'Campo nuevo (definido por esta plantilla)'
-                                                                for i, s in enumerate(suggestions):
-                                                                    options[f'{SUGGEST_PREFIX}{i}'] = (f'{s["field_key"]} · {core.CUSTOM_FIELD_TYPE_LABELS.get(s["field_type"], s["field_type"])} '
-                                                                                                       f'(de «{s["template_name"]}»)')
-                                                                choice = node['field_key'] if node['field_key'] in known else CUSTOM_SENTINEL
-
-                                                                def on_choice(e, node=node):
-                                                                    if e.value == CUSTOM_SENTINEL:
-                                                                        if node['field_key'] in known:
-                                                                            node['field_key'] = _slug(node.get('label'))
-                                                                        node['field_type'] = node.get('field_type') or 'text'
-                                                                    elif e.value.startswith(SUGGEST_PREFIX):
-                                                                        s = suggestions[int(e.value[len(SUGGEST_PREFIX):])]
-                                                                        node['field_key'] = s['field_key']
-                                                                        node['field_type'] = s['field_type']
-                                                                        if not node.get('label'):
-                                                                            node['label'] = s['label']
-                                                                    else:
-                                                                        node['field_key'] = e.value
-                                                                        node['field_type'] = None
-                                                                    _refresh()
-                                                                ui.select(options, value=choice, label='Campo').props('outlined dense').classes('w-64') \
-                                                                    .mark('template-node-field').on_value_change(on_choice)
-                                                                if choice == CUSTOM_SENTINEL:
-                                                                    ui.select(core.CUSTOM_FIELD_TYPE_LABELS, value=node.get('field_type') or 'text', label='Tipo') \
-                                                                        .props('outlined dense').classes('w-40').mark('template-node-type') \
-                                                                        .on_value_change(lambda e, node=node: node.__setitem__('field_type', e.value))
-                                                            ui.select({'full': 'Completo', 'half': 'Mitad'}, value=node.get('width', 'full'), label='Ancho') \
-                                                                .props('outlined dense').classes('w-32').mark('template-node-width') \
-                                                                .on_value_change(lambda e, node=node: (node.__setitem__('width', e.value), _refresh()))
-                                                            if is_output and node['kind'] == 'group':
-                                                                ui.checkbox('Pestaña en el visor', value=bool(node.get('as_tab'))).mark('template-node-as-tab') \
-                                                                    .on_value_change(lambda e, node=node: node.__setitem__('as_tab', e.value))
-                                                            if not disabled:
-                                                                ui.button(icon='arrow_upward', on_click=lambda: move(-1)).props('flat round dense').mark('template-node-up')
-                                                                ui.button(icon='arrow_downward', on_click=lambda: move(1)).props('flat round dense').mark('template-node-down')
-                                                                ui.button(icon='delete', on_click=lambda node=node: (siblings.remove(node), _refresh())) \
-                                                                    .mark('template-node-delete') \
-                                                                    .props('flat round dense color=negative')
-                                                        if node['kind'] == 'group':
-                                                            children = node.setdefault('children', [])
-                                                            for child_index, child in enumerate(children):
-                                                                render_node(child, children, child_index, depth + 1)
-                                                            if not disabled:
-                                                                with ui.row().classes('gap-2').style(f'margin-left:{(depth + 1) * 28}px'):
-                                                                    ui.button('Agregar campo', icon='add', on_click=lambda children=children: (children.append(_new_field_node()), _refresh())) \
-                                                                        .props('flat dense color=primary').mark('template-add-child-field')
-                                                                    ui.button('Agregar grupo', icon='add', on_click=lambda children=children: (children.append(_new_group_node()), _refresh())) \
-                                                                        .props('flat dense color=primary').mark('template-add-child-group')
-
-                                                if not d['body']:
-                                                    ui.label('Ninguno todavía.').classes('text-sm text-gray-400')
-                                                for i, node in enumerate(d['body']):
-                                                    render_node(node, d['body'], i, 0)
-                                            body_rows()
-                                            kind.on_value_change(lambda e: _refresh())
-                                            applies_to.on_value_change(lambda e: _refresh())
-
-                                            if not disabled:
-                                                with ui.row().classes('gap-2 mt-2'):
-                                                    ui.button('Agregar campo', icon='add', on_click=lambda: (d['body'].append(_new_field_node()), _refresh())) \
-                                                        .props('outline dense color=primary').mark('template-add-field')
-                                                    ui.button('Agregar sección', icon='add', on_click=lambda: (d['body'].append(_new_group_node()), _refresh())) \
-                                                        .props('outline dense color=primary').mark('template-add-group')
-
-                                    with ui.tabs().props('vertical dense no-caps').classes('shrink-0').style('width:56px;border-left:1px solid #e5e7eb') as field_rail:
-                                        ui.tab('general', label='', icon='tune').tooltip('General').mark('template-rail-general') \
-                                            .on('click', lambda: handle_rail_click('general'))
-                                        ui.tab('sections', label='', icon='account_tree').tooltip('Secciones y campos').mark('template-rail-sections') \
-                                            .on('click', lambda: handle_rail_click('sections'))
-                                field_panels.bind_value_from(field_rail, 'value')
-                                field_rail.set_value('general')
-
-                                if is_global:
-                                    def adopt():
-                                        core.adopt_template(current['id'], pid)
-                                        ui.notify('Plantilla adoptada a este proyecto', type='positive')
-                                        ui.navigate.to('/spec-templates')
-                                    ui.button('Adoptar a este proyecto', icon='content_copy', on_click=guard(adopt)).props('color=primary mt-2').mark('template-adopt')
-                                else:
-                                    def save():
-                                        if current:
-                                            core.update_spec_template(current['id'], name.value, description.value or '', d['body'])
-                                            ui.notify('Plantilla actualizada', type='positive')
-                                            ui.navigate.to(f'/spec-templates/edit?id={current["id"]}')
+                                    def on_choice(e, node=node):
+                                        if e.value == CUSTOM_SENTINEL:
+                                            if node['field_key'] in known:
+                                                node['field_key'] = _slug(node.get('label'))
+                                            node['field_type'] = node.get('field_type') or 'text'
+                                        elif e.value.startswith(SUGGEST_PREFIX):
+                                            s = suggestions[int(e.value[len(SUGGEST_PREFIX):])]
+                                            node['field_key'] = s['field_key']
+                                            node['field_type'] = s['field_type']
+                                            if not node.get('label'):
+                                                node['label'] = s['label']
                                         else:
-                                            template = core.create_spec_template(name.value, kind.value, applies_to.value, d['body'], pid, description.value or '')
-                                            ui.notify('Plantilla creada', type='positive')
-                                            ui.navigate.to(f'/spec-templates/edit?id={template["id"]}')
-                                    ui.button('Guardar cambios' if current else 'Crear plantilla', icon='save', on_click=guard(save)).props('color=primary mt-2').mark('template-save')
+                                            node['field_key'] = e.value
+                                            node['field_type'] = None
+                                        _refresh()
+                                    ui.select(options, value=choice, label='Campo').props('outlined dense').classes('w-64') \
+                                        .mark('template-node-field').on_value_change(on_choice)
+                                    if choice == CUSTOM_SENTINEL:
+                                        ui.select(core.CUSTOM_FIELD_TYPE_LABELS, value=node.get('field_type') or 'text', label='Tipo') \
+                                            .props('outlined dense').classes('w-40').mark('template-node-type') \
+                                            .on_value_change(lambda e, node=node: node.__setitem__('field_type', e.value))
+                                ui.select({'full': 'Completo', 'half': 'Mitad'}, value=node.get('width', 'full'), label='Ancho') \
+                                    .props('outlined dense').classes('w-32').mark('template-node-width') \
+                                    .on_value_change(lambda e, node=node: (node.__setitem__('width', e.value), _refresh()))
+                                if is_output and node['kind'] == 'group':
+                                    ui.checkbox('Pestaña en el visor', value=bool(node.get('as_tab'))).mark('template-node-as-tab') \
+                                        .on_value_change(lambda e, node=node: node.__setitem__('as_tab', e.value))
+                                if not disabled:
+                                    ui.button(icon='arrow_upward', on_click=lambda: move(-1)).props('flat round dense').mark('template-node-up')
+                                    ui.button(icon='arrow_downward', on_click=lambda: move(1)).props('flat round dense').mark('template-node-down')
+                                    ui.button(icon='delete', on_click=lambda node=node: (siblings.remove(node), _refresh())) \
+                                        .mark('template-node-delete') \
+                                        .props('flat round dense color=negative')
+                            if node['kind'] == 'group':
+                                children = node.setdefault('children', [])
+                                for child_index, child in enumerate(children):
+                                    render_node(child, children, child_index, depth + 1)
+                                if not disabled:
+                                    with ui.row().classes('gap-2').style(f'margin-left:{(depth + 1) * 28}px'):
+                                        ui.button('Agregar campo', icon='add', on_click=lambda children=children: (children.append(_new_field_node()), _refresh())) \
+                                            .props('flat dense color=primary').mark('template-add-child-field')
+                                        ui.button('Agregar grupo', icon='add', on_click=lambda children=children: (children.append(_new_group_node()), _refresh())) \
+                                            .props('flat dense color=primary').mark('template-add-child-group')
 
-                                    if current and is_mine:
-                                        def promote():
-                                            core.promote_template(current['id'])
-                                            ui.notify('Copia publicada en la biblioteca global', type='positive')
-                                            ui.navigate.to('/spec-templates')
-                                        ui.button('Promover a la biblioteca global', icon='publish', on_click=guard(promote)).props('outline dense color=primary mt-2').mark('template-promote')
+                    if not d['body']:
+                        ui.label('Ninguno todavía.').classes('text-sm text-gray-400')
+                    for i, node in enumerate(d['body']):
+                        render_node(node, d['body'], i, 0)
+                body_rows = _body_rows
+                body_rows()
+                kind.on_value_change(lambda e: _refresh())
+                applies_to.on_value_change(lambda e: _refresh())
 
-                                        def remove(t=current):
-                                            core.delete_spec_template(t['id'])
-                                            ui.notify('Plantilla eliminada', type='positive')
-                                            ui.navigate.to('/spec-templates')
-                                        ui.button('Eliminar plantilla', icon='delete', on_click=lambda: confirm(f'¿Eliminar la plantilla «{current["name"]}»?', remove)) \
-                                            .props('flat dense color=negative mt-2').mark('template-delete')
+                if not disabled:
+                    with ui.row().classes('gap-2 mt-2'):
+                        ui.button('Agregar campo', icon='add', on_click=lambda: (d['body'].append(_new_field_node()), _refresh())) \
+                            .props('outline dense color=primary').mark('template-add-field')
+                        ui.button('Agregar sección', icon='add', on_click=lambda: (d['body'].append(_new_group_node()), _refresh())) \
+                            .props('outline dense color=primary').mark('template-add-group')
 
-                    with main_split.before:
-                        with ui.column().classes('w-full gap-4 min-w-0').style('height:100%' if compact else ''):
-                            with ui.card().classes('w-full').mark('template-document').style('height:100%;overflow:auto' if compact else ''):
-                                ui.label('Con datos de ejemplo — para abrirla en una pestaña nueva usá el ícono junto al título.').classes('text-xs text-gray-500')
+            def side_extra():
+                if is_global:
+                    def adopt():
+                        core.adopt_template(current['id'], pid)
+                        ui.notify('Plantilla adoptada a este proyecto', type='positive')
+                        ui.navigate.to('/spec-templates')
+                    ui.button('Adoptar a este proyecto', icon='content_copy', on_click=guard(adopt)).props('color=primary').mark('template-adopt')
+                else:
+                    def save():
+                        if current:
+                            core.update_spec_template(current['id'], name.value, description.value or '', d['body'])
+                            ui.notify('Plantilla actualizada', type='positive')
+                            ui.navigate.to(f'/spec-templates/edit?id={current["id"]}')
+                        else:
+                            template = core.create_spec_template(name.value, kind.value, applies_to.value, d['body'], pid, description.value or '')
+                            ui.notify('Plantilla creada', type='positive')
+                            ui.navigate.to(f'/spec-templates/edit?id={template["id"]}')
+                    ui.button('Guardar cambios' if current else 'Crear plantilla', icon='save', on_click=guard(save)).props('color=primary').mark('template-save')
 
-                                @ui.refreshable
-                                def document_view():
-                                    draft = {'name': name.value or 'Vista previa', 'applies_to': applies_to.value, 'body': d['body']}
-                                    try:
-                                        data = spec_report.build_template_preview(draft)
-                                        ui.html(live_doc_html(spec_report.render_sections_html(data['sections']), doc_typography()[0])).classes('w-full')
-                                    except ValueError as exc:
-                                        ui.label(str(exc)).classes('text-sm text-amber-700')
-                                document_view()
-                                name.on_value_change(lambda e: document_view.refresh())
-                                description.on_value_change(lambda e: document_view.refresh())
+                    if current and is_mine:
+                        def promote():
+                            core.promote_template(current['id'])
+                            ui.notify('Copia publicada en la biblioteca global', type='positive')
+                            ui.navigate.to('/spec-templates')
+                        ui.button('Promover a la biblioteca global', icon='publish', on_click=guard(promote)).props('outline dense color=primary').mark('template-promote')
+
+                        def remove(t=current):
+                            core.delete_spec_template(t['id'])
+                            ui.notify('Plantilla eliminada', type='positive')
+                            ui.navigate.to('/spec-templates')
+                        ui.button('Eliminar plantilla', icon='delete', on_click=lambda: confirm(f'¿Eliminar la plantilla «{current["name"]}»?', remove)) \
+                            .props('flat dense color=negative').mark('template-delete')
+
+            @ui.refreshable
+            def document_view():
+                draft = {'name': name.value or 'Vista previa', 'applies_to': applies_to.value, 'body': d['body']}
+                try:
+                    data = spec_report.build_template_preview(draft)
+                    ui.html(live_doc_html(spec_report.render_sections_html(data['sections']), doc_typography()[0])).classes('w-full')
+                except ValueError as exc:
+                    ui.label(str(exc)).classes('text-sm text-amber-700')
+
+            def render_document():
+                ui.label('Con datos de ejemplo — para abrirla en una pestaña nueva usá el ícono junto al título.').classes('text-xs text-gray-500')
+                document_view()
+
+            with ui.element('div').classes('w-full').style('height: calc(100vh - 210px)' if compact else ''):
+                workspace_layout(
+                    side_panels=[
+                        Panel('general', 'General', 'tune', render_general, draggable=False),
+                        Panel('sections', 'Secciones y campos', 'account_tree', render_sections, draggable=False),
+                    ],
+                    center_anchors=[Panel('document', '', '', render_document)],
+                    prefix='template', get_pref=get_pref, set_pref=set_pref,
+                    side_title='Configuración', side_icon='tune', side_extra=side_extra,
+                    split_limits=(40, 96), fill_height=compact,
+                )
+            name.on_value_change(lambda e: document_view.refresh())
+            description.on_value_change(lambda e: document_view.refresh())
