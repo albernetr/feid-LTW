@@ -59,6 +59,21 @@ def layouts_demo_handle_test():
     ui.button('toggle-mode', on_click=handle.toggle_center_mode).mark('btn-toggle-mode')
 
 
+@ui.page('/layouts/demo-extra-test')
+def layouts_demo_extra_test():
+    """Ruta fija para probar `side_extra` (contenido fijo arriba del riel, no gobernado por ninguna pestaña)
+    y `fill_height=False` (cuando quien envuelve a workspace_layout no le da una altura definida — el caso de
+    una página con scroll completo en vez de cada panel con su propio scroll)."""
+    def extra():
+        ui.label('Siempre visible').mark('extra-always-visible')
+
+    workspace_layout(
+        side_panels=[Panel('a', 'A', 'star', lambda: ui.label('panel a'))],
+        center_anchors=[Panel('document', 'Documento', 'description', lambda: ui.label('doc'))],
+        prefix='extra_test', side_extra=extra, fill_height=False,
+    )
+
+
 @ui.page('/layouts/demo-cap-test')
 def layouts_demo_cap_test():
     """Ruta fija para probar el tope de `max_center_panels` (3 por defecto: aquí 3 paneles de riel + 1 ancla

@@ -59,6 +59,14 @@ async def test_toggle_center_mode_switches_between_tabs_and_split(user: User):
     await user.should_see(marker='handle_test-center-a')
 
 
+async def test_side_extra_renders_and_fill_height_false_does_not_crash(user: User):
+    """side_extra: contenido siempre visible, fuera de las pestañas del riel. fill_height=False: estilos sin
+    el height:100% que colapsaba todo a 0px cuando no hay una altura definida alrededor (ver test_case_specs.py)."""
+    await user.open('/layouts/demo-extra-test')
+    await user.should_see(marker='extra-always-visible')
+    await user.should_see('doc')
+
+
 async def test_center_panel_cap_rejects_a_fourth_panel(user: User):
     await user.open('/layouts/demo-cap-test')
     for key in ('a', 'b', 'c'):

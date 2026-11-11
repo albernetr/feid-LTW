@@ -54,9 +54,15 @@ def workspace_layout(
     fallback_key: str = '',
     side_title: str = 'Fields',
     side_icon: str = 'tune',
+    side_extra: Optional[Callable[[], None]] = None,
+    fill_height: bool = True,
 ) -> WorkspaceHandle:
     """Dibuja el layout completo (llamarlo directamente adentro de la página, no como context manager — todo
     el contenido sale de `Panel.render` de cada panel que se le pase).
+
+    - `side_extra`: contenido fijo, SIEMPRE visible (no gobernado por ninguna pestaña), entre el título del
+      panel lateral y el riel — para un control que tiene que verse pase lo que pase se seleccione en el riel
+      (p. ej. un selector de qué conjunto de paneles usar).
 
     - `side_panels`: aparecen en el riel vertical de la derecha Y como pestaña del panel lateral; arrastrables
       al centro (una copia en vivo, no un movimiento — ver `Panel.render`) si `draggable=True`.
@@ -71,7 +77,11 @@ def workspace_layout(
       `nicegui.app.storage.user`, sin depender de `app.pages.common.remembered`.
     - Solo se persiste la posición del separador y el modo de centro (pestañas/dividido) — cuáles paneles
       están abiertos en el centro y cuál pestaña del riel está activa NO se persisten, a propósito (hoy
-      tampoco se persisten en `user_stories.py`)."""
+      tampoco se persisten en `user_stories.py`).
+    - `fill_height`: True (default) asume que lo que te rodea te da una altura definida (p. ej. un `div` con
+      `style('height:...')`) y hace que el splitter/los paneles la llenen, cada uno con su propio scroll
+      interno. False es para cuando NO hay una altura definida alrededor (la página entera scrollea en vez de
+      cada panel por separado) — forzar height:100% ahí colapsa todo a 0px, visualmente en blanco."""
     if (get_pref is None) != (set_pref is None):
         raise ValueError('get_pref y set_pref deben darse juntos, o ninguno de los dos')
     if get_pref is None:
@@ -135,7 +145,7 @@ def workspace_layout(
 
     def panel_card(key):
         panel = all_panels[key]
-        with ui.card().classes('w-full').mark(f'{prefix}-center-{key}').style('height:100%;overflow:auto'):
+        with ui.card().classes('w-full').mark(f'{prefix}-center-{key}').style('height:100%;overflow:auto' if fill_height else ''):
             if key != effective_fallback:
                 with ui.row().classes('items-center justify-between w-full'):
                     with ui.row().classes('items-center gap-1'):
@@ -149,7 +159,7 @@ def workspace_layout(
         if len(keys) == 1:
             panel_card(keys[0])
             return
-        with ui.splitter(value=round(100 / len(keys))).classes('w-full').style('height:100%') as sp:
+        with ui.splitter(value=round(100 / len(keys))).classes('w-full').style('height:100%' if fill_height else '') as sp:
             with sp.before:
                 panel_card(keys[0])
             with sp.after:
@@ -158,7 +168,7 @@ def workspace_layout(
     @ui.refreshable
     def center_area():
         open_keys = [k for k in S['center_open'] if k in all_panels] or ([effective_fallback] if effective_fallback else [])
-        with ui.column().classes('w-full gap-0').style('flex:1 1 0;min-height:0;overflow:hidden') \
+        with ui.column().classes('w-full gap-0').style('flex:1 1 0;min-height:0;overflow:hidden' if fill_height else '') \
                 .on('dragover.prevent', lambda: None) \
                 .on('drop', lambda: add_to_center(drag_state['key'])):
             if not open_keys:
@@ -203,17 +213,20 @@ def workspace_layout(
 
     with ui.splitter(value=split_value, limits=split_limits,
                       on_change=lambda e: set_pref(f'{prefix}_split_value', e.value)) \
-            .classes('w-full').style('height:100%').mark(f'{prefix}-main-split') as main_split:
+            .classes('w-full').style('height:100%' if fill_height else '').mark(f'{prefix}-main-split') as main_split:
         with main_split.after:
             if side_panels:
-                with ui.column().classes('w-full gap-4').style('height:100%;overflow:auto'):
-                    with ui.card().classes('w-full p-0'):
+                with ui.column().classes('w-full gap-4').style('height:100%;overflow:auto' if fill_height else ''):
+                    with ui.card().classes('w-full p-0').style('overflow:visible' if fill_height else ''):
                         with ui.row().classes('items-center gap-2 p-4 pb-0'):
                             ui.icon(side_icon, color='primary').classes('text-2xl')
                             ui.label(side_title).classes('text-xl font-semibold')
+                        if side_extra:
+                            with ui.column().classes('w-full gap-3 px-4 pt-2'):
+                                side_extra()
                         fields_section()
         with main_split.before:
-            with ui.column().classes('w-full gap-4 min-w-0').style('height:100%'):
+            with ui.column().classes('w-full gap-4 min-w-0').style('height:100%' if fill_height else ''):
                 center_area()
 
     return WorkspaceHandle(add_to_center=add_to_center, remove_from_center=remove_from_center, toggle_center_mode=toggle_center_mode)
