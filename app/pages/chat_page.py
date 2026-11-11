@@ -10,8 +10,9 @@ from pathlib import Path
 from nicegui import ui, run, context
 from .. import core, workspace as ws, evidence_report, llm
 from .common import (frame, guard, protected_page, show_run, render_evidence, read_upload, open_evidence_in_new_tab,
-                     capture_screenshot, start_screen_recording, stop_screen_recording, notify_via_client, STATUS_LABEL)
+                     capture_screenshot, start_screen_recording, stop_screen_recording, notify_via_client, STATUS_LABEL, remembered)
 from .widgets import kv_rows, dynamic_variable_chips
+from ..layouts import Panel, workspace_layout
 
 CONTEXT_FILE_EXTENSIONS = ('.md', '.txt', '.csv')
 
@@ -1623,36 +1624,51 @@ def build(preset_case_id=None):
             ui.button(icon='send', on_click=guard(lambda: send_chat_message(box))).props('dense round color=primary').classes('shrink-0').mark('chat-send')
         return suite_name, box
 
-    # ------------------------------------------------------------ panel derecho: parámetros + asistente de IA,
-    # como una carrilera vertical de pestañas — mismo patrón que la columna derecha de workspace_page.py.
-    def right_panel():
-        with ui.row().classes('w-full h-full no-wrap gap-0'):
-            with ui.tab_panels(None, value='Params').props('vertical').style('flex:1 1 0;min-width:0;overflow:auto;height:100%') as panels:
-                with ui.tab_panel('Params').classes('p-0'):
-                    params_view()
-                with ui.tab_panel('Asistente').classes('p-0'):
-                    ai_tab()
-                with ui.tab_panel('ChatAsistente').classes('p-0 h-full'):
-                    assistant_chat_tab()
-            with ui.tabs().props('vertical dense no-caps').classes('shrink-0').style('width:56px;border-left:1px solid #e5e7eb') as rail:
-                ui.tab('Params', label='', icon='tune').tooltip('Parámetros').mark('chat-rail-Params')
-                ui.tab('Asistente', label='', icon='smart_toy').tooltip('Asistente de IA').mark('chat-rail-Asistente')
-                ui.tab('ChatAsistente', label='', icon='forum').tooltip('Hablale al Asistente').mark('chat-rail-ChatAsistente')
-            panels.bind_value_from(rail, 'value')
-            rail.set_value('Params')
+    # suite_name/box: center_panel() los crea y los devuelve — se usan en muchos otros lugares de build() (guardar
+    # flujo, capturar evidencia, enviar mensaje...). render_center() los asigna por nonlocal para que workspace_layout,
+    # que no puede propagar el valor de retorno de un Panel.render, igual los deje disponibles donde ya se usaban.
+    suite_name = box = None
 
-    # ------------------------------------------------------------ layout: tres paneles, mismo patrón que
-    # workspace_page.py (splitter anidado, cada panel con la clase `.ltw-pane` para scrollear por su cuenta).
+    def render_center():
+        nonlocal suite_name, box
+        # .ltw-capture-pane: capture_screenshot/start_screen_recording buscan este selector — antes lo ponía el
+        # div que envolvía center_panel() desde afuera; acá se pone un nivel más adentro, mismo selector igual.
+        with ui.element('div').classes('ltw-capture-pane w-full h-full').style('display:flex;flex-direction:column'):
+            suite_name, box = center_panel()
+
+    # ------------------------------------------------------------ panel derecho: parámetros + asistente de IA,
+    # como una carrilera vertical de pestañas, vía workspace_layout (Nivel 1) — con el centro (la conversación)
+    # como único panel central fijo, mismo patrón que ui_cases.py y workspace_page.py.
+    def right_panel():
+        # El original no persistía el ancho del split interno (siempre arrancaba en 72/28) — acá sí se
+        # recuerda (clave nueva, chat_rail_split_width), con el mismo punto de partida.
+        def get_pref(key, default):
+            return remembered('chat_rail_split_width' if key.endswith('_split_value') else key, 72)[0]
+
+        def set_pref(key, value):
+            remembered('chat_rail_split_width' if key.endswith('_split_value') else key, 72)[1](value)
+
+        # prefix='chat' (no 'chat-rail'): workspace_layout genera los marcadores del riel como f'{prefix}-rail-
+        # {key}' — con 'chat' da chat-rail-Params/Asistente/ChatAsistente, igual que los hardcodeados de antes.
+        workspace_layout(
+            side_panels=[
+                Panel('Params', 'Parámetros', 'tune', params_view, draggable=False),
+                Panel('Asistente', 'Asistente de IA', 'smart_toy', ai_tab, draggable=False),
+                Panel('ChatAsistente', 'Hablale al Asistente', 'forum', assistant_chat_tab, draggable=False),
+            ],
+            center_anchors=[Panel('chat', '', '', render_center)],
+            prefix='chat', get_pref=get_pref, set_pref=set_pref,
+            collapsible=False, side_title='', split_limits=(35, 90), fill_height=True,
+        )
+
+    # ------------------------------------------------------------ layout: izquierda (conversaciones/Flujos) +
+    # el resto (centro + riel derecho), vía workspace_layout — el panel izquierdo queda fuera, igual que en
+    # ui_cases.py/workspace_page.py: no es parte del contrato riel-colapsable de Nivel 1.
     with ui.element('div').classes('w-full').style('height: calc(100vh - 50px)'):
         with ui.splitter(value=18, limits=(12, 35)).classes('w-full').style('height:100%') as outer:
             with outer.before:
                 with ui.element('div').classes('ltw-pane'):
                     left_panel()
             with outer.after:
-                with ui.splitter(value=72, limits=(35, 90)).classes('w-full').style('height:100%') as inner:
-                    with inner.before:
-                        with ui.element('div').classes('ltw-pane ltw-capture-pane').style('display:flex;flex-direction:column'):
-                            suite_name, box = center_panel()
-                    with inner.after:
-                        with ui.element('div').classes('ltw-pane'):
-                            right_panel()
+                with ui.element('div').classes('ltw-pane').style('height:100%'):
+                    right_panel()
