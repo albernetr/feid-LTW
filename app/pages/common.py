@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi.responses import RedirectResponse
 from nicegui import app, ui, run
 from .. import core, automation, evidence_report, integrations, llm
+from ..layouts import app_shell
 
 NAV = [
     ('Inicio', '/', 'home'), ('Resumen', '/resumen', 'monitor_heart'), ('Espacio de trabajo', '/workspace', 'space_dashboard'), ('Proyectos', '/projects', 'folder_open'),
@@ -203,6 +204,69 @@ def protected_page(route, **kwargs):
     return decorator
 
 
+def _frame_header_right():
+    projects = core.list_items('projects')
+    active = core.get_active_project_id()
+    if projects:
+        def switch(e):
+            try:
+                core.set_active_project(e.value)
+                ui.navigate.reload()
+            except Exception as exc:
+                ui.notify(str(exc) or type(exc).__name__, type='negative', multi_line=True)
+        selectable = {p['id']: p['name'] for p in projects if not p.get('disabled')}
+        if selectable:
+            ui.select(selectable, value=active, label='Proyecto activo', on_change=switch) \
+                .props('outlined dense options-dense').classes('w-60').tooltip('Todo lo que ves y creas pertenece a este proyecto')
+        else:
+            ui.button('Todos los proyectos están deshabilitados', icon='warning', on_click=lambda: ui.navigate.to('/projects')) \
+                .props('flat dense color=warning no-caps').tooltip('Habilita alguno en Proyectos para poder seleccionarlo')
+    else:
+        ui.button('Crear primer proyecto', icon='add', on_click=lambda: ui.navigate.to('/projects')).props('color=primary dense')
+    user = current_user()
+    if user:
+        label = f'{user.get("first_name", "")} {user.get("last_name", "")}'.strip() or user.get('email', '')
+        with ui.button(label, icon='account_circle').props('flat dense no-caps color=grey-8'):
+            with ui.menu():
+                ui.menu_item('Gestionar usuarios', on_click=lambda: ui.navigate.to('/users'))
+                ui.menu_item('Cerrar sesión', on_click=logout)
+
+
+def _frame_nav_button(label, route, icon, current, extra=''):
+    selected = route == current
+    ui.button(label, icon=icon, on_click=lambda r=route: ui.navigate.to(r)) \
+        .props(f'flat align=left no-caps {"color=primary" if selected else "color=grey-8"}') \
+        .classes('w-full' + extra + (' bg-blue-50' if selected else ''))
+
+
+def _frame_drawer_content(current):
+    # Mismo menú agrupado para todas las pantallas, sean «wide» (mini, colapsable) o no — antes una pantalla
+    # wide mostraba las ~20 opciones sueltas sin agrupar, distinto del resto de la app (ver menú lateral).
+    grouped_routes = {route for _, _, routes in NAV_GROUPS for route in routes}
+    for label, route, icon in NAV:
+        if route not in grouped_routes:
+            _frame_nav_button(label, route, icon, current)
+    try:
+        layout = app.storage.browser
+    except Exception:
+        layout = {}
+    for name, group_icon, routes in NAV_GROUPS:
+        items = [item for item in NAV if item[1] in routes]
+        has_current = any(route == current for _, route, _ in items)
+        key = f'nav_group_{name}'
+        stored = layout.get(key) if hasattr(layout, 'get') else None
+        with ui.expansion(name, icon=group_icon, value=has_current if stored is None else bool(stored)) \
+                .props('dense').classes('w-full') as section:
+            def remember(e, k=key):
+                try:
+                    layout[k] = e.value
+                except Exception:
+                    pass
+            section.on_value_change(remember)
+            for label, route, icon in items:
+                _frame_nav_button(label, route, icon, current, ' pl-2')
+
+
 @contextmanager
 def frame(title, current, wide=False, doc_style=False, full_width=False):
     """Page skeleton: header with active-project switcher, navigation drawer and content column.
@@ -210,85 +274,16 @@ def frame(title, current, wide=False, doc_style=False, full_width=False):
     doc_style=True gives the content area a "documento" look (fondo suave, tarjetas tipo papel) — para pantallas
     que conceptualmente son documentos (Especificación), nunca por defecto: no afecta a ninguna otra pantalla.
     full_width=True da el mismo ancho-completo-sin-título-automático que ya da wide=True, pero sin el drawer
-    mini-icono de las pantallas tipo Chat/Workspace — para pantallas que solo necesitan el ancho, no ese menú."""
-    ui.colors(primary='#2563eb')
-    ui.add_head_html(ARIA_SCRIPT)
-    ui.add_head_html(HTML2CANVAS_SCRIPT)
-    if doc_style:
-        ui.add_head_html(DOC_CSS)
-    ui.page_title(f'{title} · Local Test Workspace')
-    drawer = ui.left_drawer(value=True, bordered=True).classes('bg-gray-50 pt-4')
-    if wide:
-        ui.add_head_html(MINI_CSS)
-        drawer.props('mini mini-to-overlay mini-width=64 width=240')
-        drawer.on('mouseenter', lambda: drawer.props(remove='mini'))
-        drawer.on('mouseleave', lambda: drawer.props('mini'))
-    with ui.header(elevated=False).classes('bg-white text-gray-800 border-b items-center gap-3 px-4'):
-        ui.button(icon='menu', on_click=drawer.toggle).props('flat round dense').tooltip('Mostrar u ocultar el menú')
-        ui.label('Local Test Workspace').classes('text-lg font-semibold')
-        ui.space()
-        projects = core.list_items('projects')
-        active = core.get_active_project_id()
-        if projects:
-            def switch(e):
-                try:
-                    core.set_active_project(e.value)
-                    ui.navigate.reload()
-                except Exception as exc:
-                    ui.notify(str(exc) or type(exc).__name__, type='negative', multi_line=True)
-            selectable = {p['id']: p['name'] for p in projects if not p.get('disabled')}
-            if selectable:
-                ui.select(selectable, value=active, label='Proyecto activo', on_change=switch) \
-                    .props('outlined dense options-dense').classes('w-60').tooltip('Todo lo que ves y creas pertenece a este proyecto')
-            else:
-                ui.button('Todos los proyectos están deshabilitados', icon='warning', on_click=lambda: ui.navigate.to('/projects')) \
-                    .props('flat dense color=warning no-caps').tooltip('Habilita alguno en Proyectos para poder seleccionarlo')
-        else:
-            ui.button('Crear primer proyecto', icon='add', on_click=lambda: ui.navigate.to('/projects')).props('color=primary dense')
-        user = current_user()
-        if user:
-            label = f'{user.get("first_name", "")} {user.get("last_name", "")}'.strip() or user.get('email', '')
-            with ui.button(label, icon='account_circle').props('flat dense no-caps color=grey-8'):
-                with ui.menu():
-                    ui.menu_item('Gestionar usuarios', on_click=lambda: ui.navigate.to('/users'))
-                    ui.menu_item('Cerrar sesión', on_click=logout)
-    def nav_button(label, route, icon, extra=''):
-        selected = route == current
-        ui.button(label, icon=icon, on_click=lambda r=route: ui.navigate.to(r)) \
-            .props(f'flat align=left no-caps {"color=primary" if selected else "color=grey-8"}') \
-            .classes('w-full' + extra + (' bg-blue-50' if selected else ''))
-    with drawer:
-        # Mismo menú agrupado para todas las pantallas, sean «wide» (mini, colapsable) o no — antes una pantalla
-        # wide mostraba las ~20 opciones sueltas sin agrupar, distinto del resto de la app (ver menú lateral).
-        grouped_routes = {route for _, _, routes in NAV_GROUPS for route in routes}
-        for label, route, icon in NAV:
-            if route not in grouped_routes:
-                nav_button(label, route, icon)
-        try:
-            layout = app.storage.browser
-        except Exception:
-            layout = {}
-        for name, group_icon, routes in NAV_GROUPS:
-            items = [item for item in NAV if item[1] in routes]
-            has_current = any(route == current for _, route, _ in items)
-            key = f'nav_group_{name}'
-            stored = layout.get(key) if hasattr(layout, 'get') else None
-            with ui.expansion(name, icon=group_icon, value=has_current if stored is None else bool(stored)) \
-                    .props('dense').classes('w-full') as section:
-                def remember(e, k=key):
-                    try:
-                        layout[k] = e.value
-                    except Exception:
-                        pass
-                section.on_value_change(remember)
-                for label, route, icon in items:
-                    nav_button(label, route, icon, ' pl-2')
-    if wide or full_width:
-        with ui.column().classes('w-full gap-0 p-0'):
-            yield
-        return
-    with ui.column().classes('w-full p-4 gap-4' + (' max-w-7xl mx-auto ltw-doc' if doc_style else ' max-w-6xl mx-auto')):
-        ui.label(title).classes('ltw-doc-title text-2xl font-semibold' if doc_style else 'text-2xl font-semibold')
+    mini-icono de las pantallas tipo Chat/Workspace — para pantallas que solo necesitan el ancho, no ese menú.
+
+    Wrapper delgado sobre app_shell (Nivel 0, app/layouts/shell.py) — lo específico de LTW (selector de
+    proyecto, menú de usuario, NAV/NAV_GROUPS) entra como los callbacks que app_shell espera; MINI_CSS acá
+    sigue siendo el de LTW (define .ltw-pane, usado de verdad por workspace_page.py/chat_page.py/ui_cases.py)
+    y se inyecta aparte, sin depender del MINI_CSS genérico propio de app_shell."""
+    extra_head = [ARIA_SCRIPT, HTML2CANVAS_SCRIPT] + ([MINI_CSS] if wide else [])
+    with app_shell(title, app_name='Local Test Workspace', wide=wide, doc_style=doc_style, full_width=full_width,
+                   header_right=_frame_header_right, drawer_content=lambda: _frame_drawer_content(current),
+                   extra_head_html=extra_head, doc_css=DOC_CSS, doc_class='ltw-doc'):
         yield
 
 
