@@ -5,8 +5,9 @@ instead of to a request body."""
 import datetime as dt
 from nicegui import ui, run
 from .. import core, automation, recorder
-from .common import frame, guard, confirm, empty_state, require_project, show_run, fmt_time, status_badge, protected_page, current_user_id
+from .common import frame, guard, confirm, empty_state, require_project, show_run, fmt_time, status_badge, protected_page, current_user_id, remembered
 from .widgets import method_badge
+from ..layouts import Panel, workspace_layout
 
 LOCATOR_LABELS = {'label': 'Etiqueta (label)', 'text': 'Texto', 'role': 'Rol ARIA', 'testid': 'data-testid', 'placeholder': 'Placeholder'}
 ROLES = ['button', 'link', 'heading', 'textbox', 'checkbox', 'combobox', 'listitem', 'row', 'cell', 'tab', 'dialog', 'img']
@@ -260,97 +261,112 @@ def ui_cases_page(id: str = '', name: str = '', url: str = ''):
                         step_rows()
                         ui.button('Agregar paso', icon='add', on_click=lambda: (d['steps'].append(blank_step()), step_rows.refresh())).props('outline color=primary')
 
-        # ------------------------------------------------------------ right rail: grabador (pegar script) / guardar
+        # ------------------------------------------------------------ right rail: grabador (pegar script) / guardar,
+        # con el centro (navegar/grabar + pasos) como único panel central fijo — ver app/layouts/workspace.py.
         def right():
-            with ui.row().classes('w-full h-full no-wrap gap-0'):
-                with ui.tab_panels(None, value='Guardar').props('vertical').style('flex:1 1 0;min-width:0;overflow:auto;height:100%') as panels:
-                    with ui.tab_panel('Grabador').classes('p-3 gap-2'):
-                        ui.label('Pega un script de Playwright Codegen para analizarlo e importar sus pasos, sin abrir un navegador.').classes('text-xs text-gray-500')
-                        pasted = ui.textarea('Script Python de Codegen').props('outlined autogrow').classes('w-full font-mono')
-                        script_report = ui.column().classes('w-full gap-1')
+            def render_recorder():
+                ui.label('Pega un script de Playwright Codegen para analizarlo e importar sus pasos, sin abrir un navegador.').classes('text-xs text-gray-500')
+                pasted = ui.textarea('Script Python de Codegen').props('outlined autogrow').classes('w-full font-mono')
+                script_report = ui.column().classes('w-full gap-1')
 
-                        def import_script():
-                            result = recorder.import_codegen(pasted.value or '')
-                            script_report.clear()
-                            with script_report:
-                                ui.label(f'{len(result["steps"])} paso(s) analizado(s); {len(result["unsupported"])} instrucción(es) no soportada(s).').classes('font-medium text-sm')
-                                for item in result['unsupported']:
-                                    ui.label(f'Línea {item["line"]}: {item["reason"]}').classes('text-xs text-amber-700 font-mono')
-                                if result['steps']:
-                                    ui.button('Agregar pasos al caso', icon='playlist_add', on_click=guard(lambda: add_recorded(result))).props('dense size=sm no-caps color=primary')
-                        ui.button('Analizar script', icon='rule', on_click=guard(import_script)).props('outline dense size=sm no-caps')
+                def import_script():
+                    result = recorder.import_codegen(pasted.value or '')
+                    script_report.clear()
+                    with script_report:
+                        ui.label(f'{len(result["steps"])} paso(s) analizado(s); {len(result["unsupported"])} instrucción(es) no soportada(s).').classes('font-medium text-sm')
+                        for item in result['unsupported']:
+                            ui.label(f'Línea {item["line"]}: {item["reason"]}').classes('text-xs text-amber-700 font-mono')
+                        if result['steps']:
+                            ui.button('Agregar pasos al caso', icon='playlist_add', on_click=guard(lambda: add_recorded(result))).props('dense size=sm no-caps color=primary')
+                ui.button('Analizar script', icon='rule', on_click=guard(import_script)).props('outline dense size=sm no-caps')
 
-                    with ui.tab_panel('Guardar').classes('p-3 gap-2'):
-                        env_select = W['env_select'] = ui.select({e['id']: e['name'] for e in envs}, value=d.get('env_id'), label='Ambiente de prueba').props('outlined dense').classes('w-full') \
-                            .on_value_change(lambda e: d.__setitem__('env_id', e.value))
-                        W['timeout_input'] = ui.number('Timeout por paso (ms)', value=d['timeout_ms'], min=500, max=120000).props('outlined dense').classes('w-full') \
-                            .on_value_change(lambda e: d.__setitem__('timeout_ms', e.value))
-                        W['record_video_checkbox'] = ui.checkbox('Grabar video de esta corrida', value=d.get('record_video', False)) \
-                            .on_value_change(lambda e: d.__setitem__('record_video', e.value)) \
-                            .tooltip('A demanda, no en cada corrida — queda como evidencia junto a la captura y la traza. '
-                                     'No disponible con «Navegador en vivo» ni con la sesión MCP.').mark('ui-case-record-video')
-                        W['record_step_screenshots_checkbox'] = ui.checkbox('Capturar pantalla en cada paso', value=d.get('record_step_screenshots', False)) \
-                            .on_value_change(lambda e: d.__setitem__('record_step_screenshots', e.value)) \
-                            .tooltip('A demanda — una captura después de cada paso (clic, escribir, verificar…), no solo al final. '
-                                     'Se ve en el detalle de la corrida, junto a cada paso. No disponible con la sesión MCP.').mark('ui-case-record-step-screenshots')
-                        _creator = core.get('cases', d['id']) if d['id'] else None
-                        if _creator and _creator.get('created_by'):
-                            ui.label(f'Creado por: {core.user_display_name(_creator["created_by"])}').classes('text-xs text-gray-500')
+            def render_save():
+                env_select = W['env_select'] = ui.select({e['id']: e['name'] for e in envs}, value=d.get('env_id'), label='Ambiente de prueba').props('outlined dense').classes('w-full') \
+                    .on_value_change(lambda e: d.__setitem__('env_id', e.value))
+                W['timeout_input'] = ui.number('Timeout por paso (ms)', value=d['timeout_ms'], min=500, max=120000).props('outlined dense').classes('w-full') \
+                    .on_value_change(lambda e: d.__setitem__('timeout_ms', e.value))
+                W['record_video_checkbox'] = ui.checkbox('Grabar video de esta corrida', value=d.get('record_video', False)) \
+                    .on_value_change(lambda e: d.__setitem__('record_video', e.value)) \
+                    .tooltip('A demanda, no en cada corrida — queda como evidencia junto a la captura y la traza. '
+                             'No disponible con «Navegador en vivo» ni con la sesión MCP.').mark('ui-case-record-video')
+                W['record_step_screenshots_checkbox'] = ui.checkbox('Capturar pantalla en cada paso', value=d.get('record_step_screenshots', False)) \
+                    .on_value_change(lambda e: d.__setitem__('record_step_screenshots', e.value)) \
+                    .tooltip('A demanda — una captura después de cada paso (clic, escribir, verificar…), no solo al final. '
+                             'Se ve en el detalle de la corrida, junto a cada paso. No disponible con la sesión MCP.').mark('ui-case-record-step-screenshots')
+                _creator = core.get('cases', d['id']) if d['id'] else None
+                if _creator and _creator.get('created_by'):
+                    ui.label(f'Creado por: {core.user_display_name(_creator["created_by"])}').classes('text-xs text-gray-500')
 
-                        def build():
-                            if not (d['name'] or '').strip():
-                                raise ValueError('El nombre es obligatorio')
-                            problems = automation.validate_steps(d['steps'])
-                            if problems:
-                                raise ValueError('\n'.join(problems))
-                            existing = core.get('cases', d['id']) if d['id'] else None
-                            item = {'name': d['name'].strip(), 'type': 'ui', 'project_id': pid, 'timeout_ms': int(d['timeout_ms'] or 10000), 'steps': d['steps'],
-                                    'record_video': bool(d.get('record_video')), 'record_step_screenshots': bool(d.get('record_step_screenshots')),
-                                    'created_by': (existing or {}).get('created_by') or current_user_id()}
-                            if d['id']:
-                                item['id'] = d['id']
-                            return item
+                def build():
+                    if not (d['name'] or '').strip():
+                        raise ValueError('El nombre es obligatorio')
+                    problems = automation.validate_steps(d['steps'])
+                    if problems:
+                        raise ValueError('\n'.join(problems))
+                    existing = core.get('cases', d['id']) if d['id'] else None
+                    item = {'name': d['name'].strip(), 'type': 'ui', 'project_id': pid, 'timeout_ms': int(d['timeout_ms'] or 10000), 'steps': d['steps'],
+                            'record_video': bool(d.get('record_video')), 'record_step_screenshots': bool(d.get('record_step_screenshots')),
+                            'created_by': (existing or {}).get('created_by') or current_user_id()}
+                    if d['id']:
+                        item['id'] = d['id']
+                    return item
 
-                        def save():
-                            item = build()
-                            saved = core.save('cases', item, expected_updated_at=d.get('updated_at')) if d['id'] else core.save('cases', item)
-                            d['id'], d['updated_at'] = saved['id'], saved['updated_at']
-                            refresh_all()
-                            ui.notify(f'Caso UI «{saved["name"]}» guardado', type='positive')
-                            return saved
+                def save():
+                    item = build()
+                    saved = core.save('cases', item, expected_updated_at=d.get('updated_at')) if d['id'] else core.save('cases', item)
+                    d['id'], d['updated_at'] = saved['id'], saved['updated_at']
+                    refresh_all()
+                    ui.notify(f'Caso UI «{saved["name"]}» guardado', type='positive')
+                    return saved
 
-                        async def save_and_run():
-                            env = core.get('environments', env_select.value) if env_select.value else None
-                            if env is None:
-                                raise ValueError('Elige un ambiente para ejecutar')
-                            saved = save()
-                            with ui.dialog() as busy, ui.card():
-                                ui.spinner(size='lg'); ui.label('Ejecutando en Chromium…')
-                            busy.open()
-                            try:
-                                result = await run.io_bound(automation.execute_ui, saved, env, meta={'executed_by': current_user_id()})
-                            finally:
-                                busy.close()
-                            refresh_all()
-                            show_run(result)
+                async def save_and_run():
+                    env = core.get('environments', env_select.value) if env_select.value else None
+                    if env is None:
+                        raise ValueError('Elige un ambiente para ejecutar')
+                    saved = save()
+                    with ui.dialog() as busy, ui.card():
+                        ui.spinner(size='lg'); ui.label('Ejecutando en Chromium…')
+                    busy.open()
+                    try:
+                        result = await run.io_bound(automation.execute_ui, saved, env, meta={'executed_by': current_user_id()})
+                    finally:
+                        busy.close()
+                    refresh_all()
+                    show_run(result)
 
-                        def remove():
-                            used = [s for s in core.list_items('suites') if d['id'] in s.get('case_ids', [])]
-                            if used:
-                                raise ValueError(f'No se puede eliminar: está en {len(used)} flujo(s)')
-                            core.delete('cases', d['id'])
-                            load_draft(new_draft())
-                            ui.notify('Caso UI eliminado', type='warning')
-                        with ui.row().classes('gap-1'):
-                            ui.button('Guardar', icon='save', on_click=guard(save)).props('dense size=sm no-caps')
-                            ui.button('Guardar y ejecutar', icon='play_arrow', on_click=guard(save_and_run)).props('outline dense size=sm no-caps color=positive')
-                        if d['id']:
-                            ui.button('Eliminar caso', icon='delete', on_click=lambda: confirm('¿Eliminar este caso UI?', remove)).props('flat dense size=sm no-caps color=negative')
-                with ui.tabs().props('vertical dense no-caps').classes('shrink-0').style('width:56px;border-left:1px solid #e5e7eb') as rail:
-                    for name, icon in (('Grabador', 'movie'), ('Guardar', 'save')):
-                        ui.tab(name, label='', icon=icon).tooltip(name)
-                panels.bind_value_from(rail, 'value')
-                rail.set_value('Guardar')
+                def remove():
+                    used = [s for s in core.list_items('suites') if d['id'] in s.get('case_ids', [])]
+                    if used:
+                        raise ValueError(f'No se puede eliminar: está en {len(used)} flujo(s)')
+                    core.delete('cases', d['id'])
+                    load_draft(new_draft())
+                    ui.notify('Caso UI eliminado', type='warning')
+                with ui.row().classes('gap-1'):
+                    ui.button('Guardar', icon='save', on_click=guard(save)).props('dense size=sm no-caps')
+                    ui.button('Guardar y ejecutar', icon='play_arrow', on_click=guard(save_and_run)).props('outline dense size=sm no-caps color=positive')
+                if d['id']:
+                    ui.button('Eliminar caso', icon='delete', on_click=lambda: confirm('¿Eliminar este caso UI?', remove)).props('flat dense size=sm no-caps color=negative')
+
+            # El original no persistía el ancho del split interno (siempre arrancaba en 70/30) — acá sí se
+            # recuerda (clave nueva, ui_rail_split_width), pero con el mismo punto de partida.
+            def get_pref(key, default):
+                return remembered('ui_rail_split_width' if key.endswith('_split_value') else key, 70)[0]
+
+            def set_pref(key, value):
+                remembered('ui_rail_split_width' if key.endswith('_split_value') else key, 70)[1](value)
+
+            workspace_layout(
+                # El original abría «Guardar» por defecto (rail.set_value('Guardar')) — acá el orden de la
+                # lista decide el tab inicial, así que «Guardar» va primero aunque en el riel quede arriba
+                # (antes era «Grabador» arriba/«Guardar» abajo; cambio visual menor, el default es lo que importa).
+                side_panels=[
+                    Panel('Guardar', 'Guardar', 'save', render_save, draggable=False),
+                    Panel('Grabador', 'Grabador', 'movie', render_recorder, draggable=False),
+                ],
+                center_anchors=[Panel('steps', '', '', center)],
+                prefix='ui-rail', get_pref=get_pref, set_pref=set_pref,
+                collapsible=False, side_title='', split_limits=(40, 85), fill_height=True,
+            )
 
         with ui.element('div').classes('w-full').style('height: calc(100vh - 50px)'):
             with ui.splitter(value=19, limits=(12, 35)).classes('w-full').style('height:100%') as outer:
@@ -358,10 +374,5 @@ def ui_cases_page(id: str = '', name: str = '', url: str = ''):
                     with ui.element('div').classes('ltw-pane'):
                         left()
                 with outer.after:
-                    with ui.splitter(value=70, limits=(40, 85)).classes('w-full').style('height:100%') as inner:
-                        with inner.before:
-                            with ui.element('div').classes('ltw-pane').style('display:flex;flex-direction:column'):
-                                center()
-                        with inner.after:
-                            with ui.element('div').classes('ltw-pane').style('overflow:hidden'):
-                                right()
+                    with ui.element('div').classes('ltw-pane').style('height:100%'):
+                        right()
