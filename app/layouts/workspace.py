@@ -234,9 +234,10 @@ def workspace_layout(
             with ui.column().classes('w-full gap-4').style('height:100%;overflow:auto' if fill_height else ''):
                 if side_panels:
                     with ui.card().classes('w-full p-0').style('overflow:visible' if fill_height else ''):
-                        with ui.row().classes('items-center gap-2 p-4 pb-0'):
-                            ui.icon(side_icon, color='primary').classes('text-2xl')
-                            ui.label(side_title).classes('text-xl font-semibold')
+                        if side_title:
+                            with ui.row().classes('items-center gap-2 p-4 pb-0'):
+                                ui.icon(side_icon, color='primary').classes('text-2xl')
+                                ui.label(side_title).classes('text-xl font-semibold')
                         if side_extra:
                             with ui.column().classes('w-full gap-3 px-4 pt-2'):
                                 side_extra()

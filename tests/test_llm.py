@@ -157,13 +157,13 @@ def test_generate_uses_the_contract_digest(fake):
 
 async def test_workspace_assistant_screen_off_then_configured_then_generates(user, fake):
     await user.open('/workspace')
-    user.find('rail-Agente').click()
+    user.find('ws-rail-Agente').click()
     await user.should_see('Asistente sin configurar')
     await user.should_see('Conexión directa (sin registrar)')
     # configure through the module (the form shares it) and re-open: the assistant is on and says it is local
     configure(fake)
     await user.open('/workspace')
-    user.find('rail-Agente').click()
+    user.find('ws-rail-Agente').click()
     await user.should_see('modelo-demo · modelo local')
     await user.should_see('los datos no salen de esta máquina')
     user.find('Qué quieres probar').type('probar el health check')

@@ -7,6 +7,7 @@ from .. import core, workspace as ws, agent, llm
 from .common import frame, guard, confirm, fmt_time, protected_page, show_run, capture_screenshot, start_screen_recording, stop_screen_recording
 from .suites import run_suite
 from .widgets import kv_rows, assertion_rows, method_badge, status_chip
+from ..layouts import Panel, workspace_layout
 
 HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 MODES = {'panel': 'Las pruebas del panel «Pruebas»', 'exact': 'Respuesta exacta (ignorando campos volátiles)', 'structure': 'Solo estructura (JSON Schema)', 'status': 'Solo código HTTP'}
@@ -510,196 +511,228 @@ def build(preset_case_id=None, prefill=None):
                 W['response_view'] = response_view
                 response_view()
 
-    # ------------------------------------------------------------ right pane
+    # ------------------------------------------------------------ right pane (riel de Nivel 1 — ver app/layouts/
+    # workspace.py; acá ninguna pestaña es arrastrable ni colapsable, es el caso más simple de la primitiva)
+    def build_side_panels():
+        def render_params():
+            ui.label('Parámetros de la query').classes('font-medium')
+            ui.label('Se combinan con los que escribas en la URL.').classes('text-xs text-gray-500')
+            W['query_view'] = kv_rows(lambda: d['query'], 'Parámetro', 'Valor', lambda: W['chips_view'].refresh())
+
+        def render_headers():
+            ui.label('Headers').classes('font-medium')
+            ui.label('Las filas desactivadas se conservan pero no se envían. La autenticación del ambiente se agrega sola.').classes('text-xs text-gray-500')
+            W['headers_view'] = kv_rows(lambda: d['headers'], 'Header', 'Valor', lambda: W['chips_view'].refresh(), HEADER_SUGGESTIONS)
+
+        def render_body():
+            with ui.row().classes('w-full items-center gap-1'):
+                ui.label('Body JSON').classes('font-medium')
+
+                @ui.refreshable
+                def body_status():
+                    text = (d['body'] or '').strip()
+                    if not text:
+                        ui.badge('vacío', color='grey').classes('text-xs')
+                        return
+                    try:
+                        json.loads(text)
+                        ui.badge('JSON válido', color='positive').classes('text-xs')
+                    except ValueError as exc:
+                        ui.badge('JSON inválido', color='negative').classes('text-xs').tooltip(str(exc))
+                W['body_status'] = body_status
+                body_status()
+                ui.space()
+
+                def reformat(indent):
+                    try:
+                        data = json.loads(d['body'])
+                    except ValueError as exc:
+                        raise ValueError(f'No se puede formatear: {exc}')
+                    d['body'] = json.dumps(data, indent=indent, ensure_ascii=False) if indent else json.dumps(data, ensure_ascii=False, separators=(',', ':'))
+                    W['body'].set_value(d['body'])
+                ui.button('Formatear', on_click=guard(lambda: reformat(2))).props('flat dense size=sm no-caps')
+                ui.button('Minificar', on_click=guard(lambda: reformat(None))).props('flat dense size=sm no-caps')
+                ui.button('Usar la última respuesta', on_click=guard(lambda: (d.__setitem__('body', pretty((S['result'] or {}).get('body'))), W['body'].set_value(d['body'])))) \
+                    .props('flat dense size=sm no-caps').tooltip('Copia el cuerpo de la respuesta como body de la petición')
+
+            def body_changed(event):
+                d['body'] = event.value
+                W['body_status'].refresh()
+                W['chips_view'].refresh()
+            W['body'] = ui.codemirror(d['body'], language='JSON', line_wrapping=True, on_change=body_changed).classes('w-full').style('height: calc(100vh - 200px)')
+
+        def render_tests():
+            ui.label('Pruebas (aserciones)').classes('font-medium')
+            ui.label('El resultado de la última respuesta aparece junto a cada regla.').classes('text-xs text-gray-500')
+            W['tests_view'] = assertion_rows(lambda: d['assertions'], results_list, get_paths=response_paths)
+            ui.separator()
+            ui.label('Generar desde la respuesta actual').classes('font-medium text-sm')
+            gen_mode = ui.select({'exact': MODES['exact'], 'structure': MODES['structure'], 'status': MODES['status']}, value='exact').props('outlined dense options-dense').classes('w-full')
+            gen_ignore = ui.input('Ignorar campos (JSONPath, coma)', placeholder='$.requested_at').props('outlined dense').classes('w-full')
+            ui.button('Generar pruebas', icon='auto_fix_high', on_click=guard(lambda: autogenerate(gen_mode.value, gen_ignore.value))).props('outline dense no-caps')
+            ui.label('Se reemplazan las pruebas actuales. Los campos que suelen cambiar se rellenan tras enviar.').classes('text-xs text-gray-500')
+            W['gen_ignore'] = gen_ignore
+
+        def render_variables():
+            ui.label('Variables de esta petición').classes('font-medium')
+            ui.label('Usa {{nombre}} en URL, headers, query o body. {{secret:NOMBRE}} toma el valor del almacén seguro.').classes('text-xs text-gray-500')
+            W['vars_view'] = kv_rows(lambda: d['variables'], 'Variable', 'Valor', lambda: W['chips_view'].refresh())
+            ui.separator()
+            ui.label('Extraer de la respuesta (para encadenar en un flujo)').classes('font-medium text-sm')
+
+            @ui.refreshable
+            def extract_view():
+                for rule in d['extract']:
+                    with ui.row().classes('w-full items-center gap-1 no-wrap'):
+                        ui.input('Guardar como', value=rule.get('name', '')).props('outlined dense').classes('w-1/3').on_value_change(lambda e, r=rule: r.__setitem__('name', e.value))
+                        ui.input('Ruta ($.token)', value=rule.get('path', '')).props('outlined dense').classes('grow').on_value_change(lambda e, r=rule: r.__setitem__('path', e.value))
+                        ui.button(icon='close', on_click=lambda _, r=rule: (d['extract'].remove(r), extract_view.refresh())).props('flat round dense size=sm color=grey')
+                ui.button('Agregar extracción', icon='add', on_click=lambda: (d['extract'].append({'name': '', 'source': 'json', 'path': ''}), extract_view.refresh())).props('flat dense size=sm color=primary')
+            W['extract_view'] = extract_view
+            extract_view()
+
+        def render_batch():
+            ui.label('Misma petición con distintas entradas').classes('font-medium')
+            ui.label('Escribe {{variables}} en la petición (p. ej. /api/users/{{id}}) y define un valor por fila.').classes('text-xs text-gray-500')
+
+            @ui.refreshable
+            def batch_view():
+                try:
+                    case, _ = ws.build_case(d)
+                except ValueError as exc:
+                    ui.label(f'Define primero la petición: {exc}').classes('text-amber-700 text-sm')
+                    return
+                names = [n for n in core.find_unresolved(case['path'], case['headers'], case['query'], case['body']) if not n.startswith(('secret:', '@'))]
+                if not names:
+                    ui.label('La petición no tiene {{variables}} todavía.').classes('text-amber-700 text-sm')
+                    return
+                for index, row_ in enumerate(S['batch_rows']):
+                    with ui.row().classes('w-full items-center gap-1 no-wrap'):
+                        ui.input('Nombre', value=row_['name']).props('outlined dense').classes('w-28').on_value_change(lambda e, r=row_: r.__setitem__('name', e.value))
+                        for name in names:
+                            ui.input(name, value=str(row_['values'].get(name, ''))).props('outlined dense').classes('grow').on_value_change(lambda e, r=row_, n=name: r['values'].__setitem__(n, e.value))
+                        res = S['batch'].get(index)
+                        if res:
+                            status_chip(res.get('http_status'), res['status'] == 'error')
+                        ui.button(icon='close', on_click=lambda _, i=index: (S['batch_rows'].pop(i), S['batch'].clear(), batch_view.refresh(), W['response_view'].refresh())).props('flat round dense size=sm color=grey')
+            W['batch_view'] = batch_view
+            batch_view()
+            with ui.row().classes('gap-1'):
+                ui.button('Agregar fila', icon='add', on_click=lambda: (S['batch_rows'].append({'name': f'fila {len(S["batch_rows"]) + 1}', 'values': {}}), batch_view.refresh())).props('flat dense size=sm color=primary no-caps')
+                ui.button('Actualizar columnas', icon='refresh', on_click=lambda: batch_view.refresh()).props('flat dense size=sm no-caps')
+            paste = ui.textarea('Pegar filas: una por línea, valores separados por coma').props('outlined dense autogrow').classes('w-full')
+
+            def load_pasted():
+                case, _ = ws.build_case(d)
+                names = [n for n in core.find_unresolved(case['path'], case['headers'], case['query'], case['body']) if not n.startswith(('secret:', '@'))]
+                rows = [{'name': f'fila {i}', 'values': dict(zip(names, [p.strip() for p in line.split(',')]))} for i, line in enumerate((paste.value or '').splitlines(), 1) if line.strip()]
+                if not rows:
+                    raise ValueError('No hay líneas para importar')
+                S['batch_rows'][:] = rows
+                S['batch'].clear()
+                batch_view.refresh()
+            ui.button('Cargar filas', icon='content_paste', on_click=guard(load_pasted)).props('flat dense size=sm no-caps')
+
+            async def run_batch():
+                base, env = ws.build_case(d)
+                names = [n for n in core.find_unresolved(base['path'], base['headers'], base['query'], base['body']) if not n.startswith(('secret:', '@'))]
+                if not names:
+                    raise ValueError('La petición no tiene {{variables}}')
+                S['batch'].clear()
+                for index, row_ in enumerate(S['batch_rows']):
+                    case = {**base, 'name': row_['name'], 'variables': {**base['variables'], **{n: row_['values'].get(n, '') for n in names}}}
+                    S['batch'][index] = await run.io_bound(core.execute_api, case, env, None, False)
+                S['resp_tab'] = 'Lote'
+                batch_view.refresh()
+                W['response_view'].refresh()
+            ui.button('Ejecutar lote', icon='play_arrow', on_click=guard(run_batch)).props('color=positive dense no-caps')
+            ui.separator()
+            suite_name = ui.input('Nombre del flujo', value='Regresión (lote)').props('outlined dense').classes('w-full')
+            batch_mode = ui.select({k: v for k, v in MODES.items() if k != 'panel'}, value='exact').props('outlined dense options-dense').classes('w-full')
+            batch_ignore = ui.input('Ignorar campos (JSONPath, coma)').props('outlined dense').classes('w-full')
+
+            def save_batch():
+                base, env = ws.build_case(d)
+                names = [n for n in core.find_unresolved(base['path'], base['headers'], base['query'], base['body']) if not n.startswith(('secret:', '@'))]
+                if len(S['batch']) != len(S['batch_rows']) or any(r['status'] == 'error' for r in S['batch'].values()):
+                    raise ValueError('Ejecuta el lote completo (sin errores de conexión) antes de guardarlo')
+                paths = [p.strip() for p in (batch_ignore.value or '').split(',') if p.strip()]
+                rows = [{'name': r['name'], 'variables': {n: r['values'].get(n, '') for n in names}, 'status': S['batch'][i]['http_status'], 'body': S['batch'][i]['response']['body']}
+                        for i, r in enumerate(S['batch_rows'])]
+                project_id = resolve_project()
+                env_doc = persistent_env(project_id, env)
+                if W['dest_suite'].value:
+                    core.check_suite_origin(W['dest_suite'].value, env_doc['base_url'])
+                cases = core.dataset_cases({**base, 'name': (suite_name.value or 'Lote').strip()}, rows, project_id, batch_mode.value, paths)
+                for case in cases:
+                    core.save('cases', {**case, 'environment_id': env_doc['id']})
+                if W['dest_suite'].value:
+                    suite = core.add_cases_to_suite(W['dest_suite'].value, [c['id'] for c in cases])
+                else:
+                    suite = core.save_suite((suite_name.value or 'Lote').strip(), env_doc['id'], [c['id'] for c in cases], project_id)
+                refresh_suites()
+                W['saved_view'].refresh()
+                ui.notify(f'{len(cases)} casos guardados en el flujo «{suite["name"]}» ({projects_by_id[project_id]})', type='positive')
+            ui.button('Guardar lote como flujo', icon='playlist_add_check', on_click=guard(save_batch)).props('outline dense no-caps')
+            ui.label('Se guarda en el proyecto y flujo elegidos en la pestaña «Guardar».').classes('text-xs text-gray-500')
+
+        def render_save():
+            ui.label('Guardar como caso de prueba').classes('font-medium')
+            ui.label('Nada se guarda hasta que lo decidas.').classes('text-xs text-gray-500')
+            W['case_name'] = ui.input('Nombre del caso').props('outlined dense').classes('w-full').bind_value(d, 'name')
+            W['mode'] = ui.select(MODES, value='exact', label='Qué debe cumplir').props('outlined dense options-dense').classes('w-full')
+            W['ignore'] = ui.input('Ignorar campos (JSONPath, coma)', placeholder='$.requested_at').props('outlined dense').classes('w-full')
+            W['ignore'].bind_visibility_from(W['mode'], 'value', lambda v: v == 'exact')
+            ui.separator()
+            ui.label('Destino').classes('font-medium text-sm')
+            W['dest_project'] = ui.select(project_options(), label='Proyecto', value=active_project if active_project in projects_by_id else (NEW if not projects_by_id else None),
+                                          on_change=refresh_suites).props('outlined dense options-dense').classes('w-full')
+            W['new_project'] = ui.input('Nombre del proyecto nuevo').props('outlined dense').classes('w-full')
+            W['new_project'].bind_visibility_from(W['dest_project'], 'value', lambda v: v == NEW)
+            W['dest_suite'] = ui.select({'': 'No agregar a un flujo existente'}, value='', label='Agregar a un flujo existente').props('outlined dense options-dense').classes('w-full')
+            refresh_suites()
+            W['update_existing'] = ui.switch('Actualizar el caso guardado (en vez de crear otro)', value=True).props('dense')
+            W['update_existing'].bind_visibility_from(d, 'source', lambda s: bool(s) and s.get('type') == 'case')
+            ui.button('Guardar', icon='save', on_click=guard(save_case)).props('color=primary no-caps').mark('ws-save')
+
+        def render_agent():
+            agent_tab()
+
+        return [
+            Panel('Params', 'Params', 'tune', render_params, draggable=False),
+            Panel('Headers', 'Headers', 'list_alt', render_headers, draggable=False),
+            Panel('Body', 'Body', 'data_object', render_body, draggable=False),
+            Panel('Pruebas', 'Pruebas', 'rule', render_tests, draggable=False),
+            Panel('Variables', 'Variables', 'data_array', render_variables, draggable=False),
+            Panel('Lote', 'Lote', 'table_rows', render_batch, draggable=False),
+            Panel('Guardar', 'Guardar', 'save', render_save, draggable=False),
+            Panel('Agente', 'Agente', 'smart_toy', render_agent, draggable=False),
+        ]
+
     def right():
-        with ui.row().classes('w-full h-full no-wrap gap-0'):
-            with ui.tab_panels(None, value='Params').props('vertical').style('flex:1 1 0;min-width:0;overflow:auto;height:100%') as panels:
-                with ui.tab_panel('Params').classes('p-3 gap-2'):
-                    ui.label('Parámetros de la query').classes('font-medium')
-                    ui.label('Se combinan con los que escribas en la URL.').classes('text-xs text-gray-500')
-                    W['query_view'] = kv_rows(lambda: d['query'], 'Parámetro', 'Valor', lambda: W['chips_view'].refresh())
-                with ui.tab_panel('Headers').classes('p-3 gap-2'):
-                    ui.label('Headers').classes('font-medium')
-                    ui.label('Las filas desactivadas se conservan pero no se envían. La autenticación del ambiente se agrega sola.').classes('text-xs text-gray-500')
-                    W['headers_view'] = kv_rows(lambda: d['headers'], 'Header', 'Valor', lambda: W['chips_view'].refresh(), HEADER_SUGGESTIONS)
-                with ui.tab_panel('Body').classes('p-3 gap-1'):
-                    with ui.row().classes('w-full items-center gap-1'):
-                        ui.label('Body JSON').classes('font-medium')
+        # fill_height=True: ya hay una altura definida alrededor (ver el div de altura fija en workspace_split).
+        # collapsible=False: este riel nunca tuvo el colapso estilo VS Code de Historias/Casos de prueba — clic
+        # en una pestaña solo cambia de panel. get_pref/set_pref remapeados a la clave vieja (app.storage.browser,
+        # NO remembered/app.storage.user como el resto de LTW) para no perder el ancho ya guardado de nadie.
+        def get_pref(key, default):
+            if not key.endswith('_split_value'):
+                return default
+            return layout.get('ws_right', right_w) if (isinstance(layout, dict) or hasattr(layout, 'get')) else right_w
 
-                        @ui.refreshable
-                        def body_status():
-                            text = (d['body'] or '').strip()
-                            if not text:
-                                ui.badge('vacío', color='grey').classes('text-xs')
-                                return
-                            try:
-                                json.loads(text)
-                                ui.badge('JSON válido', color='positive').classes('text-xs')
-                            except ValueError as exc:
-                                ui.badge('JSON inválido', color='negative').classes('text-xs').tooltip(str(exc))
-                        W['body_status'] = body_status
-                        body_status()
-                        ui.space()
+        def set_pref(key, value):
+            if key.endswith('_split_value') and (isinstance(layout, dict) or hasattr(layout, 'get')):
+                layout['ws_right'] = value
 
-                        def reformat(indent):
-                            try:
-                                data = json.loads(d['body'])
-                            except ValueError as exc:
-                                raise ValueError(f'No se puede formatear: {exc}')
-                            d['body'] = json.dumps(data, indent=indent, ensure_ascii=False) if indent else json.dumps(data, ensure_ascii=False, separators=(',', ':'))
-                            W['body'].set_value(d['body'])
-                        ui.button('Formatear', on_click=guard(lambda: reformat(2))).props('flat dense size=sm no-caps')
-                        ui.button('Minificar', on_click=guard(lambda: reformat(None))).props('flat dense size=sm no-caps')
-                        ui.button('Usar la última respuesta', on_click=guard(lambda: (d.__setitem__('body', pretty((S['result'] or {}).get('body'))), W['body'].set_value(d['body'])))) \
-                            .props('flat dense size=sm no-caps').tooltip('Copia el cuerpo de la respuesta como body de la petición')
+        def side_extra():
+            ui.button(icon='chevron_right', on_click=toggle_panel).props('flat dense color=primary') \
+                .tooltip('Ocultar este panel')
 
-                    def body_changed(event):
-                        d['body'] = event.value
-                        W['body_status'].refresh()
-                        W['chips_view'].refresh()
-                    W['body'] = ui.codemirror(d['body'], language='JSON', line_wrapping=True, on_change=body_changed).classes('w-full').style('height: calc(100vh - 200px)')
-                with ui.tab_panel('Pruebas').classes('p-3 gap-2'):
-                    ui.label('Pruebas (aserciones)').classes('font-medium')
-                    ui.label('El resultado de la última respuesta aparece junto a cada regla.').classes('text-xs text-gray-500')
-                    W['tests_view'] = assertion_rows(lambda: d['assertions'], results_list, get_paths=response_paths)
-                    ui.separator()
-                    ui.label('Generar desde la respuesta actual').classes('font-medium text-sm')
-                    gen_mode = ui.select({'exact': MODES['exact'], 'structure': MODES['structure'], 'status': MODES['status']}, value='exact').props('outlined dense options-dense').classes('w-full')
-                    gen_ignore = ui.input('Ignorar campos (JSONPath, coma)', placeholder='$.requested_at').props('outlined dense').classes('w-full')
-                    ui.button('Generar pruebas', icon='auto_fix_high', on_click=guard(lambda: autogenerate(gen_mode.value, gen_ignore.value))).props('outline dense no-caps')
-                    ui.label('Se reemplazan las pruebas actuales. Los campos que suelen cambiar se rellenan tras enviar.').classes('text-xs text-gray-500')
-                    W['gen_ignore'] = gen_ignore
-                with ui.tab_panel('Variables').classes('p-3 gap-2'):
-                    ui.label('Variables de esta petición').classes('font-medium')
-                    ui.label('Usa {{nombre}} en URL, headers, query o body. {{secret:NOMBRE}} toma el valor del almacén seguro.').classes('text-xs text-gray-500')
-                    W['vars_view'] = kv_rows(lambda: d['variables'], 'Variable', 'Valor', lambda: W['chips_view'].refresh())
-                    ui.separator()
-                    ui.label('Extraer de la respuesta (para encadenar en un flujo)').classes('font-medium text-sm')
-
-                    @ui.refreshable
-                    def extract_view():
-                        for rule in d['extract']:
-                            with ui.row().classes('w-full items-center gap-1 no-wrap'):
-                                ui.input('Guardar como', value=rule.get('name', '')).props('outlined dense').classes('w-1/3').on_value_change(lambda e, r=rule: r.__setitem__('name', e.value))
-                                ui.input('Ruta ($.token)', value=rule.get('path', '')).props('outlined dense').classes('grow').on_value_change(lambda e, r=rule: r.__setitem__('path', e.value))
-                                ui.button(icon='close', on_click=lambda _, r=rule: (d['extract'].remove(r), extract_view.refresh())).props('flat round dense size=sm color=grey')
-                        ui.button('Agregar extracción', icon='add', on_click=lambda: (d['extract'].append({'name': '', 'source': 'json', 'path': ''}), extract_view.refresh())).props('flat dense size=sm color=primary')
-                    W['extract_view'] = extract_view
-                    extract_view()
-                with ui.tab_panel('Lote').classes('p-3 gap-2'):
-                    ui.label('Misma petición con distintas entradas').classes('font-medium')
-                    ui.label('Escribe {{variables}} en la petición (p. ej. /api/users/{{id}}) y define un valor por fila.').classes('text-xs text-gray-500')
-
-                    @ui.refreshable
-                    def batch_view():
-                        try:
-                            case, _ = ws.build_case(d)
-                        except ValueError as exc:
-                            ui.label(f'Define primero la petición: {exc}').classes('text-amber-700 text-sm')
-                            return
-                        names = [n for n in core.find_unresolved(case['path'], case['headers'], case['query'], case['body']) if not n.startswith(('secret:', '@'))]
-                        if not names:
-                            ui.label('La petición no tiene {{variables}} todavía.').classes('text-amber-700 text-sm')
-                            return
-                        for index, row_ in enumerate(S['batch_rows']):
-                            with ui.row().classes('w-full items-center gap-1 no-wrap'):
-                                ui.input('Nombre', value=row_['name']).props('outlined dense').classes('w-28').on_value_change(lambda e, r=row_: r.__setitem__('name', e.value))
-                                for name in names:
-                                    ui.input(name, value=str(row_['values'].get(name, ''))).props('outlined dense').classes('grow').on_value_change(lambda e, r=row_, n=name: r['values'].__setitem__(n, e.value))
-                                res = S['batch'].get(index)
-                                if res:
-                                    status_chip(res.get('http_status'), res['status'] == 'error')
-                                ui.button(icon='close', on_click=lambda _, i=index: (S['batch_rows'].pop(i), S['batch'].clear(), batch_view.refresh(), W['response_view'].refresh())).props('flat round dense size=sm color=grey')
-                    W['batch_view'] = batch_view
-                    batch_view()
-                    with ui.row().classes('gap-1'):
-                        ui.button('Agregar fila', icon='add', on_click=lambda: (S['batch_rows'].append({'name': f'fila {len(S["batch_rows"]) + 1}', 'values': {}}), batch_view.refresh())).props('flat dense size=sm color=primary no-caps')
-                        ui.button('Actualizar columnas', icon='refresh', on_click=lambda: batch_view.refresh()).props('flat dense size=sm no-caps')
-                    paste = ui.textarea('Pegar filas: una por línea, valores separados por coma').props('outlined dense autogrow').classes('w-full')
-
-                    def load_pasted():
-                        case, _ = ws.build_case(d)
-                        names = [n for n in core.find_unresolved(case['path'], case['headers'], case['query'], case['body']) if not n.startswith(('secret:', '@'))]
-                        rows = [{'name': f'fila {i}', 'values': dict(zip(names, [p.strip() for p in line.split(',')]))} for i, line in enumerate((paste.value or '').splitlines(), 1) if line.strip()]
-                        if not rows:
-                            raise ValueError('No hay líneas para importar')
-                        S['batch_rows'][:] = rows
-                        S['batch'].clear()
-                        batch_view.refresh()
-                    ui.button('Cargar filas', icon='content_paste', on_click=guard(load_pasted)).props('flat dense size=sm no-caps')
-
-                    async def run_batch():
-                        base, env = ws.build_case(d)
-                        names = [n for n in core.find_unresolved(base['path'], base['headers'], base['query'], base['body']) if not n.startswith(('secret:', '@'))]
-                        if not names:
-                            raise ValueError('La petición no tiene {{variables}}')
-                        S['batch'].clear()
-                        for index, row_ in enumerate(S['batch_rows']):
-                            case = {**base, 'name': row_['name'], 'variables': {**base['variables'], **{n: row_['values'].get(n, '') for n in names}}}
-                            S['batch'][index] = await run.io_bound(core.execute_api, case, env, None, False)
-                        S['resp_tab'] = 'Lote'
-                        batch_view.refresh()
-                        W['response_view'].refresh()
-                    ui.button('Ejecutar lote', icon='play_arrow', on_click=guard(run_batch)).props('color=positive dense no-caps')
-                    ui.separator()
-                    suite_name = ui.input('Nombre del flujo', value='Regresión (lote)').props('outlined dense').classes('w-full')
-                    batch_mode = ui.select({k: v for k, v in MODES.items() if k != 'panel'}, value='exact').props('outlined dense options-dense').classes('w-full')
-                    batch_ignore = ui.input('Ignorar campos (JSONPath, coma)').props('outlined dense').classes('w-full')
-
-                    def save_batch():
-                        base, env = ws.build_case(d)
-                        names = [n for n in core.find_unresolved(base['path'], base['headers'], base['query'], base['body']) if not n.startswith(('secret:', '@'))]
-                        if len(S['batch']) != len(S['batch_rows']) or any(r['status'] == 'error' for r in S['batch'].values()):
-                            raise ValueError('Ejecuta el lote completo (sin errores de conexión) antes de guardarlo')
-                        paths = [p.strip() for p in (batch_ignore.value or '').split(',') if p.strip()]
-                        rows = [{'name': r['name'], 'variables': {n: r['values'].get(n, '') for n in names}, 'status': S['batch'][i]['http_status'], 'body': S['batch'][i]['response']['body']}
-                                for i, r in enumerate(S['batch_rows'])]
-                        project_id = resolve_project()
-                        env_doc = persistent_env(project_id, env)
-                        if W['dest_suite'].value:
-                            core.check_suite_origin(W['dest_suite'].value, env_doc['base_url'])
-                        cases = core.dataset_cases({**base, 'name': (suite_name.value or 'Lote').strip()}, rows, project_id, batch_mode.value, paths)
-                        for case in cases:
-                            core.save('cases', {**case, 'environment_id': env_doc['id']})
-                        if W['dest_suite'].value:
-                            suite = core.add_cases_to_suite(W['dest_suite'].value, [c['id'] for c in cases])
-                        else:
-                            suite = core.save_suite((suite_name.value or 'Lote').strip(), env_doc['id'], [c['id'] for c in cases], project_id)
-                        refresh_suites()
-                        W['saved_view'].refresh()
-                        ui.notify(f'{len(cases)} casos guardados en el flujo «{suite["name"]}» ({projects_by_id[project_id]})', type='positive')
-                    ui.button('Guardar lote como flujo', icon='playlist_add_check', on_click=guard(save_batch)).props('outline dense no-caps')
-                    ui.label('Se guarda en el proyecto y flujo elegidos en la pestaña «Guardar».').classes('text-xs text-gray-500')
-                with ui.tab_panel('Guardar').classes('p-3 gap-2'):
-                    ui.label('Guardar como caso de prueba').classes('font-medium')
-                    ui.label('Nada se guarda hasta que lo decidas.').classes('text-xs text-gray-500')
-                    W['case_name'] = ui.input('Nombre del caso').props('outlined dense').classes('w-full').bind_value(d, 'name')
-                    W['mode'] = ui.select(MODES, value='exact', label='Qué debe cumplir').props('outlined dense options-dense').classes('w-full')
-                    W['ignore'] = ui.input('Ignorar campos (JSONPath, coma)', placeholder='$.requested_at').props('outlined dense').classes('w-full')
-                    W['ignore'].bind_visibility_from(W['mode'], 'value', lambda v: v == 'exact')
-                    ui.separator()
-                    ui.label('Destino').classes('font-medium text-sm')
-                    W['dest_project'] = ui.select(project_options(), label='Proyecto', value=active_project if active_project in projects_by_id else (NEW if not projects_by_id else None),
-                                                  on_change=refresh_suites).props('outlined dense options-dense').classes('w-full')
-                    W['new_project'] = ui.input('Nombre del proyecto nuevo').props('outlined dense').classes('w-full')
-                    W['new_project'].bind_visibility_from(W['dest_project'], 'value', lambda v: v == NEW)
-                    W['dest_suite'] = ui.select({'': 'No agregar a un flujo existente'}, value='', label='Agregar a un flujo existente').props('outlined dense options-dense').classes('w-full')
-                    refresh_suites()
-                    W['update_existing'] = ui.switch('Actualizar el caso guardado (en vez de crear otro)', value=True).props('dense')
-                    W['update_existing'].bind_visibility_from(d, 'source', lambda s: bool(s) and s.get('type') == 'case')
-                    ui.button('Guardar', icon='save', on_click=guard(save_case)).props('color=primary no-caps').mark('ws-save')
-                with ui.tab_panel('Agente').classes('p-3 gap-2'):
-                    agent_tab()
-            with ui.tabs().props('vertical dense no-caps').classes('shrink-0').style('width:56px;border-left:1px solid #e5e7eb') as rail:
-                # Params..Lote editan la petición; Guardar/Agente son acciones aparte (persistir, herramientas de
-                # IA/protocolo) — un borde los separa visualmente sin tocar el cableado rail↔panels existente.
-                for name, icon in (('Params', 'tune'), ('Headers', 'list_alt'), ('Body', 'data_object'), ('Pruebas', 'rule'), ('Variables', 'data_array'),
-                                   ('Lote', 'table_rows'), ('Guardar', 'save'), ('Agente', 'smart_toy')):
-                    tab = ui.tab(name, label='', icon=icon).tooltip(name).mark(f'rail-{name}')
-                    if name == 'Guardar':
-                        tab.style('border-top:1px solid #e5e7eb')
-            panels.bind_value_from(rail, 'value')
-            rail.set_value('Body')
+        workspace_layout(
+            side_panels=build_side_panels(),
+            center_anchors=[Panel('request', '', '', center)],
+            prefix='ws', get_pref=get_pref, set_pref=set_pref,
+            collapsible=False, side_title='', side_extra=side_extra, split_limits=(35, 85), fill_height=True,
+        )
 
     def agent_tab():
         base = f'http://127.0.0.1:{os.environ.get("LTW_PORT", "8080")}'
@@ -943,15 +976,11 @@ def build(preset_case_id=None, prefill=None):
                         ui.button(icon='chevron_left', on_click=toggle_panel).props('round dense flat color=primary') \
                             .classes('absolute top-2 right-2 z-10 bg-white shadow-2').tooltip('Mostrar el panel de detalle (Params, Body, Pruebas, Agente…)')
                 else:
-                    with ui.splitter(value=right_w, limits=(35, 85), on_change=lambda e: layout.__setitem__('ws_right', e.value)).classes('w-full').style('height:100%') as inner:
-                        with inner.before:
-                            with ui.element('div').classes('ltw-pane ltw-capture-pane').style('display:flex;flex-direction:column'):
-                                center()
-                        with inner.after:
-                            with ui.element('div').classes('ltw-pane relative').style('overflow:hidden'):
-                                ui.button(icon='chevron_right', on_click=toggle_panel).props('round dense flat color=primary') \
-                                    .classes('absolute top-2 left-2 z-10 bg-white shadow-2').tooltip('Ocultar este panel')
-                                right()
+                    # right() ahora arma su propio splitter completo (centro + riel de Nivel 1, ver
+                    # app/layouts/workspace.py) — ya no hace falta el splitter "inner" propio de acá, ni pasarle
+                    # center() por separado: el botón para ocultar este panel vive en el side_extra de right().
+                    with ui.element('div').classes('ltw-pane').style('height:100%'):
+                        right()
     with ui.element('div').classes('w-full').style('height: calc(100vh - 50px)'):
         workspace_split()
     if preset_case_id:

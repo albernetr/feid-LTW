@@ -847,7 +847,7 @@ async def test_workspace_sends_records_history_and_saves_into_a_new_project(user
     assert core.list_items('runs') == [] and core.list_items('cases') == []                    # nothing saved yet, but...
     history = core.list_items('lab_history')
     assert len(history) == 1 and history[0]['result']['http_status'] == 200 and history[0]['key'].endswith('/api/users/2')   # ...it is in the history
-    user.find('rail-Guardar').click()
+    user.find('ws-rail-Guardar').click()
     user.find('ws-save').click()                                                              # a status/exact mode with no project chosen
     await user.should_see('El nombre del proyecto es obligatorio')
     assert core.list_items('cases') == []
@@ -1022,7 +1022,7 @@ async def test_workspace_imports_an_agent_spec_into_the_editor(user: User):
     spec = {'format': 'ltw.spec/1', 'environments': [{'name': 'api', 'base_url': 'http://127.0.0.1:9'}],
             'cases': [{'name': 'Crear', 'method': 'POST', 'path': '/api/items', 'body': {'name': 'x'}, 'assertions': [{'type': 'status', 'expected': 201}]}]}
     await user.open('/workspace')
-    user.find('rail-Agente').click()
+    user.find('ws-rail-Agente').click()
     user.find('Pega aquí un ltw.spec/1').type(json.dumps(spec))
     user.find('Validar y cargar el primer caso').click()
     await user.should_see('Primer caso cargado')
@@ -1177,7 +1177,7 @@ async def test_saved_cases_are_unified_across_both_workspaces(user: User):
     ui_case = core.save('cases', {'name': 'Login UI', 'type': 'ui', 'project_id': project['id'], 'timeout_ms': 10000, 'steps': [{'action': 'navigate', 'url': '/login'}]})
 
     await user.open('/workspace')
-    user.find('rail-Guardar').click()
+    user.find('ws-rail-Guardar').click()
     await user.should_see('Casos (API y UI)')
     await user.should_see('Login UI')                             # the UI case shows up here too
     user.find(f'ws-saved-{ui_case["id"]}').click()
