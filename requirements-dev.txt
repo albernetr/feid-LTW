@@ -2,3 +2,6 @@
 pytest>=8,<10
 pytest-asyncio>=1,<2
 pyinstaller>=6
+# starlette.testclient (usado por fastapi.testclient.TestClient en tests/test_agent.py) prefiere httpx2
+# sobre httpx desde Starlette 1.10 y emite StarletteDeprecationWarning si no está instalado.
+httpx2>=2,<3
