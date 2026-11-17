@@ -77,6 +77,9 @@ def test_spec_detail(id: str = '', story_id: str = ''):
         # derecha con riel de pestañas gobernado por la plantilla de entrada elegida, separador ajustable,
         # colapsable con un clic en el ícono ya activo, modo compacto/scroll completo.
         compact, set_compact = remembered('spec_layout_compact', default=True)
+        assistant_location, set_assistant_location_pref = remembered('spec_assistant_location', default='bottom')
+        S = {'assistant_location': assistant_location}
+        workspace_handle = {'value': None}   # lo llena workspace_area() más abajo (workspace_layout real, Nivel 1)
 
         # Persistencia de workspace_layout remapeada a la clave vieja de ancho de separador (spec_split_width),
         # para no perder la preferencia ya guardada de nadie con esta migración; center_mode es nuevo (no
@@ -121,6 +124,141 @@ def test_spec_detail(id: str = '', story_id: str = ''):
             else:
                 d['meta'][key] = value
 
+        ASSISTANT_LOCATION_ICONS = {'bottom': 'border_bottom', 'right': 'border_right', 'center': 'tab'}
+        ASSISTANT_LOCATION_LABELS = {'bottom': 'Abajo, a todo el ancho', 'right': 'En el panel derecho (Campos)', 'center': 'Como pestaña del panel central'}
+
+        # Asistente de IA: estado + render definidos ACÁ (antes de armar los paneles y el header) para poder
+        # montarlo en dos lugares físicos distintos (columna derecha, o abajo a lo ancho), o arrastrarlo al
+        # centro como otra pestaña más — mismo patrón que user_stories.py::render_assistant_body.
+        thread_key = current['id'] if current else 'new'
+        thread = ASSISTANT_THREADS.setdefault(thread_key, [])
+        candidates = {'items': None}
+
+        def _apply_case_draft(tc, errors):
+            if not tc:
+                raise ValueError('; '.join(errors) or 'El modelo no devolvió un caso de prueba válido')
+            _set_meta(title, 'title', tc['title'])
+            if preconditions:
+                preconditions.set_value(tc['preconditions'])
+            _set_meta(priority, 'priority', tc['priority'])
+            _set_meta(type_, 'type', tc['type'])
+            d['steps'] = [dict(s) for s in tc['steps']]
+            step_rows.refresh()
+            document_view.refresh()
+
+        def render_assistant_body():
+            @ui.refreshable
+            def assistant_view():
+                if not thread:
+                    ui.label('Pedile que genere candidatos (desde la Historia ligada, o desde una descripción), o que refine el caso de arriba.').classes('text-sm text-gray-400')
+                for turn in thread:
+                    with ui.chat_message(name='Vos' if turn['who'] == 'user' else 'Asistente', sent=turn['who'] == 'user').classes('w-full'):
+                        ui.label(turn['text']).style('white-space:pre-wrap')
+            assistant_view()
+
+            @ui.refreshable
+            def candidates_view():
+                if not candidates['items']:
+                    return
+                with ui.card().classes('w-full bg-blue-50').props('flat'):
+                    ui.label(f'{len(candidates["items"])} candidato(s) — elegí uno para cargarlo arriba').classes('font-semibold')
+                    for tc in candidates['items']:
+                        with ui.row().classes('items-center gap-2 w-full no-wrap'):
+                            ui.label(f'{tc["title"]} — {len(tc["steps"])} paso(s) · {TYPE_LABELS.get(tc["type"], tc["type"])} · '
+                                    f'{core.PRIORITY_LABELS.get(tc["priority"], tc["priority"])}').classes('text-sm grow')
+
+                            def use(tc=tc):
+                                _apply_case_draft(tc, [])
+                                candidates['items'] = None
+                                candidates_view.refresh()
+                            ui.button('Usar este', on_click=guard(use)).props('flat dense size=sm color=primary').mark('spec-use-candidate')
+                    ui.button('Descartar todos', on_click=lambda: (candidates.__setitem__('items', None), candidates_view.refresh())).props('flat dense')
+            candidates_view()
+
+            async def send(box):
+                text = (box.value or '').strip()
+                if not text:
+                    return
+                box.value = ''
+                thread.append({'who': 'user', 'text': text})
+                assistant_view.refresh()
+                lowered = text.lower()
+                try:
+                    if any(k in lowered for k in llm.SPEC_REFINE_KEYWORDS):
+                        item = {'title': d['meta']['title'], 'preconditions': _v(preconditions), 'steps': d['steps'],
+                               'priority': d['meta']['priority'], 'type': d['meta']['type']}
+                        result = await run.io_bound(llm.refine_spec_item, 'test_case', item, text)
+                        _apply_case_draft(result['item'], result['errors'])
+                        reply = 'Refiné el caso de prueba — revisá los cambios arriba y guardá si te sirven.'
+                    elif any(k in lowered for k in llm.SPEC_GENERATE_CASES_KEYWORDS) or not d['meta']['title'].strip():
+                        linked_story = core.get('user_stories', d['meta']['story_id']) if d['meta']['story_id'] else None
+                        envs = core.list_project_items('environments', pid)
+                        result = await run.io_bound(llm.generate_test_cases, linked_story,
+                                                    None if linked_story else [{'text': text}], envs[0] if envs else None)
+                        if not result['valid']:
+                            raise ValueError('; '.join(result['errors']))
+                        candidates['items'] = result['test_cases']
+                        candidates_view.refresh()
+                        reply = f'Generé {len(result["test_cases"])} candidato(s) — elegí uno abajo para cargarlo arriba.'
+                    else:
+                        context = {'kind': 'caso de prueba', 'current': {'title': d['meta']['title'], 'preconditions': _v(preconditions), 'steps': d['steps']}}
+                        reply = await run.io_bound(llm.spec_chat_reply, thread[:-1], text, context)
+                except (llm.LLMError, ValueError) as exc:
+                    reply = f'No pude: {exc}'
+                thread.append({'who': 'assistant', 'text': reply})
+                assistant_view.refresh()
+
+            with ui.row().classes('w-full items-center gap-2'):
+                box = ui.input(placeholder='Generá candidatos, o pedile que refine el caso de arriba…') \
+                    .props('outlined dense').classes('grow').mark('spec-assistant-input')
+                box.on('keydown.enter', lambda: send(box))
+                ui.button(icon='send', on_click=lambda: send(box)).props('round dense color=primary').mark('spec-assistant-send')
+
+        def render_assistant_card():
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('smart_toy', color='primary')
+                ui.label('Asistente de IA').classes('font-semibold')
+                ui.icon('info', size='xs', color='grey').classes('cursor-help').tooltip(
+                    'Pedile que genere candidatos (desde la Historia ligada, o desde una descripción), o que '
+                    'refine el caso de arriba. Lo que proponga queda para revisar antes de guardar/crear.')
+            render_assistant_body()
+
+        @ui.refreshable
+        def assistant_right_mount():
+            if S['assistant_location'] != 'right':
+                return
+            with ui.card().classes('w-full').mark('spec-assistant-card-right').style('overflow:visible' if compact else ''):
+                render_assistant_card()
+
+        @ui.refreshable
+        def assistant_bottom_mount():
+            if S['assistant_location'] != 'bottom':
+                return
+            with ui.card().classes('w-full').mark('spec-assistant-card-bottom').style('overflow:visible' if compact else ''):
+                render_assistant_card()
+
+        def _on_assistant_removed_from_center():
+            if S['assistant_location'] == 'center':
+                set_assistant_location('bottom')
+
+        def set_assistant_location(loc):
+            old = S['assistant_location']
+            if old == loc:
+                return
+            if loc == 'center':
+                if not workspace_handle['value'].add_to_center('assistant'):
+                    return   # tope de 3 alcanzado; add_to_center ya mostró el aviso
+                S['assistant_location'] = loc
+                set_assistant_location_pref(loc)
+            else:
+                S['assistant_location'] = loc
+                set_assistant_location_pref(loc)
+                if old == 'center':
+                    workspace_handle['value'].remove_from_center('assistant')
+            assistant_right_mount.refresh()
+            assistant_bottom_mount.refresh()
+            assistant_position_button.refresh()
+
         with ui.column().classes('w-full p-4 gap-4 ltw-doc'):
             with ui.row().classes('w-full items-center justify-between no-wrap'):
                 with ui.column().classes('gap-0'):
@@ -133,6 +271,27 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                     ui.button(icon='fullscreen_exit' if compact else 'fullscreen', on_click=toggle_compact) \
                         .props('flat round dense').mark('spec-toggle-compact') \
                         .tooltip('Cambiar a modo con scroll completo' if compact else 'Cambiar a modo compacto (sin scroll, ancho completo)')
+                    @ui.refreshable
+                    def assistant_position_button():
+                        with ui.button(icon=ASSISTANT_LOCATION_ICONS[S['assistant_location']]) \
+                                .props('flat round dense').mark('spec-toggle-assistant-position').tooltip('Dónde mostrar el Asistente de IA'):
+                            with ui.menu():
+                                for loc in ('bottom', 'right', 'center'):
+                                    ui.menu_item(ASSISTANT_LOCATION_LABELS[loc], on_click=lambda loc=loc: set_assistant_location(loc)) \
+                                        .mark(f'spec-assistant-location-{loc}')
+                    assistant_position_button()
+
+                    def toggle_center_mode_ui():
+                        workspace_handle['value'].toggle_center_mode()
+                        center_mode_button.refresh()
+
+                    @ui.refreshable
+                    def center_mode_button():
+                        mode = get_pref('spec_center_mode', 'tabs')
+                        ui.button(icon='vertical_split' if mode == 'tabs' else 'view_column', on_click=toggle_center_mode_ui) \
+                            .props('flat round dense').mark('spec-toggle-center-mode') \
+                            .tooltip('Ver los paneles del centro uno al lado del otro' if mode == 'tabs' else 'Volver a verlos en pestañas')
+                    center_mode_button()
                     typography_button(lambda: document_view.refresh())
 
             # Plantilla de ENTRADA elegida: cada grupo de primer nivel de su `body` es una pestaña del riel (ver
@@ -272,108 +431,36 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                               (lambda grp=g: render_template_tree(grp['children'], d['custom'], known_renderers, on_change=lambda: document_view.refresh())))
                         for g in groups]
 
+            # "document" y "assistant" siempre son ancla de centro (nunca aparecen en el riel) — igual que en
+            # user_stories.py; cuáles grupos dinámicos del riel entran al centro lo decide workspace_layout solo
+            # (son side_panels, arrastrables por defecto). "assistant" se puede cerrar del centro con su propia
+            # "x"; cuando eso pasa, _on_assistant_removed_from_center lo manda de vuelta a "bottom".
+            center_anchors = [
+                Panel('document', 'Documento', 'description', document_view),
+                Panel('assistant', 'Asistente de IA', 'smart_toy', render_assistant_body, on_remove=_on_assistant_removed_from_center),
+            ]
+
             @ui.refreshable
             def workspace_area():
                 with ui.element('div').classes('w-full').style('height: calc(100vh - 210px)' if compact else ''):
-                    workspace_layout(
-                        side_panels=build_side_panels(),
-                        center_anchors=[Panel('document', 'Documento', 'description', document_view)],
+                    workspace_handle['value'] = workspace_layout(
+                        side_panels=build_side_panels(), center_anchors=center_anchors,
                         prefix='spec', get_pref=get_pref, set_pref=set_pref,
                         side_title='Campos', side_icon='edit_note', side_extra=side_extra,
+                        side_footer=assistant_right_mount,
+                        center_footer=assistant_bottom_mount if compact else None,
                         fill_height=compact,
                     )
             workspace_area()
+            if S['assistant_location'] == 'center':
+                workspace_handle['value'].add_to_center('assistant')
+            if not compact:
+                assistant_bottom_mount()
+
+            def _on_input_template_change(e):
+                workspace_area.refresh()
+                if S['assistant_location'] == 'center':
+                    workspace_handle['value'].add_to_center('assistant')
+                document_view.refresh()
             if input_template:
-                input_template.on_value_change(lambda e: (workspace_area.refresh(), document_view.refresh()))
-
-        # ------------------------------------------------------------ Asistente de IA (Fase 2)
-        thread_key = current['id'] if current else 'new'
-        thread = ASSISTANT_THREADS.setdefault(thread_key, [])
-        candidates = {'items': None}
-
-        def _apply_case_draft(tc, errors):
-            if not tc:
-                raise ValueError('; '.join(errors) or 'El modelo no devolvió un caso de prueba válido')
-            _set_meta(title, 'title', tc['title'])
-            if preconditions:
-                preconditions.set_value(tc['preconditions'])
-            _set_meta(priority, 'priority', tc['priority'])
-            _set_meta(type_, 'type', tc['type'])
-            d['steps'] = [dict(s) for s in tc['steps']]
-            step_rows.refresh()
-            document_view.refresh()
-
-        with ui.card().classes('w-full'):
-            with ui.row().classes('items-center gap-2'):
-                ui.icon('smart_toy', color='primary')
-                ui.label('Asistente de IA').classes('font-semibold')
-                ui.icon('info', size='xs', color='grey').classes('cursor-help').tooltip(
-                    'Pedile que genere candidatos (desde la Historia ligada, o desde una descripción), o que '
-                    'refine el caso de arriba. Lo que proponga queda para revisar antes de guardar/crear.')
-
-            @ui.refreshable
-            def assistant_view():
-                if not thread:
-                    ui.label('Pedile que genere casos de prueba, o que refine el de arriba.').classes('text-sm text-gray-400')
-                for turn in thread:
-                    with ui.chat_message(name='Vos' if turn['who'] == 'user' else 'Asistente', sent=turn['who'] == 'user').classes('w-full'):
-                        ui.label(turn['text']).style('white-space:pre-wrap')
-            assistant_view()
-
-            @ui.refreshable
-            def candidates_view():
-                if not candidates['items']:
-                    return
-                with ui.card().classes('w-full bg-blue-50').props('flat'):
-                    ui.label(f'{len(candidates["items"])} candidato(s) — elegí uno para cargarlo arriba').classes('font-semibold')
-                    for tc in candidates['items']:
-                        with ui.row().classes('items-center gap-2 w-full no-wrap'):
-                            ui.label(f'{tc["title"]} — {len(tc["steps"])} paso(s) · {TYPE_LABELS.get(tc["type"], tc["type"])} · '
-                                    f'{core.PRIORITY_LABELS.get(tc["priority"], tc["priority"])}').classes('text-sm grow')
-
-                            def use(tc=tc):
-                                _apply_case_draft(tc, [])
-                                candidates['items'] = None
-                                candidates_view.refresh()
-                            ui.button('Usar este', on_click=guard(use)).props('flat dense size=sm color=primary').mark('spec-use-candidate')
-                    ui.button('Descartar todos', on_click=lambda: (candidates.__setitem__('items', None), candidates_view.refresh())).props('flat dense')
-            candidates_view()
-
-            async def send(box):
-                text = (box.value or '').strip()
-                if not text:
-                    return
-                box.value = ''
-                thread.append({'who': 'user', 'text': text})
-                assistant_view.refresh()
-                lowered = text.lower()
-                try:
-                    if any(k in lowered for k in llm.SPEC_REFINE_KEYWORDS):
-                        item = {'title': d['meta']['title'], 'preconditions': _v(preconditions), 'steps': d['steps'],
-                               'priority': d['meta']['priority'], 'type': d['meta']['type']}
-                        result = await run.io_bound(llm.refine_spec_item, 'test_case', item, text)
-                        _apply_case_draft(result['item'], result['errors'])
-                        reply = 'Refiné el caso de prueba — revisá los cambios arriba y guardá si te sirven.'
-                    elif any(k in lowered for k in llm.SPEC_GENERATE_CASES_KEYWORDS) or not d['meta']['title'].strip():
-                        linked_story = core.get('user_stories', d['meta']['story_id']) if d['meta']['story_id'] else None
-                        envs = core.list_project_items('environments', pid)
-                        result = await run.io_bound(llm.generate_test_cases, linked_story,
-                                                    None if linked_story else [{'text': text}], envs[0] if envs else None)
-                        if not result['valid']:
-                            raise ValueError('; '.join(result['errors']))
-                        candidates['items'] = result['test_cases']
-                        candidates_view.refresh()
-                        reply = f'Generé {len(result["test_cases"])} candidato(s) — elegí uno abajo para cargarlo arriba.'
-                    else:
-                        context = {'kind': 'caso de prueba', 'current': {'title': d['meta']['title'], 'preconditions': _v(preconditions), 'steps': d['steps']}}
-                        reply = await run.io_bound(llm.spec_chat_reply, thread[:-1], text, context)
-                except (llm.LLMError, ValueError) as exc:
-                    reply = f'No pude: {exc}'
-                thread.append({'who': 'assistant', 'text': reply})
-                assistant_view.refresh()
-
-            with ui.row().classes('w-full items-center gap-2'):
-                box = ui.input(placeholder='Generá candidatos, o pedile que refine el caso de arriba…') \
-                    .props('outlined dense').classes('grow').mark('spec-assistant-input')
-                box.on('keydown.enter', lambda: send(box))
-                ui.button(icon='send', on_click=lambda: send(box)).props('round dense color=primary').mark('spec-assistant-send')
+                input_template.on_value_change(_on_input_template_change)

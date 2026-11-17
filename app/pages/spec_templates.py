@@ -109,6 +109,7 @@ def spec_template_detail(id: str = ''):
         # centro-izquierda, "Configuración" a la derecha en pestañas con riel de íconos (general/secciones),
         # separador ajustable, colapsable con un clic en el ícono ya activo, modo compacto/scroll completo.
         compact, set_compact = remembered('template_layout_compact', default=True)
+        workspace_handle = {'value': None}   # lo llena el workspace_layout() de más abajo
 
         # Persistencia de workspace_layout remapeada a la clave vieja de ancho de separador
         # (template_split_width), para no perder la preferencia ya guardada de nadie con esta migración.
@@ -168,6 +169,18 @@ def spec_template_detail(id: str = ''):
                     ui.button(icon='fullscreen_exit' if compact else 'fullscreen', on_click=toggle_compact) \
                         .props('flat round dense').mark('template-toggle-compact') \
                         .tooltip('Cambiar a modo con scroll completo' if compact else 'Cambiar a modo compacto (sin scroll, ancho completo)')
+
+                    def toggle_center_mode_ui():
+                        workspace_handle['value'].toggle_center_mode()
+                        center_mode_button.refresh()
+
+                    @ui.refreshable
+                    def center_mode_button():
+                        mode = get_pref('template_center_mode', 'tabs')
+                        ui.button(icon='vertical_split' if mode == 'tabs' else 'view_column', on_click=toggle_center_mode_ui) \
+                            .props('flat round dense').mark('template-toggle-center-mode') \
+                            .tooltip('Ver los paneles del centro uno al lado del otro' if mode == 'tabs' else 'Volver a verlos en pestañas')
+                    center_mode_button()
                     typography_button(lambda: document_view.refresh())
 
             def render_general():
@@ -357,10 +370,12 @@ def spec_template_detail(id: str = ''):
                 document_view()
 
             with ui.element('div').classes('w-full').style('height: calc(100vh - 210px)' if compact else ''):
-                workspace_layout(
+                # draggable por defecto (True): general/sections se pueden arrastrar al centro para verlos uno
+                # al lado del otro con el documento — misma versatilidad que ya tenía Historias de usuario.
+                workspace_handle['value'] = workspace_layout(
                     side_panels=[
-                        Panel('general', 'General', 'tune', render_general, draggable=False),
-                        Panel('sections', 'Secciones y campos', 'account_tree', render_sections, draggable=False),
+                        Panel('general', 'General', 'tune', render_general),
+                        Panel('sections', 'Secciones y campos', 'account_tree', render_sections),
                     ],
                     center_anchors=[Panel('document', '', '', render_document)],
                     prefix='template', get_pref=get_pref, set_pref=set_pref,

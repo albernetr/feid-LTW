@@ -51,7 +51,7 @@ MINI_CSS = '''<style>
 .q-drawer--mini .q-btn__content .block{font-size:0 !important;width:0 !important;height:0 !important;overflow:hidden !important} /* Tailwind's !important .block wins over display:none */
 .q-drawer--mini .q-btn__content{justify-content:center !important}
 .q-drawer--mini .q-btn__content .q-icon{margin:0 !important}
-.ltw-pane{height:100%;overflow:auto} .q-splitter__separator{background:#e5e7eb}
+.ltw-pane{width:100%;height:100%;overflow:auto} .q-splitter__separator{background:#e5e7eb}
 .ltw-pane .q-tab-panel{min-width:0} .ltw-pane pre{white-space:pre-wrap !important;word-break:break-word}
 .ltw-pane .nicegui-code{max-width:100%}
 </style>'''
