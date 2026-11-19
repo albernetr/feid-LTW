@@ -1,15 +1,15 @@
-"""Contrato de MemoryAdapter, verificado contra InMemoryAdapter acá — los adaptadores reales
-(JsonFileMemoryAdapter/SqliteMemoryAdapter, en app/assistant_memory.py) reusan exactamente esta misma
-batería parametrizada (ver tests/test_assistant_memory.py), así que un cambio de contrato se nota en los
-tres a la vez."""
+"""Contrato de MemoryAdapter, verificado contra los 3 adaptadores a la vez (InMemoryAdapter de referencia +
+los 2 reales en app/assistant_memory.py) — así un cambio de contrato se nota en los tres juntos."""
 import pytest
+from app import assistant_memory, assistant_memory_config
 from app.assistant import InMemoryAdapter
 
-ADAPTERS = [InMemoryAdapter]
+ADAPTERS = [InMemoryAdapter, assistant_memory.JsonFileMemoryAdapter, assistant_memory.SqliteMemoryAdapter]
 
 
 @pytest.fixture(params=ADAPTERS)
-def adapter(request):
+def adapter(request, monkeypatch, tmp_path):
+    monkeypatch.setattr('app.core.ROOT', tmp_path)
     return request.param()
 
 
@@ -90,3 +90,35 @@ def test_clear_all_empties_every_thread(adapter):
     assert adapter.load('t1') == []
     assert adapter.load('t2') == []
     assert adapter.list_threads() == []
+
+
+# --------------------------------------------------------------------------- selección de backend/adaptador
+
+def test_active_backend_defaults_to_json(monkeypatch, tmp_path):
+    monkeypatch.setattr('app.core.ROOT', tmp_path)
+    monkeypatch.delenv('LTW_ASSISTANT_MEMORY_BACKEND', raising=False)
+    assert assistant_memory_config.active_backend() == 'json'
+
+
+def test_active_backend_follows_saved_config(monkeypatch, tmp_path):
+    monkeypatch.setattr('app.core.ROOT', tmp_path)
+    monkeypatch.delenv('LTW_ASSISTANT_MEMORY_BACKEND', raising=False)
+    assistant_memory_config.set_active('sqlite')
+    assert assistant_memory_config.active_backend() == 'sqlite'
+
+
+def test_env_var_wins_over_saved_config(monkeypatch, tmp_path):
+    monkeypatch.setattr('app.core.ROOT', tmp_path)
+    assistant_memory_config.set_active('sqlite')
+    monkeypatch.setenv('LTW_ASSISTANT_MEMORY_BACKEND', 'json')
+    assert assistant_memory_config.active_backend() == 'json'
+
+
+def test_get_adapter_returns_the_matching_class(monkeypatch, tmp_path):
+    monkeypatch.setattr('app.core.ROOT', tmp_path)
+    assistant_memory._cached.clear()
+    monkeypatch.setenv('LTW_ASSISTANT_MEMORY_BACKEND', 'sqlite')
+    assert isinstance(assistant_memory.get_adapter(), assistant_memory.SqliteMemoryAdapter)
+    monkeypatch.setenv('LTW_ASSISTANT_MEMORY_BACKEND', 'json')
+    assistant_memory._cached.clear()
+    assert isinstance(assistant_memory.get_adapter(), assistant_memory.JsonFileMemoryAdapter)
