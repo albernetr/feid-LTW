@@ -4,7 +4,8 @@ import re
 import tempfile
 from pathlib import Path
 from nicegui import ui, run
-from .. import core, llm, spec_report
+from .. import assistant_memory, core, llm, spec_report
+from ..assistant import AssistantIntent, AssistantProfile, assistant_header, assistant_memory_menu_items, assistant_panel
 from .common import frame, guard, confirm, empty_state, require_project, fmt_time, status_badge, read_upload, open_evidence_in_new_tab, protected_page, remembered, render_template_tree, doc_typography, live_doc_html, typography_button
 from ..layouts import Panel, workspace_layout
 from .test_case_specs import STATUS_LABELS as SPEC_STATUS_LABELS, TYPE_LABELS as SPEC_TYPE_LABELS
@@ -12,11 +13,6 @@ from .test_case_specs import STATUS_LABELS as SPEC_STATUS_LABELS, TYPE_LABELS as
 STATUS_LABELS = {'draft': 'Borrador', 'ready': 'Lista', 'done': 'Terminada'}
 STORY_STATUSES = ('draft', 'ready', 'done')
 IMPORT_TEXT_EXTENSIONS = ('.md', '.txt', '.csv', '.json')
-
-# Hilos del Asistente de IA embebido, uno por historia (o 'new' para el borrador sin guardar todavía) — en
-# memoria, nunca persistido, mismo espíritu que ASSISTANT_CHAT de chat_page.py pero separado por registro: acá
-# se navega de una historia a otra todo el tiempo, y un solo hilo global mostraría la charla equivocada.
-ASSISTANT_THREADS = {}
 
 
 async def _render_spec_download(data, kind):
@@ -301,9 +297,13 @@ def story_detail(id: str = ''):
         # lugares físicos distintos (columna derecha, o abajo a lo ancho) sin duplicar nada — cada mount es un
         # @ui.refreshable chico que solo decide SI renderiza acá; nunca reconstruye los campos de "Campos"
         # (title/as_a/criterios/etc. no se tocan al mover el Asistente, por eso no hace falta recargar la página).
-        thread_key = current['id'] if current else 'new'
-        thread = ASSISTANT_THREADS.setdefault(thread_key, [])
+        memory = assistant_memory.get_adapter()
+        thread_key = f'user_story:{current["id"] if current else "new"}'
+        thread = memory.load(thread_key)
         draft_cases = {'items': None}
+        draft_cases_view = None   # @ui.refreshable recreado fresco en cada render_assistant_body() más abajo —
+        # igual que history_view dentro de assistant_panel: un único refreshable compartido entre renders no
+        # sobrevive que el Asistente se remonte en otro lugar físico (centro/derecha/abajo), ver _handle_generate_cases
 
         def _apply_story_draft(story, errors):
             if not story:
@@ -337,28 +337,93 @@ def story_detail(id: str = ''):
             _safe_refresh(dod_rows)
             document_view.refresh()
 
+        async def _handle_generate_cases(text):
+            if not current:
+                raise ValueError('Guardá la historia primero para poder generar sus Casos de prueba.')
+            envs = core.list_project_items('environments', pid)
+            result = await run.io_bound(llm.generate_test_cases, current, None, envs[0] if envs else None)
+            if not result['valid']:
+                raise ValueError('; '.join(result['errors']))
+            draft_cases['items'] = result['test_cases']
+            draft_cases_view.refresh()
+            return f'Generé {len(result["test_cases"])} caso(s) de prueba candidatos — elegí cuáles crear, arriba.'
+
+        async def _handle_refine(text):
+            item = {'title': d['meta']['title'], 'as_a': _v(as_a), 'i_want': _v(i_want), 'so_that': _v(so_that),
+                   'criteria': d['criteria'], 'definition_of_ready': [i['text'] for i in d['dor']],
+                   'definition_of_done': [i['text'] for i in d['dod']], 'business_rules': _v(business_rules),
+                   'assumptions': _v(assumptions), 'risks': _v(risks), 'out_of_scope': _v(out_of_scope)}
+            result = await run.io_bound(llm.refine_spec_item, 'user_story', item, text)
+            _apply_story_draft(result['item'], result['errors'])
+            return 'Refiné la historia — revisá los cambios arriba y guardá si te sirven.'
+
+        async def _handle_generate_story(text):
+            selected_feature = core.get('features', d['meta']['feature_id']) if d['meta']['feature_id'] else None
+            result = await run.io_bound(llm.generate_user_story, text, selected_feature)
+            _apply_story_draft(result['story'], result['errors'])
+            return 'Generé una propuesta — revisala arriba (título, Como/Quiero/Para y criterios) y guardá si te sirve.'
+
+        async def _handle_chat(text, history):
+            context = {'kind': 'historia de usuario', 'current': {'title': d['meta']['title'], 'as_a': _v(as_a),
+                       'i_want': _v(i_want), 'so_that': _v(so_that), 'criteria': [c['text'] for c in d['criteria']]}}
+            return await run.io_bound(llm.spec_chat_reply, history, text, context)
+
+        PROFILE = AssistantProfile(
+            name='story',
+            placeholder='Generá una HU, pedile que la refine, o que genere sus Casos de prueba…',
+            empty_hint='Describí la historia que querés, o pedile que refine/enriquezca la de arriba.',
+            tooltip=('Pedile que genere una historia desde una descripción, que la refine o enriquezca, o — si ya '
+                     'está guardada — que genere sus Casos de prueba. Lo que proponga queda arriba, para revisar '
+                     'antes de guardar/crear; nunca se guarda solo.'),
+            intents=[
+                AssistantIntent(keywords=llm.SPEC_GENERATE_CASES_KEYWORDS, handler=_handle_generate_cases),
+                AssistantIntent(keywords=llm.SPEC_REFINE_KEYWORDS, handler=_handle_refine),
+                AssistantIntent(keywords=llm.SPEC_GENERATE_STORY_KEYWORDS, handler=_handle_generate_story,
+                                also_match=lambda text: not d['meta']['title'].strip()),
+            ],
+            fallback=_handle_chat,
+            catch=(llm.LLMError, ValueError),
+        )
+
         def render_assistant_body():
-            @ui.refreshable
-            def assistant_view():
-                if not thread:
-                    ui.label('Describí la historia que querés, o pedile que refine/enriquezca la de arriba.').classes('text-sm text-gray-400')
-                for turn in thread:
-                    with ui.chat_message(name='Vos' if turn['who'] == 'user' else 'Asistente', sent=turn['who'] == 'user').classes('w-full'):
-                        ui.label(turn['text']).style('white-space:pre-wrap')
-            assistant_view()
+            nonlocal draft_cases_view
 
             @ui.refreshable
             def draft_cases_view():
                 if not draft_cases['items']:
                     return
-                with ui.card().classes('w-full bg-blue-50').props('flat'):
-                    ui.label(f'{len(draft_cases["items"])} caso(s) de prueba propuestos').classes('font-semibold')
+                with ui.card().classes('w-full shrink-0 bg-blue-50').props('flat'):
+                    ui.label(f'{len(draft_cases["items"])} caso(s) de prueba propuestos — revisá y ajustá antes de crear.').classes('font-semibold')
                     checks = []
                     for tc in draft_cases['items']:
-                        c = ui.checkbox(tc['title'], value=True).mark('story-draft-case')
-                        checks.append((c, tc))
-                        ui.label(f'{len(tc["steps"])} paso(s) · {SPEC_TYPE_LABELS.get(tc["type"], tc["type"])} · '
-                                f'{core.PRIORITY_LABELS.get(tc["priority"], tc["priority"])}').classes('text-xs text-gray-500 ml-8')
+                        with ui.column().classes('w-full gap-1 p-2 border rounded bg-white').style('border-color:#e5e7eb'):
+                            with ui.row().classes('items-center gap-2 w-full no-wrap'):
+                                check = ui.checkbox(value=True).mark('story-draft-case')
+                                checks.append((check, tc))
+                                ui.input(value=tc['title']).props('outlined dense').classes('grow').mark('story-draft-case-title') \
+                                    .on_value_change(lambda e, tc=tc: tc.__setitem__('title', e.value))
+                            with ui.row().classes('gap-2 w-full ml-8'):
+                                ui.select(SPEC_TYPE_LABELS, value=tc['type']).props('outlined dense').classes('w-40') \
+                                    .on_value_change(lambda e, tc=tc: tc.__setitem__('type', e.value))
+                                ui.select(core.PRIORITY_LABELS, value=tc['priority']).props('outlined dense').classes('w-32') \
+                                    .on_value_change(lambda e, tc=tc: tc.__setitem__('priority', e.value))
+                            ui.textarea('Precondición', value=tc.get('preconditions', '')).props('outlined dense autogrow').classes('w-full ml-8').style('width:calc(100% - 2rem)') \
+                                .on_value_change(lambda e, tc=tc: tc.__setitem__('preconditions', e.value))
+
+                            @ui.refreshable
+                            def steps_view(tc=tc):
+                                for step in tc['steps']:
+                                    with ui.row().classes('items-start gap-2 w-full ml-8 no-wrap').style('width:calc(100% - 2rem)'):
+                                        ui.textarea('Paso', value=step.get('action', '')).props('outlined dense autogrow').classes('grow').mark('story-draft-step-action') \
+                                            .on_value_change(lambda e, step=step: step.__setitem__('action', e.value))
+                                        ui.textarea('Resultado esperado', value=step.get('expected', '')).props('outlined dense autogrow').classes('grow').mark('story-draft-step-expected') \
+                                            .on_value_change(lambda e, step=step: step.__setitem__('expected', e.value))
+                                        ui.button(icon='delete', on_click=lambda _, tc=tc, step=step: (tc['steps'].remove(step), steps_view.refresh())) \
+                                            .props('flat round dense color=negative')
+                            steps_view()
+                            ui.button('Agregar paso', icon='add',
+                                      on_click=lambda tc=tc, steps_view=steps_view: (tc['steps'].append({'action': '', 'expected': ''}), steps_view.refresh())) \
+                                .props('outline dense color=primary').classes('ml-8').mark('story-draft-add-step')
 
                     def create_selected():
                         made = 0
@@ -374,63 +439,18 @@ def story_detail(id: str = ''):
                     with ui.row().classes('gap-2'):
                         ui.button('Crear seleccionados', icon='add', on_click=guard(create_selected)).props('dense color=primary').mark('story-create-draft-cases')
                         ui.button('Descartar', on_click=lambda: (draft_cases.__setitem__('items', None), draft_cases_view.refresh())).props('flat dense')
-            draft_cases_view()
 
-            async def send(box):
-                text = (box.value or '').strip()
-                if not text:
-                    return
-                box.value = ''
-                thread.append({'who': 'user', 'text': text})
-                assistant_view.refresh()
-                lowered = text.lower()
-                try:
-                    if any(k in lowered for k in llm.SPEC_GENERATE_CASES_KEYWORDS):
-                        if not current:
-                            raise ValueError('Guardá la historia primero para poder generar sus Casos de prueba.')
-                        envs = core.list_project_items('environments', pid)
-                        result = await run.io_bound(llm.generate_test_cases, current, None, envs[0] if envs else None)
-                        if not result['valid']:
-                            raise ValueError('; '.join(result['errors']))
-                        draft_cases['items'] = result['test_cases']
-                        draft_cases_view.refresh()
-                        reply = f'Generé {len(result["test_cases"])} caso(s) de prueba candidatos — elegí cuáles crear, arriba.'
-                    elif any(k in lowered for k in llm.SPEC_REFINE_KEYWORDS):
-                        item = {'title': d['meta']['title'], 'as_a': _v(as_a), 'i_want': _v(i_want), 'so_that': _v(so_that),
-                               'criteria': d['criteria'], 'definition_of_ready': [i['text'] for i in d['dor']],
-                               'definition_of_done': [i['text'] for i in d['dod']], 'business_rules': _v(business_rules),
-                               'assumptions': _v(assumptions), 'risks': _v(risks), 'out_of_scope': _v(out_of_scope)}
-                        result = await run.io_bound(llm.refine_spec_item, 'user_story', item, text)
-                        _apply_story_draft(result['item'], result['errors'])
-                        reply = 'Refiné la historia — revisá los cambios arriba y guardá si te sirven.'
-                    elif any(k in lowered for k in llm.SPEC_GENERATE_STORY_KEYWORDS) or not d['meta']['title'].strip():
-                        selected_feature = core.get('features', d['meta']['feature_id']) if d['meta']['feature_id'] else None
-                        result = await run.io_bound(llm.generate_user_story, text, selected_feature)
-                        _apply_story_draft(result['story'], result['errors'])
-                        reply = 'Generé una propuesta — revisala arriba (título, Como/Quiero/Para y criterios) y guardá si te sirve.'
-                    else:
-                        context = {'kind': 'historia de usuario', 'current': {'title': d['meta']['title'], 'as_a': _v(as_a),
-                                   'i_want': _v(i_want), 'so_that': _v(so_that), 'criteria': [c['text'] for c in d['criteria']]}}
-                        reply = await run.io_bound(llm.spec_chat_reply, thread[:-1], text, context)
-                except (llm.LLMError, ValueError) as exc:
-                    reply = f'No pude: {exc}'
-                thread.append({'who': 'assistant', 'text': reply})
-                assistant_view.refresh()
+            assistant_panel(PROFILE, thread=thread, memory=memory, thread_key=thread_key, candidates=draft_cases_view)
 
-            with ui.row().classes('w-full items-center gap-2'):
-                box = ui.input(placeholder='Generá una HU, pedile que la refine, o que genere sus Casos de prueba…') \
-                    .props('outlined dense').classes('grow').mark('story-assistant-input')
-                box.on('keydown.enter', lambda: send(box))
-                ui.button(icon='send', on_click=lambda: send(box)).props('round dense color=primary').mark('story-assistant-send')
+        def _on_memory_menu_change():
+            thread[:] = memory.load(thread_key)
+            assistant_right_mount.refresh()
+            assistant_bottom_mount.refresh()
+            if S['assistant_location'] == 'center':
+                workspace_area.refresh()
 
         def render_assistant_card():
-            with ui.row().classes('items-center gap-2'):
-                ui.icon('smart_toy', color='primary')
-                ui.label('Asistente de IA').classes('font-semibold')
-                ui.icon('info', size='xs', color='grey').classes('cursor-help').tooltip(
-                    'Pedile que genere una historia desde una descripción, que la refine o enriquezca, o — si ya '
-                    'está guardada — que genere sus Casos de prueba. Lo que proponga queda arriba, para revisar '
-                    'antes de guardar/crear; nunca se guarda solo.')
+            assistant_header('Asistente de IA', PROFILE.tooltip)
             render_assistant_body()
 
         @ui.refreshable
@@ -532,6 +552,8 @@ def story_detail(id: str = ''):
                                 for loc in ('bottom', 'right', 'center'):
                                     ui.menu_item(ASSISTANT_LOCATION_LABELS[loc], on_click=lambda loc=loc: set_assistant_location(loc)) \
                                         .mark(f'story-assistant-location-{loc}')
+                                ui.separator()
+                                assistant_memory_menu_items(memory, thread_key, on_change=_on_memory_menu_change)
                     assistant_position_button()
 
                     def toggle_center_mode_ui():
