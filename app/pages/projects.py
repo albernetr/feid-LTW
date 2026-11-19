@@ -75,9 +75,9 @@ def projects_list():
             name_counts[key] = name_counts.get(key, 0) + 1
 
         columns = [
-            {'name': 'name', 'label': 'Nombre', 'field': 'name', 'align': 'left', 'sortable': True},
-            {'name': 'description', 'label': 'Descripción', 'field': 'description', 'align': 'left'},
-            {'name': 'resources', 'label': 'Recursos', 'field': 'resources', 'align': 'left'},
+            {'name': 'name', 'label': 'Nombre', 'field': 'name', 'align': 'left', 'sortable': True, 'style': 'max-width:220px'},
+            {'name': 'description', 'label': 'Descripción', 'field': 'description', 'align': 'left', 'style': 'max-width:260px;white-space:normal'},
+            {'name': 'resources', 'label': 'Recursos', 'field': 'resources', 'align': 'left', 'style': 'max-width:220px;white-space:normal'},
             {'name': 'status', 'label': 'Estado', 'field': 'status', 'align': 'center', 'sortable': True},
             {'name': 'actions', 'label': '', 'field': 'id', 'align': 'right'},
         ]
