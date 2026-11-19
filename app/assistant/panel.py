@@ -76,8 +76,10 @@ def assistant_memory_menu_items(memory: MemoryAdapter, thread_key: str, on_chang
         ui.label('Recordar esta conversación').classes('text-sm grow')
 
         def on_toggle(e):
+            # No llama a on_change(): habilitar/deshabilitar no cambia el contenido del hilo, así que no hay
+            # nada que resincronizar ni refrescar — y refrescar acá innecesariamente deja elementos del
+            # input/botón obsoletos si el usuario ya estaba escribiendo (visto en tests/test_assistant_panel.py).
             memory.set_enabled(thread_key, e.value)
-            on_change()
         ui.switch(value=memory.is_enabled(thread_key, default_enabled), on_change=on_toggle).props('dense color=primary').mark('assistant-memory-toggle')
 
     with ui.row().classes('gap-1 px-4 pb-2'):
