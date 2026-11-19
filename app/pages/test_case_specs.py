@@ -1,14 +1,12 @@
 import copy
 from nicegui import ui, run
-from .. import core, llm, spec_report
+from .. import assistant_memory, core, llm, spec_report
+from ..assistant import AssistantIntent, AssistantProfile, assistant_header, assistant_memory_menu_items, assistant_panel
 from .common import frame, guard, confirm, empty_state, require_project, protected_page, render_template_tree, doc_typography, live_doc_html, typography_button, remembered
 from ..layouts import Panel, workspace_layout
 
 STATUS_LABELS = {'draft': 'Borrador', 'ready': 'Listo', 'automated': 'Automatizado'}
 TYPE_LABELS = {'functional': 'Funcional', 'regression': 'Regresión', 'smoke': 'Smoke', 'exploratory': 'Exploratorio'}
-
-# Mismo espíritu que ASSISTANT_THREADS de user_stories.py: un hilo por caso de prueba (o 'new'), en memoria.
-ASSISTANT_THREADS = {}
 
 
 @protected_page('/test-specs')
@@ -130,9 +128,12 @@ def test_spec_detail(id: str = '', story_id: str = ''):
         # Asistente de IA: estado + render definidos ACÁ (antes de armar los paneles y el header) para poder
         # montarlo en dos lugares físicos distintos (columna derecha, o abajo a lo ancho), o arrastrarlo al
         # centro como otra pestaña más — mismo patrón que user_stories.py::render_assistant_body.
-        thread_key = current['id'] if current else 'new'
-        thread = ASSISTANT_THREADS.setdefault(thread_key, [])
+        memory = assistant_memory.get_adapter()
+        thread_key = f'test_case_spec:{current["id"] if current else "new"}'
+        thread = memory.load(thread_key)
         candidates = {'items': None}
+        candidates_view = None   # @ui.refreshable recreado fresco en cada render_assistant_body() más abajo —
+        # ver el comentario equivalente (y el bug que corrige) en user_stories.py::story_detail
 
         def _apply_case_draft(tc, errors):
             if not tc:
@@ -146,21 +147,51 @@ def test_spec_detail(id: str = '', story_id: str = ''):
             step_rows.refresh()
             document_view.refresh()
 
+        async def _handle_refine(text):
+            item = {'title': d['meta']['title'], 'preconditions': _v(preconditions), 'steps': d['steps'],
+                   'priority': d['meta']['priority'], 'type': d['meta']['type']}
+            result = await run.io_bound(llm.refine_spec_item, 'test_case', item, text)
+            _apply_case_draft(result['item'], result['errors'])
+            return 'Refiné el caso de prueba — revisá los cambios arriba y guardá si te sirven.'
+
+        async def _handle_generate_candidates(text):
+            linked_story = core.get('user_stories', d['meta']['story_id']) if d['meta']['story_id'] else None
+            envs = core.list_project_items('environments', pid)
+            result = await run.io_bound(llm.generate_test_cases, linked_story,
+                                        None if linked_story else [{'text': text}], envs[0] if envs else None)
+            if not result['valid']:
+                raise ValueError('; '.join(result['errors']))
+            candidates['items'] = result['test_cases']
+            candidates_view.refresh()
+            return f'Generé {len(result["test_cases"])} candidato(s) — elegí uno abajo para cargarlo arriba.'
+
+        async def _handle_chat(text, history):
+            context = {'kind': 'caso de prueba', 'current': {'title': d['meta']['title'], 'preconditions': _v(preconditions), 'steps': d['steps']}}
+            return await run.io_bound(llm.spec_chat_reply, history, text, context)
+
+        PROFILE = AssistantProfile(
+            name='spec',
+            placeholder='Generá candidatos, o pedile que refine el caso de arriba…',
+            empty_hint='Pedile que genere candidatos (desde la Historia ligada, o desde una descripción), o que refine el caso de arriba.',
+            tooltip=('Pedile que genere candidatos (desde la Historia ligada, o desde una descripción), o que '
+                     'refine el caso de arriba. Lo que proponga queda para revisar antes de guardar/crear.'),
+            intents=[
+                AssistantIntent(keywords=llm.SPEC_REFINE_KEYWORDS, handler=_handle_refine),
+                AssistantIntent(keywords=llm.SPEC_GENERATE_CASES_KEYWORDS, handler=_handle_generate_candidates,
+                                also_match=lambda text: not d['meta']['title'].strip()),
+            ],
+            fallback=_handle_chat,
+            catch=(llm.LLMError, ValueError),
+        )
+
         def render_assistant_body():
-            @ui.refreshable
-            def assistant_view():
-                if not thread:
-                    ui.label('Pedile que genere candidatos (desde la Historia ligada, o desde una descripción), o que refine el caso de arriba.').classes('text-sm text-gray-400')
-                for turn in thread:
-                    with ui.chat_message(name='Vos' if turn['who'] == 'user' else 'Asistente', sent=turn['who'] == 'user').classes('w-full'):
-                        ui.label(turn['text']).style('white-space:pre-wrap')
-            assistant_view()
+            nonlocal candidates_view
 
             @ui.refreshable
             def candidates_view():
                 if not candidates['items']:
                     return
-                with ui.card().classes('w-full bg-blue-50').props('flat'):
+                with ui.card().classes('w-full shrink-0 bg-blue-50').props('flat'):
                     ui.label(f'{len(candidates["items"])} candidato(s) — elegí uno para cargarlo arriba').classes('font-semibold')
                     for tc in candidates['items']:
                         with ui.row().classes('items-center gap-2 w-full no-wrap'):
@@ -173,54 +204,18 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                                 candidates_view.refresh()
                             ui.button('Usar este', on_click=guard(use)).props('flat dense size=sm color=primary').mark('spec-use-candidate')
                     ui.button('Descartar todos', on_click=lambda: (candidates.__setitem__('items', None), candidates_view.refresh())).props('flat dense')
-            candidates_view()
 
-            async def send(box):
-                text = (box.value or '').strip()
-                if not text:
-                    return
-                box.value = ''
-                thread.append({'who': 'user', 'text': text})
-                assistant_view.refresh()
-                lowered = text.lower()
-                try:
-                    if any(k in lowered for k in llm.SPEC_REFINE_KEYWORDS):
-                        item = {'title': d['meta']['title'], 'preconditions': _v(preconditions), 'steps': d['steps'],
-                               'priority': d['meta']['priority'], 'type': d['meta']['type']}
-                        result = await run.io_bound(llm.refine_spec_item, 'test_case', item, text)
-                        _apply_case_draft(result['item'], result['errors'])
-                        reply = 'Refiné el caso de prueba — revisá los cambios arriba y guardá si te sirven.'
-                    elif any(k in lowered for k in llm.SPEC_GENERATE_CASES_KEYWORDS) or not d['meta']['title'].strip():
-                        linked_story = core.get('user_stories', d['meta']['story_id']) if d['meta']['story_id'] else None
-                        envs = core.list_project_items('environments', pid)
-                        result = await run.io_bound(llm.generate_test_cases, linked_story,
-                                                    None if linked_story else [{'text': text}], envs[0] if envs else None)
-                        if not result['valid']:
-                            raise ValueError('; '.join(result['errors']))
-                        candidates['items'] = result['test_cases']
-                        candidates_view.refresh()
-                        reply = f'Generé {len(result["test_cases"])} candidato(s) — elegí uno abajo para cargarlo arriba.'
-                    else:
-                        context = {'kind': 'caso de prueba', 'current': {'title': d['meta']['title'], 'preconditions': _v(preconditions), 'steps': d['steps']}}
-                        reply = await run.io_bound(llm.spec_chat_reply, thread[:-1], text, context)
-                except (llm.LLMError, ValueError) as exc:
-                    reply = f'No pude: {exc}'
-                thread.append({'who': 'assistant', 'text': reply})
-                assistant_view.refresh()
+            assistant_panel(PROFILE, thread=thread, memory=memory, thread_key=thread_key, candidates=candidates_view)
 
-            with ui.row().classes('w-full items-center gap-2'):
-                box = ui.input(placeholder='Generá candidatos, o pedile que refine el caso de arriba…') \
-                    .props('outlined dense').classes('grow').mark('spec-assistant-input')
-                box.on('keydown.enter', lambda: send(box))
-                ui.button(icon='send', on_click=lambda: send(box)).props('round dense color=primary').mark('spec-assistant-send')
+        def _on_memory_menu_change():
+            thread[:] = memory.load(thread_key)
+            assistant_right_mount.refresh()
+            assistant_bottom_mount.refresh()
+            if S['assistant_location'] == 'center':
+                workspace_area.refresh()
 
         def render_assistant_card():
-            with ui.row().classes('items-center gap-2'):
-                ui.icon('smart_toy', color='primary')
-                ui.label('Asistente de IA').classes('font-semibold')
-                ui.icon('info', size='xs', color='grey').classes('cursor-help').tooltip(
-                    'Pedile que genere candidatos (desde la Historia ligada, o desde una descripción), o que '
-                    'refine el caso de arriba. Lo que proponga queda para revisar antes de guardar/crear.')
+            assistant_header('Asistente de IA', PROFILE.tooltip)
             render_assistant_body()
 
         @ui.refreshable
@@ -279,6 +274,8 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                                 for loc in ('bottom', 'right', 'center'):
                                     ui.menu_item(ASSISTANT_LOCATION_LABELS[loc], on_click=lambda loc=loc: set_assistant_location(loc)) \
                                         .mark(f'spec-assistant-location-{loc}')
+                                ui.separator()
+                                assistant_memory_menu_items(memory, thread_key, on_change=_on_memory_menu_change)
                     assistant_position_button()
 
                     def toggle_center_mode_ui():
