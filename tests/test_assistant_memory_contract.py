@@ -92,6 +92,18 @@ def test_clear_all_empties_every_thread(adapter):
     assert adapter.list_threads() == []
 
 
+def test_thread_keys_with_colons_show_up_in_list_and_clear_all(adapter):
+    # user_stories.py/test_case_specs.py/chat_page.py namespacean así ('user_story:<id>', 'chat:draft', ...) —
+    # en Windows/NTFS "a:b" como nombre de archivo es «a» con un alternate data stream «b»: leer/escribir por
+    # la misma ruta funciona (por eso este bug pasó desapercibido en vivo), pero list_threads()/clear_all()
+    # (basados en glob) no lo encuentran si el sanitizado no reemplaza los ':'.
+    adapter.append('user_story:abc-123', {'who': 'user', 'text': 'a'})
+    assert any(row['id'] == 'user_story:abc-123' for row in adapter.list_threads())
+    adapter.clear_all()
+    assert adapter.load('user_story:abc-123') == []
+    assert adapter.list_threads() == []
+
+
 # --------------------------------------------------------------------------- selección de backend/adaptador
 
 def test_active_backend_defaults_to_json(monkeypatch, tmp_path):

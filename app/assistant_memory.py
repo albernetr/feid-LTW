@@ -14,7 +14,10 @@ from . import core
 from .assistant import MemoryAdapter
 from .assistant_memory_config import active_backend
 
-_SANITIZE_RE = re.compile(r'[^A-Za-z0-9_.:-]+')
+_SANITIZE_RE = re.compile(r'[^A-Za-z0-9_.-]+')
+# ':' queda afuera del permitido a propósito — en NTFS (Windows) "a:b" no es un nombre de archivo normal, es
+# «a» con un alternate data stream «b»: escribe/lee bien por la MISMA ruta (parece funcionar), pero
+# list_threads()/clear_all() (basados en glob) nunca lo ven — ver tests/test_assistant_memory_contract.py.
 
 
 def _sanitize(thread_key):
@@ -50,6 +53,7 @@ class JsonFileMemoryAdapter(MemoryAdapter):
 
     def save(self, thread_key, turns):
         record = self._read(thread_key) or {'enabled': True}
+        record['id'] = thread_key   # el nombre de archivo está saneado (sin ':'); esto es lo que list_threads() reporta
         record['turns'] = list(turns)
         record['updated_at'] = core.now()
         self._write(thread_key, record)
@@ -65,6 +69,7 @@ class JsonFileMemoryAdapter(MemoryAdapter):
 
     def set_enabled(self, thread_key, value):
         record = self._read(thread_key) or {'turns': []}
+        record['id'] = thread_key
         record['enabled'] = value
         self._write(thread_key, record)
 
@@ -79,7 +84,7 @@ class JsonFileMemoryAdapter(MemoryAdapter):
                 continue
             if not isinstance(record, dict):
                 continue
-            rows.append({'id': path.stem, 'enabled': record.get('enabled', True),
+            rows.append({'id': record.get('id', path.stem), 'enabled': record.get('enabled', True),
                          'turn_count': len(record.get('turns', [])), 'updated_at': record.get('updated_at')})
         return rows
 
