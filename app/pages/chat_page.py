@@ -8,7 +8,8 @@ import datetime as dt
 import json
 from pathlib import Path
 from nicegui import ui, run, context
-from .. import core, workspace as ws, evidence_report, llm
+from .. import assistant_memory, core, workspace as ws, evidence_report, llm
+from ..assistant import assistant_memory_menu_items
 from .common import (frame, guard, protected_page, show_run, render_evidence, read_upload, open_evidence_in_new_tab,
                      capture_screenshot, start_screen_recording, stop_screen_recording, notify_via_client, STATUS_LABEL, remembered)
 from .widgets import kv_rows, dynamic_variable_chips
@@ -50,6 +51,23 @@ def build(preset_case_id=None):
     all_envs = [e for e in core.list_items('environments') if e.get('name')]
     d = ws.new_draft()
     S = {'messages': [], 'thread_id': '', 'last_request': None, 'last_response': None, 'suite_id': None, 'runs': {}, 'replay': None, 'ai_run': None}
+    # Memoria del Asistente de IA (charla libre, "Hablale al Asistente" — ver assistant_chat_view más abajo):
+    # un hilo por caso de chat guardado (o 'draft' sin guardar), re-sincronizado cada vez que load_case/new_chat
+    # cambian cuál caso está activo — por eso `chat_assistant['thread']` no es la misma lista para siempre, a
+    # diferencia de user_stories.py/test_case_specs.py (ahí cada historia/caso es su propia carga de página).
+    assistant_memory_adapter = assistant_memory.get_adapter()
+    chat_assistant = {'thread_key': None, 'thread': None}
+
+    def _assistant_thread_key():
+        source = d.get('source') or {}
+        return f'chat:{source["id"]}' if source.get('type') == 'case' else 'chat:draft'
+
+    def _sync_assistant_thread():
+        key = _assistant_thread_key()
+        if key != chat_assistant['thread_key']:
+            chat_assistant['thread_key'] = key
+            chat_assistant['thread'] = assistant_memory_adapter.load(key)
+    _sync_assistant_thread()   # antes del primer render — load_case/new_chat (si corren) lo vuelven a llamar después
     # S['runs']: índice de turno -> run_doc completo (petición/respuesta/aserciones), para «Ver detalle y evidencia».
     # Solo en memoria — nunca entra a persist_session(), que guarda S['messages'] tal cual: una transcripción larga
     # con el run_doc completo de cada turno (cuerpos de petición/respuesta incluidos) infla el caso guardado.
@@ -131,7 +149,9 @@ def build(preset_case_id=None):
         sync_url()
 
     def refresh_all():
-        for name in ('params_view', 'chat_view', 'debug_view', 'case_picker', 'template_picker', 'thread_label', 'left_panel'):
+        _sync_assistant_thread()
+        for name in ('params_view', 'chat_view', 'debug_view', 'case_picker', 'template_picker', 'thread_label', 'left_panel',
+                     'assistant_chat_view', 'assistant_memory_button'):
             if name in W:
                 W[name].refresh()
 
@@ -1286,7 +1306,7 @@ def build(preset_case_id=None):
             if not state['ready']:
                 ui.label(state['problem']).classes('text-xs text-gray-500')
             instruction = ui.textarea('Instrucción inicial (objetivo, qué probar, opciones preferidas en ciertos puntos…)',
-                                       value=ASSISTANT_CHAT['pending_instruction']) \
+                                       value=PENDING_INSTRUCTION['value']) \
                 .props('outlined dense').classes('w-full').mark('chat-ai-run-instruction')
             data_goals_input = ui.textarea('Objetivo de datos a obtener (opcional, uno por línea — p. ej. «id del lead»)') \
                 .props('outlined dense').classes('w-full').mark('chat-ai-run-data-goals')
@@ -1312,7 +1332,7 @@ def build(preset_case_id=None):
                     raise ValueError('Completa el mapeo del chat en «Parámetros» antes de arrancar de cero')
                 data_goals = [line.strip() for line in (data_goals_input.value or '').splitlines() if line.strip()]
                 start_playing, use_new_thread = not step_mode.value, new_thread.value
-                ASSISTANT_CHAT['pending_instruction'] = ''   # ya se consumió acá — no hace falta que siga precargando el próximo diálogo
+                PENDING_INSTRUCTION['value'] = ''   # ya se consumió acá — no hace falta que siga precargando el próximo diálogo
                 dialog.close()
                 await run_ai_conversation(preset_texts, start_playing, use_new_thread, int(max_turns.value or 1), instruction.value.strip(), data_goals)
             with ui.row().classes('justify-end gap-2 w-full pt-2'):
@@ -1366,11 +1386,14 @@ def build(preset_case_id=None):
     # ------------------------------------------------------------ chat libre con el Asistente de IA: charla DE
     # VERDAD con el modelo (llm.assistant_reply), no una respuesta fija por palabra clave — puede responder
     # preguntas, anotar algo para después, o directamente seguir la conversación actual con el bot (un turno
-    # puntual para revisar, o varios de corrido si se lo pedís así). Mini-hilo propio (ASSISTANT_CHAT), separado
-    # de S['messages'] (esa es la charla CON EL BOT, no con el Asistente) — nunca persistido. Reconoce una orden
-    # de captura/video por palabra clave antes de llamar al modelo, sin gastar una llamada solo para clasificar
-    # eso — barato y determinístico (sigue sin acción real detrás: ver BACKLOG.md, Fase D).
-    ASSISTANT_CHAT = {'messages': [], 'pending_instruction': ''}
+    # puntual para revisar, o varios de corrido si se lo pedís así). Hilo (chat_assistant['thread'], ver arriba)
+    # separado de S['messages'] (esa es la charla CON EL BOT, no con el Asistente). Memoria vía
+    # assistant_memory.get_adapter(), apagada por defecto acá (default_enabled=False en assistant_memory_menu_items
+    # más abajo) — respeta la razón de diseño original (explorar sin quedar registrado), ahora opt-in en vez de
+    # imposible. `pending_instruction` nunca se persiste (es un borrador de uso inmediato, no historial).
+    # Reconoce una orden de captura/video por palabra clave antes de llamar al modelo, sin gastar una llamada
+    # solo para clasificar eso — barato y determinístico (sigue sin acción real detrás: ver BACKLOG.md, Fase D).
+    PENDING_INSTRUCTION = {'value': ''}
     CAPTURE_KEYWORDS = ('captura', 'screenshot')
     VIDEO_KEYWORDS = ('video', 'grabar', 'grabación', 'grabacion')
     ASSISTANT_CHAT_MAX_TURNS = 12
@@ -1385,7 +1408,10 @@ def build(preset_case_id=None):
             pass
 
     def _assistant_say(reply):
-        ASSISTANT_CHAT['messages'].append({'who': 'assistant', 'text': reply})
+        thread, thread_key = chat_assistant['thread'], chat_assistant['thread_key']
+        thread.append({'who': 'assistant', 'text': reply})
+        if assistant_memory_adapter.is_enabled(thread_key, False):
+            assistant_memory_adapter.append(thread_key, thread[-1])
         assistant_chat_view.refresh()
         scroll_assistant_chat_to_bottom()
 
@@ -1398,7 +1424,11 @@ def build(preset_case_id=None):
         # la tarea, y ese refresh deja el slot original apuntando a un botón ya borrado — pasar esta referencia
         # ya resuelta evita que la captura/grabación se quede esperando para siempre sin ningún error visible.
         the_client = context.client
-        ASSISTANT_CHAT['messages'].append({'who': 'user', 'text': text})
+        _sync_assistant_thread()
+        thread, thread_key = chat_assistant['thread'], chat_assistant['thread_key']
+        thread.append({'who': 'user', 'text': text})
+        if assistant_memory_adapter.is_enabled(thread_key, False):
+            assistant_memory_adapter.append(thread_key, thread[-1])
         assistant_chat_view.refresh()
         scroll_assistant_chat_to_bottom()
         lowered = text.lower()
@@ -1424,7 +1454,7 @@ def build(preset_case_id=None):
         if not state['ready']:
             _assistant_say(f'No puedo responder todavía: {state["problem"]}')
             return
-        history = ASSISTANT_CHAT['messages'][:-1]   # sin el mensaje que se acaba de sumar, va aparte como `text`
+        history = thread[:-1]   # sin el mensaje que se acaba de sumar, va aparte como `text`
         try:
             result = await run.io_bound(llm.assistant_reply, S['messages'], history, text, bool(S['ai_run']))
             if result is None:   # cancelada (ver send_chat_message) — reintentar en el mismo hilo de respaldo
@@ -1450,13 +1480,26 @@ def build(preset_case_id=None):
             else:
                 await run_ai_conversation([], result['autopilot'], False, ASSISTANT_CHAT_MAX_TURNS, instruction or text, [])
         elif instruction:
-            ASSISTANT_CHAT['pending_instruction'] = (ASSISTANT_CHAT['pending_instruction'] + '\n\n' + instruction).strip()
+            PENDING_INSTRUCTION['value'] = (PENDING_INSTRUCTION['value'] + '\n\n' + instruction).strip()
+
+    def _on_assistant_memory_change():
+        chat_assistant['thread'][:] = assistant_memory_adapter.load(chat_assistant['thread_key'])
+        assistant_chat_view.refresh()
+
+    @ui.refreshable
+    def assistant_memory_button():
+        with ui.button(icon='more_vert').props('flat round dense').mark('chat-assistant-memory-menu'):
+            with ui.menu():
+                assistant_memory_menu_items(assistant_memory_adapter, chat_assistant['thread_key'],
+                                            on_change=_on_assistant_memory_change, default_enabled=False)
+    W['assistant_memory_button'] = assistant_memory_button
 
     @ui.refreshable
     def assistant_chat_view():
-        if ASSISTANT_CHAT['messages']:
+        thread = chat_assistant['thread']
+        if thread:
             with ui.column().classes('w-full gap-1 grow assistant-chat-scroll').style('overflow-y:auto;overflow-x:hidden;min-height:0'):
-                for turn in ASSISTANT_CHAT['messages']:
+                for turn in thread:
                     ui.chat_message(turn['text'], sent=(turn['who'] == 'user'), name='Vos' if turn['who'] == 'user' else 'Asistente') \
                         .classes('text-sm w-full').style('max-width:100%;overflow-wrap:break-word')
         else:
@@ -1483,6 +1526,7 @@ def build(preset_case_id=None):
                 ui.notify(str(exc), type='negative', multi_line=True)
         ui.upload(label='Subir archivo (.md/.txt/.csv)', on_upload=on_assistant_upload, auto_upload=True,
                   max_file_size=core.MAX_DATASET_BYTES).props('accept=.md,.txt,.csv flat bordered dense').classes('w-full').mark('chat-assistant-upload')
+    W['assistant_chat_view'] = assistant_chat_view
 
     def section_header(title, info, marker=None):
         """Título + un ícono «i» con la explicación larga como tooltip (al pasar el mouse) — en vez de un
@@ -1511,12 +1555,14 @@ def build(preset_case_id=None):
 
     def assistant_chat_tab():
         with ui.column().classes('w-full gap-2 p-3 h-full'):
-            section_header('Hablale al Asistente',
-                            'Charla libre con el Asistente — responde preguntas, anota instrucciones o datos para '
-                            'después, y puede seguir él mismo la conversación actual con el bot si se lo pedís '
-                            '(un turno puntual para revisar, o varios de corrido). También podés subir un archivo '
-                            'de contexto en cualquier momento, incluso con una Conversación conducida por IA ya en curso.',
-                            marker='chat-assistant-info')
+            with ui.row().classes('items-center justify-between w-full no-wrap'):
+                section_header('Hablale al Asistente',
+                                'Charla libre con el Asistente — responde preguntas, anota instrucciones o datos para '
+                                'después, y puede seguir él mismo la conversación actual con el bot si se lo pedís '
+                                '(un turno puntual para revisar, o varios de corrido). También podés subir un archivo '
+                                'de contexto en cualquier momento, incluso con una Conversación conducida por IA ya en curso.',
+                                marker='chat-assistant-info')
+                assistant_memory_button()
             assistant_chat_view()
 
     # ------------------------------------------------------------ panel izquierdo: conversaciones y Flujos
