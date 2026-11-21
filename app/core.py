@@ -586,7 +586,7 @@ def create_user_story(title, project_id, as_a='', i_want='', so_that='', feature
         raise ValueError('Usuario inexistente')
     item = {'title': title, 'as_a': (as_a or '').strip(), 'i_want': (i_want or '').strip(), 'so_that': (so_that or '').strip(),
             'content': (content or '').strip(), 'priority': priority if priority in PRIORITIES else 'medium', 'status': 'draft',
-            'criteria': _clean_criteria(criteria), 'source': source if source in STORY_SOURCES else 'manual', 'project_id': project_id,
+            'criteria': _clean_criteria(criteria, project_id), 'source': source if source in STORY_SOURCES else 'manual', 'project_id': project_id,
             'definition_of_ready': _clean_checklist(definition_of_ready), 'definition_of_done': _clean_checklist(definition_of_done),
             'depends_on': _clean_depends_on(depends_on, project_id), 'story_points': _clean_story_points(story_points),
             'business_rules': (business_rules or '').strip(), 'assumptions': (assumptions or '').strip(),
@@ -617,7 +617,8 @@ def update_user_story(story_id, title, as_a='', i_want='', so_that='', feature_i
     if assigned_to and get('users', assigned_to) is None:
         raise ValueError('Usuario inexistente')
     story.update({'title': title, 'as_a': (as_a or '').strip(), 'i_want': (i_want or '').strip(), 'so_that': (so_that or '').strip(),
-                  'content': (content or '').strip(), 'priority': priority if priority in PRIORITIES else 'medium', 'criteria': _clean_criteria(criteria),
+                  'content': (content or '').strip(), 'priority': priority if priority in PRIORITIES else 'medium',
+                  'criteria': _clean_criteria(criteria, story['project_id']),
                   'definition_of_ready': _clean_checklist(definition_of_ready), 'definition_of_done': _clean_checklist(definition_of_done),
                   'depends_on': _clean_depends_on(depends_on, story['project_id'], exclude_id=story_id), 'story_points': _clean_story_points(story_points),
                   'business_rules': (business_rules or '').strip(), 'assumptions': (assumptions or '').strip(),
@@ -642,10 +643,11 @@ def delete_user_story(story_id):
     delete('user_stories', story_id)
 
 
-def _clean_criteria(criteria):
+def _clean_criteria(criteria, project_id=None):
     """Normaliza los criterios de aceptación a escenarios Gherkin: cada uno con su propio id, un resumen
     opcional (`text`), Dado/Cuando/Entonces y su estado — sin descartar un criterio «viejo» que solo tenga
-    `text` (se sigue mostrando como una frase sola, sin forzar la estructura)."""
+    `text` (se sigue mostrando como una frase sola, sin forzar la estructura). Un criterio que ya tenía
+    `code` lo conserva; uno nuevo recibe uno si el proyecto configuró prefijo para 'criterion'."""
     result = []
     for entry in (criteria or []):
         if not isinstance(entry, dict):
@@ -654,8 +656,12 @@ def _clean_criteria(criteria):
         given, when, then = (entry.get('given') or '').strip(), (entry.get('when') or '').strip(), (entry.get('then') or '').strip()
         if not (text or given or when or then):
             continue
-        result.append({'id': entry.get('id') or uid(), 'text': text, 'given': given, 'when': when, 'then': then,
-                       'status': entry.get('status') or 'pending'})
+        code = entry.get('code') or (next_record_code(project_id, 'criterion') if project_id else None)
+        cleaned = {'id': entry.get('id') or uid(), 'text': text, 'given': given, 'when': when, 'then': then,
+                   'status': entry.get('status') or 'pending'}
+        if code:
+            cleaned['code'] = code
+        result.append(cleaned)
     return result
 
 
@@ -875,40 +881,69 @@ def _step_is_proven(technical):
     return snapshot == current
 
 
-def _upsert_by_name(table, project_id, name, fields):
-    """Mismo molde que ya usa app/agent.py (import_spec, ltw.spec/1) para Casos/Flujos: busca por `name`
-    dentro del proyecto — ni `cases` ni `suites` tienen un `code` propio como Historias/Casos de prueba — y
-    si ya existe, actualiza ese mismo registro en vez de crear uno nuevo."""
-    existing = next((item for item in list_project_items(table, project_id) if item.get('name') == name), None)
+def _upsert_by_field(table, project_id, field, value, fields):
+    """Como `import_spec` en app/agent.py (ltw.spec/1), pero busca por un campo estable propio (`field`) en
+    vez de por `name` — así el `name` visible puede volverse más descriptivo con el tiempo (p. ej. si cambia
+    el texto del step) sin que se pierda la identidad del registro ya materializado y se duplique."""
+    existing = next((item for item in list_project_items(table, project_id) if item.get(field) == value), None)
     merged = {**(existing or {}), **fields}
     if existing:
         merged['id'] = existing['id']
     return merged
 
 
+def _step_short_label(step):
+    """Resumen corto y legible del step (su `action`) para usar en el nombre del Caso materializado —
+    truncado a ~30 caracteres para que el nombre completo siga siendo corto."""
+    text = (step.get('action') or '').strip()
+    return text if len(text) <= 30 else text[:29].rstrip() + '…'
+
+
+def _materialized_step_name(tc, story, index, step):
+    """HU · Criterio · TC · Paso N · resumen corto del step — cada segmento se omite si no aplica (sin
+    Historia ligada, sin criterio ligado, o sin texto de step). `story` ya viene resuelta (o None)."""
+    parts = []
+    if story and story.get('code'):
+        parts.append(story['code'])
+    criteria_ids = tc.get('criteria_ids') or []
+    if story and criteria_ids:
+        criterion = next((c for c in (story.get('criteria') or []) if c['id'] == criteria_ids[0]), None)
+        if criterion and criterion.get('code'):
+            parts.append(criterion['code'])
+    parts.append(tc['code'])
+    parts.append(f'Paso {index}')
+    label = _step_short_label(step)
+    if label:
+        parts.append(label)
+    return ' · '.join(parts)
+
+
 def materialize_spec_steps_as_flow(tc):
     """Upsertea (nunca duplica) un Caso API por cada step `type == 'api'` de este Caso de prueba que ya se
-    haya ejecutado con éxito (ver _step_is_proven), y los agrupa en un Flujo nombrado con el `code` del Caso
-    de prueba — este SIEMPRE mapea contra un contenedor (un Flujo), nunca contra un Caso suelto, incluso con
-    un único step técnico. Devuelve el Flujo guardado, o None si no aplica (sin `code`, o ningún step
-    probado). Pensado para llamarse justo después de guardar el Caso de prueba (ver pages/test_case_specs.py:
-    save()), nunca desde create/update_test_case_spec — toca otras tablas, es un efecto aparte, explícito."""
+    haya ejecutado con éxito (ver _step_is_proven), y los agrupa en un Flujo — este SIEMPRE mapea contra un
+    contenedor (un Flujo), nunca contra un Caso suelto, incluso con un único step técnico. El nombre visible
+    de cada Caso/Flujo es descriptivo (HU/Criterio/TC/Paso/resumen, ver _materialized_step_name) pero la
+    identidad para no duplicar es un campo estable aparte (`materialized_from`), para que ese nombre pueda
+    cambiar (p. ej. si se edita el texto del step) sin perder el registro ya materializado. Devuelve el
+    Flujo guardado, o None si no aplica (sin `code`, o ningún step probado). Pensado para llamarse justo
+    después de guardar el Caso de prueba (ver pages/test_case_specs.py: save()), nunca desde
+    create/update_test_case_spec — toca otras tablas, es un efecto aparte, explícito."""
     code = tc.get('code')
     if not code:
         return None
     project_id = tc['project_id']
+    story = get('user_stories', tc['story_id']) if tc.get('story_id') else None
     case_ids, first_environment_id = [], None
     for index, step in enumerate((tc.get('steps') or []), start=1):
         technical = step.get('technical') or {}
         if step.get('type') != 'api' or not _step_is_proven(technical):
             continue
-        name = f'{code} · paso {index}'
-        existing_tags = set()
-        existing = next((c for c in list_project_items('cases', project_id) if c.get('name') == name), None)
-        if existing:
-            existing_tags = set(existing.get('tags') or [])
-        doc = _upsert_by_name('cases', project_id, name, {
-            'name': name, 'type': 'api', 'project_id': project_id,
+        origin = f'{code}#{index}'
+        existing = next((c for c in list_project_items('cases', project_id) if c.get('materialized_from') == origin), None)
+        existing_tags = set(existing.get('tags') or []) if existing else set()
+        doc = _upsert_by_field('cases', project_id, 'materialized_from', origin, {
+            'name': _materialized_step_name(tc, story, index, step), 'type': 'api', 'project_id': project_id,
+            'materialized_from': origin,
             'method': technical.get('method', 'GET'), 'path': technical.get('path', ''),
             'headers': technical.get('headers', {}), 'query': technical.get('query', {}),
             'variables': technical.get('variables', {}), 'body': technical.get('body'),
@@ -922,9 +957,12 @@ def materialize_spec_steps_as_flow(tc):
         return None
     flow_steps = [{'case_id': cid, 'alias': f'paso-{n}', 'environment_id': None, 'enrich': []}
                  for n, cid in enumerate(case_ids, start=1)]
-    existing_suite = next((s for s in list_project_items('suites', project_id) if s.get('name') == code), None)
-    return save_suite(code, first_environment_id, [], project_id, id=(existing_suite or {}).get('id'), steps=flow_steps,
-                      on_failure='continue', retries=0, retry_delay_s=0, variables={}, feature_id=None, draws=[])
+    flow_name = f'{story["code"]} · {code}' if story and story.get('code') else code
+    existing_suite = next((s for s in list_project_items('suites', project_id) if s.get('materialized_from') == code), None)
+    suite = save_suite(flow_name, first_environment_id, [], project_id, id=(existing_suite or {}).get('id'), steps=flow_steps,
+                       on_failure='continue', retries=0, retry_delay_s=0, variables={}, feature_id=None, draws=[])
+    suite['materialized_from'] = code
+    return save('suites', suite)
 
 
 # --------------------------------------------------------------------------- plantillas (biblioteca global +
@@ -1116,12 +1154,13 @@ def set_default_template(project_id, applies_to, template_id):
 
 
 CODE_APPLIES_TO_TABLE = {'user_story': 'user_stories', 'test_case': 'test_case_specs'}
+CODE_APPLIES_TO = ('user_story', 'test_case', 'criterion')
 
 
 def get_id_prefix(project_id, applies_to):
-    """Prefijo de identificador ('HU', 'TC', ...) que este proyecto usa para `applies_to`
-    ('user_story'|'test_case') — None si el proyecto nunca lo configuró (entonces sus registros no tienen
-    `code`, ver next_record_code)."""
+    """Prefijo de identificador ('HU', 'TC', 'CA', ...) que este proyecto usa para `applies_to`
+    ('user_story'|'test_case'|'criterion') — None si el proyecto nunca lo configuró (entonces sus registros
+    no tienen `code`, ver next_record_code)."""
     project = get('projects', project_id)
     return (project or {}).get('id_prefixes', {}).get(applies_to)
 
@@ -1130,9 +1169,11 @@ def set_id_prefix(project_id, applies_to, prefix):
     """Fija el prefijo de identificador del proyecto para `applies_to` y, la PRIMERA vez que se fija, numera
     retroactivamente (por orden de creación) los registros que ya existan sin `code`. Una vez que el proyecto
     ya tiene algún registro con `code` asignado para este tipo, el prefijo queda bloqueado — no se puede
-    cambiar ni re-disparar el backfill, para no mezclar dos prefijos distintos en el mismo proyecto/tipo."""
-    if applies_to not in CODE_APPLIES_TO_TABLE:
-        raise ValueError('Solo Historias de usuario y Casos de prueba tienen identificador')
+    cambiar ni re-disparar el backfill, para no mezclar dos prefijos distintos en el mismo proyecto/tipo.
+    `criterion` no tiene tabla propia (vive anidado en `criteria` de cada Historia) — se numera recorriendo
+    las Historias del proyecto por orden de creación y, dentro de cada una, sus criterios en orden."""
+    if applies_to not in CODE_APPLIES_TO:
+        raise ValueError('Solo Historias de usuario, Casos de prueba y Criterios tienen identificador')
     prefix = (prefix or '').strip().upper()
     if not re.fullmatch(r'[A-Z0-9][A-Z0-9-]{0,9}', prefix or ''):
         raise ValueError('El prefijo debe tener entre 1 y 10 caracteres: letras, números o guión')
@@ -1145,12 +1186,25 @@ def set_id_prefix(project_id, applies_to, prefix):
     prefixes = dict(project.get('id_prefixes') or {})
     prefixes[applies_to] = prefix
     project['id_prefixes'] = prefixes
-    table = CODE_APPLIES_TO_TABLE[applies_to]
-    existing = [item for item in reversed(list_project_items(table, project_id)) if not item.get('code')]
-    for n, item in enumerate(existing, start=1):
-        item['code'] = f'{prefix}-{n:03d}'
-        save(table, item)
-    counters[applies_to] = len(existing)
+    if applies_to == 'criterion':
+        n = 0
+        for story in reversed(list_project_items('user_stories', project_id)):
+            changed = False
+            for crit in (story.get('criteria') or []):
+                if not crit.get('code'):
+                    n += 1
+                    crit['code'] = f'{prefix}-{n:03d}'
+                    changed = True
+            if changed:
+                save('user_stories', story)
+        counters[applies_to] = n
+    else:
+        table = CODE_APPLIES_TO_TABLE[applies_to]
+        existing = [item for item in reversed(list_project_items(table, project_id)) if not item.get('code')]
+        for n, item in enumerate(existing, start=1):
+            item['code'] = f'{prefix}-{n:03d}'
+            save(table, item)
+        counters[applies_to] = len(existing)
     project['id_counters'] = counters
     save('projects', project)
 

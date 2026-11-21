@@ -1216,7 +1216,8 @@ def test_materialize_spec_steps_as_flow_requires_a_proven_step_and_a_project_cod
     flow = core.materialize_spec_steps_as_flow(spec)
     assert flow is not None and flow['name'] == spec['code']
     [case] = [c for c in core.list_items('cases') if c['project_id'] == project['id']]
-    assert case['name'] == f'{spec["code"]} · paso 1' and case['method'] == 'GET' and case['path'] == '/health'
+    assert case['name'] == f'{spec["code"]} · Paso 1 · a' and case['method'] == 'GET' and case['path'] == '/health'
+    assert case['materialized_from'] == f'{spec["code"]}#1'
     assert 'especificación' in case['tags']
     assert flow['case_ids'] == [case['id']]
 
@@ -1263,8 +1264,51 @@ def test_materialize_spec_steps_as_flow_chains_two_proven_api_steps_in_one_flow(
 
     flow = core.materialize_spec_steps_as_flow(spec)
     cases = {c['name']: c for c in core.list_items('cases') if c['project_id'] == project['id']}
-    assert set(cases) == {f'{spec["code"]} · paso 1', f'{spec["code"]} · paso 2'}
+    assert set(cases) == {f'{spec["code"]} · Paso 1 · a1', f'{spec["code"]} · Paso 2 · a2'}
     assert len(flow['case_ids']) == 2
+
+
+def test_materialize_spec_steps_as_flow_names_include_hu_and_criterion_codes_and_truncate_the_step_label():
+    project = core.create_project('Materializar con HU y criterio')
+    core.set_id_prefix(project['id'], 'user_story', 'HU')
+    core.set_id_prefix(project['id'], 'criterion', 'CA')
+    core.set_id_prefix(project['id'], 'test_case', 'TC')
+    env = core.save('environments', {'name': 'e', 'project_id': project['id'], 'base_url': 'http://x', 'auth': {'type': 'none'}, 'variables': {}})
+    story = core.create_user_story('Recuperar acceso', project['id'], criteria=[{'text': 'c1'}, {'text': 'c2'}])
+    [crit1, crit2] = story['criteria']
+    assert crit1['code'] and crit2['code'] and crit1['code'] != crit2['code']   # cada criterio recibe su propio código
+
+    long_action = 'enviar un mensaje bastante largo que supera los treinta caracteres'
+    spec = core.create_test_case_spec('TC con HU', project['id'], story_id=story['id'], criteria_ids=[crit2['id']],
+        steps=[{'action': long_action, 'expected': 'e', 'type': 'api', 'technical': _proven_technical(env['id'])}])
+
+    flow = core.materialize_spec_steps_as_flow(spec)
+    assert flow['name'] == f'{story["code"]} · {spec["code"]}'
+    [case] = [c for c in core.list_items('cases') if c['project_id'] == project['id']]
+    assert case['name'].startswith(f'{story["code"]} · {crit2["code"]} · {spec["code"]} · Paso 1 · ')
+    label = case['name'].split(' · ')[-1]
+    assert len(label) <= 30 and label.endswith('…')   # truncado, no el texto completo del step
+
+
+def test_materialize_spec_steps_as_flow_renaming_a_step_updates_instead_of_duplicating():
+    project = core.create_project('Materializar renombrado')
+    core.set_id_prefix(project['id'], 'test_case', 'TC')
+    env = core.save('environments', {'name': 'e', 'project_id': project['id'], 'base_url': 'http://x', 'auth': {'type': 'none'}, 'variables': {}})
+    spec = core.create_test_case_spec('TC', project['id'], steps=[
+        {'action': 'original', 'expected': 'e', 'type': 'api', 'technical': _proven_technical(env['id'])}])
+    core.materialize_spec_steps_as_flow(spec)
+    [case] = [c for c in core.list_items('cases') if c['project_id'] == project['id']]
+    original_id = case['id']
+
+    # Renombra el texto del step SIN re-ejecutarlo — el step sigue "probado" (la técnica no cambió), así que
+    # el nombre visible del Caso materializado se actualiza, pero debe seguir siendo el MISMO registro.
+    renamed = dict(spec['steps'][0])
+    renamed['action'] = 'texto renombrado'
+    spec2 = core.update_test_case_spec(spec['id'], 'TC', steps=[renamed])
+    core.materialize_spec_steps_as_flow(spec2)
+    [case_after] = [c for c in core.list_items('cases') if c['project_id'] == project['id']]
+    assert case_after['id'] == original_id
+    assert case_after['name'].endswith('texto renombrado')
 
 
 def test_spec_template_crud_validates_kind_and_applies_to():
