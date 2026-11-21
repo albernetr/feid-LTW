@@ -785,14 +785,68 @@ def story_coverage(story_id):
     return {'story': story, 'rows': rows, 'total': len(rows), 'automated': automated, 'passing': passing}
 
 
+STEP_TYPES = ('manual', 'api', 'ui')
+
+
+def _clean_step_kv(value):
+    """Mismo criterio que _clean_custom_fields: dict str->str, descarta claves vacías. Para los pares de
+    negocio (`data`) y el mapping (campo de negocio -> ubicación técnica) de un step."""
+    result = {}
+    for key, v in (value or {}).items():
+        key = (key or '').strip()
+        if key:
+            result[key] = v
+    return result
+
+
+def _clean_step_technical(value, step_type):
+    """La parte «técnica» de un step (ver pages/test_case_specs.py: step_config_dialog) — reusa el MISMO
+    esquema que ya usan los Casos ejecutables (ver cases.py/ui_cases.py), nunca uno inventado aparte: un step
+    con su técnica completa es, literalmente, un Caso ejecutable en borrador. No valida nada acá (la
+    validación en vivo ya la hace assertion_rows/validate_assertion_rule en el editor — igual que un Caso real
+    tampoco se valida centralizado en core.py). Nunca importa `automation` acá (automation.py ya importa
+    core.py — importarlo de vuelta sería un ciclo); por eso la limpieza del lado UI es genérica, no la valida
+    contra STEP_ACTIONS (esa validación vive en automation.validate_steps, del lado de la UI)."""
+    value = value if isinstance(value, dict) else {}
+    if step_type == 'api':
+        return {'method': value.get('method') if value.get('method') in HTTP_METHODS else 'GET',
+                'path': (value.get('path') or '').strip(),
+                'headers': _clean_step_kv(value.get('headers')), 'query': _clean_step_kv(value.get('query')),
+                'variables': _clean_step_kv(value.get('variables')), 'body': value.get('body'),
+                'extract': value.get('extract') if isinstance(value.get('extract'), list) else [],
+                'assertions': value.get('assertions') if isinstance(value.get('assertions'), list) else []}
+    if step_type == 'ui':
+        action = (value.get('action') or '').strip()
+        if not action:
+            return {}
+        cleaned = {'action': action}
+        locator = value.get('locator')
+        if isinstance(locator, dict) and (locator.get('by') or '').strip():
+            cleaned['locator'] = {'by': locator['by'].strip(), 'value': (locator.get('value') or '').strip(),
+                                  'role': (locator.get('role') or '').strip()}
+        for key in ('value', 'expected', 'url'):
+            v = (value.get(key) or '').strip()
+            if v:
+                cleaned[key] = v
+        return cleaned
+    return {}   # 'manual': sin sección técnica
+
+
 def _clean_test_steps(steps):
     result = []
     for entry in (steps or []):
-        action = (entry.get('action', '') if isinstance(entry, dict) else '').strip()
-        expected = (entry.get('expected', '') if isinstance(entry, dict) else '').strip()
-        if not action and not expected:
+        if not isinstance(entry, dict):
             continue
-        result.append({'action': action, 'expected': expected})
+        action = (entry.get('action') or '').strip()
+        expected = (entry.get('expected') or '').strip()
+        step_type = entry.get('type') if entry.get('type') in STEP_TYPES else 'manual'
+        data = _clean_step_kv(entry.get('data'))
+        mapping = _clean_step_kv(entry.get('mapping'))
+        technical = _clean_step_technical(entry.get('technical'), step_type)
+        if not (action or expected or data or mapping or technical):
+            continue
+        result.append({'action': action, 'expected': expected, 'type': step_type, 'data': data,
+                       'mapping': mapping, 'technical': technical})
     return result
 
 

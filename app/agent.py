@@ -227,7 +227,12 @@ def export_spec_bundle(project_name):
         stories.append({'title': story['title'], 'code': story.get('code', ''), 'as_a': story.get('as_a', ''), 'i_want': story.get('i_want', ''),
                         'so_that': story.get('so_that', ''), 'priority': story.get('priority', 'medium'),
                         'criteria': [{'text': c['text'], 'status': c.get('status', 'pending')} for c in story.get('criteria', [])],
-                        'test_cases': [{'title': tc['title'], 'code': tc.get('code', ''), 'preconditions': tc.get('preconditions', ''), 'steps': tc.get('steps', []),
+                        'test_cases': [{'title': tc['title'], 'code': tc.get('code', ''), 'preconditions': tc.get('preconditions', ''),
+                                        # Solo action/expected: un step puede traer type/data/mapping/technical
+                                        # (ver core._clean_test_steps) para el editor interno — ese detalle
+                                        # técnico no es parte de este protocolo (ltw.spec_bundle/1), que sigue
+                                        # siendo solo texto libre por ahora.
+                                        'steps': [{'action': s.get('action', ''), 'expected': s.get('expected', '')} for s in (tc.get('steps') or [])],
                                         'priority': tc.get('priority', 'medium'), 'type': tc.get('type', 'functional')}
                                        for tc in specs_by_story.get(story['id'], [])]})
     return {'format': FORMAT_SPEC_BUNDLE, 'project': project['name'], 'stories': stories}

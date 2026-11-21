@@ -1148,6 +1148,49 @@ def test_test_case_spec_linked_to_a_case_is_automated_by_default():
     assert unlinked['status'] == 'draft'
 
 
+def test_test_case_spec_step_schema_preserves_type_data_mapping_and_technical():
+    project = core.create_project('Paso estructurado')
+
+    manual = core.create_test_case_spec('TC manual', project['id'], steps=[
+        {'action': 'ir a pago', 'expected': 'veo el formulario', 'type': 'manual',
+         'data': {'sku': 'PRD-1', '': 'se descarta'}, 'mapping': {'sku': '$.body.sku'},
+         'technical': {'method': 'POST', 'path': '/pay'}}])
+    [step] = manual['steps']
+    assert step['type'] == 'manual' and step['data'] == {'sku': 'PRD-1'} and step['mapping'] == {'sku': '$.body.sku'}
+    assert step['technical'] == {}   # manual nunca persiste técnica, aunque se haya mandado algo
+
+    api = core.create_test_case_spec('TC api', project['id'], steps=[
+        {'action': 'pagar', 'expected': 'se aprueba', 'type': 'api',
+         'technical': {'method': 'POST', 'path': '/pay', 'headers': {'X-Token': 'abc', '': 'x'},
+                      'body': {'sku': 'PRD-1'}, 'assertions': [{'type': 'status', 'expected': 200}]}}])
+    [step] = api['steps']
+    assert step['technical']['method'] == 'POST' and step['technical']['path'] == '/pay'
+    assert step['technical']['headers'] == {'X-Token': 'abc'}
+    assert step['technical']['body'] == {'sku': 'PRD-1'}
+    assert step['technical']['assertions'] == [{'type': 'status', 'expected': 200}]
+
+    ui = core.create_test_case_spec('TC ui', project['id'], steps=[
+        {'action': 'click en pagar', 'expected': 'se envia el formulario', 'type': 'ui',
+         'technical': {'action': 'click', 'locator': {'by': 'role', 'role': 'button', 'value': ''}}}])
+    [step] = ui['steps']
+    assert step['technical'] == {'action': 'click', 'locator': {'by': 'role', 'value': '', 'role': 'button'}}
+
+    invalid_type = core.create_test_case_spec('TC tipo invalido', project['id'], steps=[
+        {'action': 'x', 'expected': 'y', 'type': 'bogus', 'technical': {'method': 'GET'}}])
+    [step] = invalid_type['steps']
+    assert step['type'] == 'manual' and step['technical'] == {}
+
+    bad_method = core.create_test_case_spec('TC metodo invalido', project['id'], steps=[
+        {'action': 'x', 'expected': 'y', 'type': 'api', 'technical': {'method': 'BOGUS'}}])
+    assert bad_method['steps'][0]['technical']['method'] == 'GET'
+
+    no_action_without_structure = core.create_test_case_spec('TC vacio', project['id'], steps=[{'action': '', 'expected': ''}])
+    assert no_action_without_structure['steps'] == []
+
+    step_with_only_data = core.create_test_case_spec('TC solo datos', project['id'], steps=[{'action': '', 'expected': '', 'data': {'sku': 'x'}}])
+    assert len(step_with_only_data['steps']) == 1   # un step sin texto pero con data no se descarta
+
+
 def test_spec_template_crud_validates_kind_and_applies_to():
     project = core.create_project('PT')
     with pytest.raises(ValueError):
