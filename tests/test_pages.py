@@ -1376,6 +1376,46 @@ async def test_test_case_spec_step_config_dialog_executes_an_api_step_without_pe
     assert core.list_items('runs') == []   # persist=False: no ensucia el historial
 
 
+async def test_test_case_spec_save_materializes_a_flow_from_a_successfully_executed_api_step(user: User, sample_app):
+    project = core.create_project('Materializar flujo UI')
+    core.set_active_project(project['id'])
+    core.set_id_prefix(project['id'], 'test_case', 'TC')
+    core.save('environments', {'name': 'local', 'project_id': project['id'], 'base_url': sample_app.url, 'auth': {'type': 'none'}, 'variables': {}})
+    spec = core.create_test_case_spec('TC', project['id'], steps=[{'action': 'chequear salud', 'expected': 'responde ok'}])
+
+    await user.open(f'/test-specs/edit?id={spec["id"]}')
+    user.find(marker='spec-step-config-0').click()
+    await user.should_see(marker='spec-step-type')
+    _by_id(user.find(marker='spec-step-type'))[0].set_value('api')
+    await user.should_see(marker='spec-step-method')
+    user.find(marker='spec-step-path').type('/health')
+    user.find('Agregar prueba').click()   # {'type': 'status', 'expected': 200} por defecto — coincide con /health
+    _by_id(user.find(marker='spec-step-env'))[0].set_value(core.list_items('environments')[0]['id'])
+    user.find(marker='spec-step-run').click()
+    await user.should_see('HTTP 200', retries=30)
+    user.find('Cerrar').click()
+    user.find(marker='spec-step-config-save').click()
+    user.find(marker='spec-save').click()
+    # "Guardar cambios" corre detrás de guard() (una corrutina) — el .click() del test no la espera, mismo
+    # motivo que ya documenta test_creating_and_running_a_case_from_the_ui_stamps_created_by_and_executed_by
+    # más abajo. should_see('Caso de prueba actualizado', retries=...) sí espera la condición real: ese texto
+    # no existe en pantalla hasta que save() (con la materialización adentro) termina — a diferencia de
+    # buscar solo "Flujo", que matchea el link "Flujos" del menú desde el primer intento, sin esperar nada.
+    await user.should_see('Caso de prueba actualizado', retries=30)
+
+    updated = core.get('test_case_specs', spec['id'])
+    [flow] = [s for s in core.list_items('suites') if s['project_id'] == project['id']]
+    assert flow['name'] == updated['code']
+    [case] = [c for c in core.list_items('cases') if c['project_id'] == project['id']]
+    assert case['name'] == f'{updated["code"]} · paso 1' and case['path'] == '/health'
+
+    # Guardar de nuevo sin cambiar nada no duplica ni el Caso ni el Flujo
+    user.find(marker='spec-save').click()
+    await user.should_see('Caso de prueba actualizado', retries=30)
+    assert len([s for s in core.list_items('suites') if s['project_id'] == project['id']]) == 1
+    assert len([c for c in core.list_items('cases') if c['project_id'] == project['id']]) == 1
+
+
 async def test_test_case_spec_can_be_created_from_a_story_and_linked_to_an_automated_case(user: User):
     project = core.create_project('Casos de prueba UI')
     core.set_active_project(project['id'])

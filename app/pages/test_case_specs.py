@@ -432,8 +432,9 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                     ui.label('Sin sección técnica para un paso Manual.').classes('text-sm text-gray-400')
                     return
                 if step_type == 'api':
+                    technical.setdefault('method', 'GET'); technical.setdefault('path', '')
                     technical.setdefault('headers', {}); technical.setdefault('query', {}); technical.setdefault('variables', {})
-                    technical.setdefault('assertions', [])
+                    technical.setdefault('extract', []); technical.setdefault('assertions', [])
                     with ui.row().classes('gap-2 w-full items-start'):
                         ui.select(list(core.HTTP_METHODS), value=technical.get('method', 'GET'), label='Método').props('outlined dense').classes('w-32') \
                             .mark('spec-step-method').on_value_change(lambda e: technical.__setitem__('method', e.value))
@@ -527,6 +528,17 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                                 result = await run.io_bound(automation.execute_ui, case, env)
                         finally:
                             busy.close()
+                        if type_select.value == 'api':
+                            # «Prueba de éxito» para materialize_spec_steps_as_flow (ver core.py) — un
+                            # snapshot de la técnica tal como quedó probada, para detectar si se edita algo
+                            # después sin tener que invalidar el flag a mano en cada widget.
+                            if result.get('status') == 'passed':
+                                technical['last_run_status'] = 'passed'
+                                technical['last_run_environment_id'] = env['id']
+                                technical['last_run_snapshot'] = copy.deepcopy(
+                                    {k: technical.get(k) for k in core.STEP_TECHNICAL_API_KEYS})
+                            else:
+                                technical.pop('last_run_status', None)
                         show_run(result)
 
                     envs = core.list_project_items('environments', pid)
@@ -602,18 +614,28 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                                                                   linked_criteria=linked_criteria)
                 ui.html(live_doc_html(fragment, doc_typography()[0]), sanitize=False).classes('w-full')
 
+            def _materialize_flow_message(spec):
+                # Efecto aparte, explícito (ver core.materialize_spec_steps_as_flow): nunca debe romper el
+                # guardado del Caso de prueba en sí — p. ej. si el ambiente que probó el step ya no existe.
+                try:
+                    flow = core.materialize_spec_steps_as_flow(spec)
+                except ValueError as exc:
+                    ui.notify(f'No se pudo actualizar el Flujo generado: {exc}', type='warning')
+                    return ''
+                return f' — Flujo «{flow["name"]}» al día' if flow else ''
+
             def save():
                 if current:
-                    core.update_test_case_spec(current['id'], d['meta']['title'], d['meta']['story_id'], d['meta']['feature_id'], _v(preconditions),
-                                               d['steps'], d['meta']['priority'], d['meta']['type'], d['meta']['linked_case_id'], custom_fields=d['custom'],
-                                               input_template_id=input_template.value if input_template else None, criteria_ids=d['meta']['criteria_ids'])
-                    ui.notify('Caso de prueba actualizado', type='positive')
+                    spec = core.update_test_case_spec(current['id'], d['meta']['title'], d['meta']['story_id'], d['meta']['feature_id'], _v(preconditions),
+                                                       d['steps'], d['meta']['priority'], d['meta']['type'], d['meta']['linked_case_id'], custom_fields=d['custom'],
+                                                       input_template_id=input_template.value if input_template else None, criteria_ids=d['meta']['criteria_ids'])
+                    ui.notify('Caso de prueba actualizado' + _materialize_flow_message(spec), type='positive')
                     ui.navigate.to(f'/test-specs/edit?id={current["id"]}')
                 else:
                     spec = core.create_test_case_spec(d['meta']['title'], pid, d['meta']['story_id'], d['meta']['feature_id'], _v(preconditions),
                                                        d['steps'], d['meta']['priority'], d['meta']['type'], d['meta']['linked_case_id'], custom_fields=d['custom'],
                                                        input_template_id=input_template.value if input_template else None, criteria_ids=d['meta']['criteria_ids'])
-                    ui.notify('Caso de prueba creado', type='positive')
+                    ui.notify('Caso de prueba creado' + _materialize_flow_message(spec), type='positive')
                     ui.navigate.to(f'/test-specs/edit?id={spec["id"]}')
 
             def remove(s=current):

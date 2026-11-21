@@ -1191,6 +1191,82 @@ def test_test_case_spec_step_schema_preserves_type_data_mapping_and_technical():
     assert len(step_with_only_data['steps']) == 1   # un step sin texto pero con data no se descarta
 
 
+def _proven_technical(environment_id, method='GET', path='/health', **extra):
+    technical = {'method': method, 'path': path, 'headers': {}, 'query': {}, 'variables': {}, 'body': None,
+                'extract': [], 'assertions': [{'type': 'status', 'expected': 200}]}
+    technical.update(extra)
+    technical['last_run_status'] = 'passed'
+    technical['last_run_environment_id'] = environment_id
+    technical['last_run_snapshot'] = {k: technical.get(k) for k in core.STEP_TECHNICAL_API_KEYS}
+    return technical
+
+
+def test_materialize_spec_steps_as_flow_requires_a_proven_step_and_a_project_code():
+    project = core.create_project('Materializar')
+    env = core.save('environments', {'name': 'e', 'project_id': project['id'], 'base_url': 'http://x', 'auth': {'type': 'none'}, 'variables': {}})
+    unproven = core.create_test_case_spec('TC sin probar', project['id'], steps=[
+        {'action': 'a', 'expected': 'e', 'type': 'api', 'technical': {'method': 'GET', 'path': '/health'}}])
+    assert core.materialize_spec_steps_as_flow(unproven) is None   # ningun step con last_run_status == passed
+
+    core.set_id_prefix(project['id'], 'test_case', 'TC')
+    spec = core.update_test_case_spec(unproven['id'], 'TC sin probar', steps=[
+        {'action': 'a', 'expected': 'e', 'type': 'api', 'technical': _proven_technical(env['id'])}])
+    assert core.materialize_spec_steps_as_flow(unproven) is None   # unproven no tiene code: dict viejo, sin recargar
+
+    flow = core.materialize_spec_steps_as_flow(spec)
+    assert flow is not None and flow['name'] == spec['code']
+    [case] = [c for c in core.list_items('cases') if c['project_id'] == project['id']]
+    assert case['name'] == f'{spec["code"]} · paso 1' and case['method'] == 'GET' and case['path'] == '/health'
+    assert 'especificación' in case['tags']
+    assert flow['case_ids'] == [case['id']]
+
+
+def test_materialize_spec_steps_as_flow_upserts_without_duplicating():
+    project = core.create_project('Materializar upsert')
+    core.set_id_prefix(project['id'], 'test_case', 'TC')
+    env = core.save('environments', {'name': 'e', 'project_id': project['id'], 'base_url': 'http://x', 'auth': {'type': 'none'}, 'variables': {}})
+    spec = core.create_test_case_spec('TC', project['id'], steps=[
+        {'action': 'a', 'expected': 'e', 'type': 'api', 'technical': _proven_technical(env['id'])}])
+
+    flow1 = core.materialize_spec_steps_as_flow(spec)
+    flow2 = core.materialize_spec_steps_as_flow(spec)
+    assert flow1['id'] == flow2['id']
+    assert len([c for c in core.list_items('cases') if c['project_id'] == project['id']]) == 1
+    assert len([s for s in core.list_items('suites') if s['project_id'] == project['id']]) == 1
+
+
+def test_materialize_spec_steps_as_flow_ignores_a_step_edited_after_its_successful_run():
+    project = core.create_project('Materializar invalidado')
+    core.set_id_prefix(project['id'], 'test_case', 'TC')
+    env = core.save('environments', {'name': 'e', 'project_id': project['id'], 'base_url': 'http://x', 'auth': {'type': 'none'}, 'variables': {}})
+    spec = core.create_test_case_spec('TC', project['id'], steps=[
+        {'action': 'a', 'expected': 'e', 'type': 'api', 'technical': _proven_technical(env['id'])}])
+    core.materialize_spec_steps_as_flow(spec)
+    [case] = [c for c in core.list_items('cases') if c['project_id'] == project['id']]
+    assert case['path'] == '/health'
+
+    edited = dict(spec['steps'][0]['technical'])
+    edited['path'] = '/other'   # se edito despues de probar — el snapshot ya no coincide
+    spec2 = core.update_test_case_spec(spec['id'], 'TC', steps=[{'action': 'a', 'expected': 'e', 'type': 'api', 'technical': edited}])
+    assert core.materialize_spec_steps_as_flow(spec2) is None
+    [case_after] = [c for c in core.list_items('cases') if c['project_id'] == project['id']]
+    assert case_after['path'] == '/health'   # no se actualizo
+
+
+def test_materialize_spec_steps_as_flow_chains_two_proven_api_steps_in_one_flow():
+    project = core.create_project('Materializar dos pasos')
+    core.set_id_prefix(project['id'], 'test_case', 'TC')
+    env = core.save('environments', {'name': 'e', 'project_id': project['id'], 'base_url': 'http://x', 'auth': {'type': 'none'}, 'variables': {}})
+    spec = core.create_test_case_spec('TC', project['id'], steps=[
+        {'action': 'a1', 'expected': 'e1', 'type': 'api', 'technical': _proven_technical(env['id'], path='/health')},
+        {'action': 'a2', 'expected': 'e2', 'type': 'api', 'technical': _proven_technical(env['id'], path='/api/items')}])
+
+    flow = core.materialize_spec_steps_as_flow(spec)
+    cases = {c['name']: c for c in core.list_items('cases') if c['project_id'] == project['id']}
+    assert set(cases) == {f'{spec["code"]} · paso 1', f'{spec["code"]} · paso 2'}
+    assert len(flow['case_ids']) == 2
+
+
 def test_spec_template_crud_validates_kind_and_applies_to():
     project = core.create_project('PT')
     with pytest.raises(ValueError):

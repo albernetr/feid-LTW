@@ -809,12 +809,22 @@ def _clean_step_technical(value, step_type):
     contra STEP_ACTIONS (esa validación vive en automation.validate_steps, del lado de la UI)."""
     value = value if isinstance(value, dict) else {}
     if step_type == 'api':
-        return {'method': value.get('method') if value.get('method') in HTTP_METHODS else 'GET',
-                'path': (value.get('path') or '').strip(),
-                'headers': _clean_step_kv(value.get('headers')), 'query': _clean_step_kv(value.get('query')),
-                'variables': _clean_step_kv(value.get('variables')), 'body': value.get('body'),
-                'extract': value.get('extract') if isinstance(value.get('extract'), list) else [],
-                'assertions': value.get('assertions') if isinstance(value.get('assertions'), list) else []}
+        cleaned = {'method': value.get('method') if value.get('method') in HTTP_METHODS else 'GET',
+                  'path': (value.get('path') or '').strip(),
+                  'headers': _clean_step_kv(value.get('headers')), 'query': _clean_step_kv(value.get('query')),
+                  'variables': _clean_step_kv(value.get('variables')), 'body': value.get('body'),
+                  'extract': value.get('extract') if isinstance(value.get('extract'), list) else [],
+                  'assertions': value.get('assertions') if isinstance(value.get('assertions'), list) else []}
+        # «Prueba de éxito» de la última ejecución (ver pages/test_case_specs.py: run_step) — internos, nunca
+        # editados a mano, por eso se preservan tal cual si vienen, sin validar su forma. Sirven para que
+        # materialize_spec_steps_as_flow sepa qué steps ya se probaron y con qué ambiente, y para invalidar esa
+        # prueba por snapshot (ver _step_is_proven) en vez de tener que resetearla a mano en cada widget que
+        # edita la técnica.
+        if value.get('last_run_status') == 'passed':
+            cleaned['last_run_status'] = 'passed'
+            cleaned['last_run_environment_id'] = value.get('last_run_environment_id')
+            cleaned['last_run_snapshot'] = value.get('last_run_snapshot')
+        return cleaned
     if step_type == 'ui':
         action = (value.get('action') or '').strip()
         if not action:
@@ -848,6 +858,73 @@ def _clean_test_steps(steps):
         result.append({'action': action, 'expected': expected, 'type': step_type, 'data': data,
                        'mapping': mapping, 'technical': technical})
     return result
+
+
+STEP_TECHNICAL_API_KEYS = ('method', 'path', 'headers', 'query', 'variables', 'body', 'extract', 'assertions')
+
+
+def _step_is_proven(technical):
+    """Un step API cuenta como «ya probado» solo si la ÚLTIMA ejecución exitosa (ver run_step en
+    pages/test_case_specs.py) coincide EXACTAMENTE con la técnica actual — si se editó cualquier cosa después
+    de probarlo (method/path/headers/body/aserciones/...), el snapshot ya no calza y deja de contar, sin que
+    haga falta invalidar el flag a mano en cada widget que edita la técnica."""
+    if technical.get('last_run_status') != 'passed':
+        return False
+    snapshot = technical.get('last_run_snapshot')
+    current = {k: technical.get(k) for k in STEP_TECHNICAL_API_KEYS}
+    return snapshot == current
+
+
+def _upsert_by_name(table, project_id, name, fields):
+    """Mismo molde que ya usa app/agent.py (import_spec, ltw.spec/1) para Casos/Flujos: busca por `name`
+    dentro del proyecto — ni `cases` ni `suites` tienen un `code` propio como Historias/Casos de prueba — y
+    si ya existe, actualiza ese mismo registro en vez de crear uno nuevo."""
+    existing = next((item for item in list_project_items(table, project_id) if item.get('name') == name), None)
+    merged = {**(existing or {}), **fields}
+    if existing:
+        merged['id'] = existing['id']
+    return merged
+
+
+def materialize_spec_steps_as_flow(tc):
+    """Upsertea (nunca duplica) un Caso API por cada step `type == 'api'` de este Caso de prueba que ya se
+    haya ejecutado con éxito (ver _step_is_proven), y los agrupa en un Flujo nombrado con el `code` del Caso
+    de prueba — este SIEMPRE mapea contra un contenedor (un Flujo), nunca contra un Caso suelto, incluso con
+    un único step técnico. Devuelve el Flujo guardado, o None si no aplica (sin `code`, o ningún step
+    probado). Pensado para llamarse justo después de guardar el Caso de prueba (ver pages/test_case_specs.py:
+    save()), nunca desde create/update_test_case_spec — toca otras tablas, es un efecto aparte, explícito."""
+    code = tc.get('code')
+    if not code:
+        return None
+    project_id = tc['project_id']
+    case_ids, first_environment_id = [], None
+    for index, step in enumerate((tc.get('steps') or []), start=1):
+        technical = step.get('technical') or {}
+        if step.get('type') != 'api' or not _step_is_proven(technical):
+            continue
+        name = f'{code} · paso {index}'
+        existing_tags = set()
+        existing = next((c for c in list_project_items('cases', project_id) if c.get('name') == name), None)
+        if existing:
+            existing_tags = set(existing.get('tags') or [])
+        doc = _upsert_by_name('cases', project_id, name, {
+            'name': name, 'type': 'api', 'project_id': project_id,
+            'method': technical.get('method', 'GET'), 'path': technical.get('path', ''),
+            'headers': technical.get('headers', {}), 'query': technical.get('query', {}),
+            'variables': technical.get('variables', {}), 'body': technical.get('body'),
+            'extract': technical.get('extract', []), 'assertions': technical.get('assertions', []),
+            'tags': sorted(existing_tags | {'especificación'})})
+        saved_case = save('cases', doc)
+        case_ids.append(saved_case['id'])
+        if first_environment_id is None:
+            first_environment_id = technical.get('last_run_environment_id')
+    if not case_ids:
+        return None
+    flow_steps = [{'case_id': cid, 'alias': f'paso-{n}', 'environment_id': None, 'enrich': []}
+                 for n, cid in enumerate(case_ids, start=1)]
+    existing_suite = next((s for s in list_project_items('suites', project_id) if s.get('name') == code), None)
+    return save_suite(code, first_environment_id, [], project_id, id=(existing_suite or {}).get('id'), steps=flow_steps,
+                      on_failure='continue', retries=0, retry_delay_s=0, variables={}, feature_id=None, draws=[])
 
 
 # --------------------------------------------------------------------------- plantillas (biblioteca global +
