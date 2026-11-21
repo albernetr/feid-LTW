@@ -1203,3 +1203,56 @@ def test_story_coverage_crosses_specs_with_their_linked_case_last_run():
     assert rows_by_spec[automated_spec['id']]['last_run']['status'] == 'passed'
     with pytest.raises(ValueError):
         core.story_coverage('no-existe')
+
+
+def test_set_id_prefix_assigns_codes_to_new_records():
+    project = core.create_project('Códigos')
+    assert core.get_id_prefix(project['id'], 'user_story') is None
+    story_before = core.create_user_story('Sin código todavía', project['id'])
+    assert 'code' not in story_before or not story_before.get('code')
+
+    core.set_id_prefix(project['id'], 'user_story', 'hu')
+    assert core.get_id_prefix(project['id'], 'user_story') == 'HU'
+    # Backfill retroactivo del registro ya existente
+    backfilled = core.get('user_stories', story_before['id'])
+    assert backfilled['code'] == 'HU-001'
+
+    story_after = core.create_user_story('Historia nueva', project['id'])
+    assert story_after['code'] == 'HU-002'
+
+
+def test_set_id_prefix_is_locked_once_a_code_has_been_assigned():
+    project = core.create_project('Códigos bloqueados')
+    core.set_id_prefix(project['id'], 'user_story', 'HU')
+    core.create_user_story('Primera', project['id'])
+    with pytest.raises(ValueError):
+        core.set_id_prefix(project['id'], 'user_story', 'REQ')
+    assert core.get_id_prefix(project['id'], 'user_story') == 'HU'
+
+
+def test_set_id_prefix_validates_format_and_applies_to():
+    project = core.create_project('Formato')
+    with pytest.raises(ValueError):
+        core.set_id_prefix(project['id'], 'user_story', '')
+    with pytest.raises(ValueError):
+        core.set_id_prefix(project['id'], 'user_story', 'ab cd')
+    with pytest.raises(ValueError):
+        core.set_id_prefix(project['id'], 'report', 'REP')
+
+
+def test_test_case_spec_codes_are_independent_from_user_story_codes():
+    project = core.create_project('Dos secuencias')
+    core.set_id_prefix(project['id'], 'user_story', 'HU')
+    core.set_id_prefix(project['id'], 'test_case', 'TC')
+    story = core.create_user_story('Historia', project['id'])
+    spec = core.create_test_case_spec('Caso', project['id'], story_id=story['id'])
+    assert story['code'] == 'HU-001'
+    assert spec['code'] == 'TC-001'
+
+
+def test_updating_a_record_never_changes_its_code():
+    project = core.create_project('Inmutable')
+    core.set_id_prefix(project['id'], 'user_story', 'HU')
+    story = core.create_user_story('Historia', project['id'])
+    updated = core.update_user_story(story['id'], 'Historia renombrada')
+    assert updated['code'] == 'HU-001'

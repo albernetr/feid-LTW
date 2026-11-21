@@ -258,6 +258,27 @@ def project_edit(id: str = ''):
 
             if current:
                 ui.separator().classes('my-3')
+                ui.label('Identificadores').classes('text-xs font-semibold text-gray-500 uppercase tracking-wide')
+                ui.label('Prefijo para numerar Historias de usuario y Casos de prueba de este proyecto (ej. «HU-014», '
+                         '«TC-003»). Lo existente se numera retroactivo por orden de creación al definirlo. No se '
+                         'puede cambiar una vez que ya se generó algún identificador con ese prefijo.').classes('text-sm text-gray-500 mb-1')
+                with ui.row().classes('gap-4 items-center flex-wrap mt-1'):
+                    for applies_to, label, marker in (('user_story', 'Historias de usuario', 'project-id-prefix-user-story'),
+                                                       ('test_case', 'Casos de prueba', 'project-id-prefix-test-case')):
+                        locked = bool(dict(current.get('id_counters') or {}).get(applies_to, 0))
+                        prefix_input = ui.input(label, value=core.get_id_prefix(current['id'], applies_to) or '') \
+                            .props('outlined dense' + (' disable' if locked else '')).classes('w-48').mark(marker)
+                        if locked:
+                            prefix_input.tooltip('Ya hay registros con este prefijo — no se puede cambiar')
+
+                        def save_prefix(applies_to=applies_to, prefix_input=prefix_input):
+                            core.set_id_prefix(current['id'], applies_to, prefix_input.value or '')
+                            ui.notify('Prefijo guardado', type='positive')
+                            ui.navigate.to(f'/projects/edit?id={current["id"]}')
+                        if not locked:
+                            ui.button('Guardar', icon='save', on_click=guard(save_prefix)).props('flat dense').mark(f'{marker}-save')
+
+                ui.separator().classes('my-3')
                 ui.label('Administración').classes('text-xs font-semibold text-gray-500 uppercase tracking-wide')
                 with ui.row().classes('gap-2 items-center mt-1'):
                     ui.button('Habilitar' if is_disabled else 'Deshabilitar', icon='unarchive' if is_disabled else 'archive',

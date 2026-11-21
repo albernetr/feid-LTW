@@ -184,6 +184,7 @@ def stories_list():
 
         features = {f['id']: f['name'] for f in core.list_project_items('features', pid)}
         columns = [
+            {'name': 'code', 'label': 'Código', 'field': 'code', 'align': 'left', 'sortable': True},
             {'name': 'title', 'label': 'Título', 'field': 'title', 'align': 'left', 'sortable': True},
             {'name': 'feature', 'label': 'Funcionalidad', 'field': 'feature', 'align': 'left'},
             {'name': 'priority', 'label': 'Prioridad', 'field': 'priority', 'align': 'left'},
@@ -193,7 +194,7 @@ def stories_list():
         ]
 
         def rows():
-            return [{'id': s['id'], 'title': s['title'], 'feature': features.get(s.get('feature_id'), '—'),
+            return [{'id': s['id'], 'code': s.get('code') or '—', 'title': s['title'], 'feature': features.get(s.get('feature_id'), '—'),
                      'priority': core.PRIORITY_LABELS.get(s.get('priority'), s.get('priority')),
                      'status': STATUS_LABELS.get(s.get('status'), s.get('status')), 'criteria': len(s.get('criteria') or [])}
                     for s in items]

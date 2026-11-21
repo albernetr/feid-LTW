@@ -361,6 +361,22 @@ async def test_projects_table_toggle_enabled(user: User):
     assert core.get_active_project_id() is None
 
 
+async def test_projects_detail_page_sets_an_id_prefix_and_locks_it_after_use(user: User):
+    project = core.create_project('Con identificadores')
+    core.create_user_story('Historia vieja', project['id'])
+
+    await user.open(f'/projects/edit?id={project["id"]}')
+    user.find('project-id-prefix-user-story').type('hu')
+    user.find('project-id-prefix-user-story-save').click()
+    await user.should_see('Prefijo guardado')
+    assert core.get_id_prefix(project['id'], 'user_story') == 'HU'
+    assert core.get('user_stories', core.list_project_items('user_stories', project['id'])[0]['id'])['code'] == 'HU-001'
+
+    await user.open(f'/projects/edit?id={project["id"]}')
+    with pytest.raises(AssertionError):   # ya está en uso: el botón Guardar deja de mostrarse
+        user.find('project-id-prefix-user-story-save')
+
+
 async def test_projects_edit_page_shows_a_clear_message_for_a_missing_project(user: User):
     await user.open('/projects/edit?id=nope')
     await user.should_see('Este proyecto ya no existe.')
@@ -1264,6 +1280,22 @@ async def test_user_story_can_be_created_linked_to_a_feature_and_deleted(user: U
     user.find(marker='confirm-dialog-accept').click()
     await user.should_see('Historia eliminada')
     assert core.list_items('user_stories') == []
+
+
+async def test_stories_and_test_specs_lists_show_the_code_column_when_the_project_has_a_prefix(user: User):
+    project = core.create_project('Con código')
+    core.set_active_project(project['id'])
+    core.set_id_prefix(project['id'], 'user_story', 'HU')
+    core.set_id_prefix(project['id'], 'test_case', 'TC')
+    story = core.create_user_story('Con código', project['id'])
+    core.create_test_case_spec('Con código', project['id'], story_id=story['id'])
+
+    await user.open('/stories')
+    stories_table = next(iter(user.find(marker='stories-table').elements))
+    assert any(row['code'] == 'HU-001' for row in stories_table.rows)
+    await user.open('/test-specs')
+    specs_table = next(iter(user.find(marker='test-specs-table').elements))
+    assert any(row['code'] == 'TC-001' for row in specs_table.rows)
 
 
 async def test_test_case_spec_can_be_created_from_a_story_and_linked_to_an_automated_case(user: User):

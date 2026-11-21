@@ -25,6 +25,7 @@ def test_specs_list():
 
         stories = {s['id']: s['title'] for s in core.list_project_items('user_stories', pid)}
         columns = [
+            {'name': 'code', 'label': 'Código', 'field': 'code', 'align': 'left', 'sortable': True},
             {'name': 'title', 'label': 'Título', 'field': 'title', 'align': 'left', 'sortable': True},
             {'name': 'story', 'label': 'Historia', 'field': 'story', 'align': 'left'},
             {'name': 'type', 'label': 'Tipo', 'field': 'type', 'align': 'left'},
@@ -34,7 +35,7 @@ def test_specs_list():
         ]
 
         def rows():
-            return [{'id': s['id'], 'title': s['title'], 'story': stories.get(s.get('story_id'), '—'),
+            return [{'id': s['id'], 'code': s.get('code') or '—', 'title': s['title'], 'story': stories.get(s.get('story_id'), '—'),
                      'type': TYPE_LABELS.get(s.get('type'), s.get('type')), 'priority': core.PRIORITY_LABELS.get(s.get('priority'), s.get('priority')),
                      'status': STATUS_LABELS.get(s.get('status'), s.get('status'))} for s in items]
 

@@ -597,6 +597,9 @@ def create_user_story(title, project_id, as_a='', i_want='', so_that='', feature
         item['assigned_to'] = assigned_to
     if input_template_id:
         item['input_template_id'] = input_template_id
+    code = next_record_code(project_id, 'user_story')
+    if code:
+        item['code'] = code
     return save('user_stories', item)
 
 
@@ -713,6 +716,9 @@ def create_test_case_spec(title, project_id, story_id=None, feature_id=None, pre
     for key, value in (('story_id', story_id), ('feature_id', feature_id), ('linked_case_id', linked_case_id), ('input_template_id', input_template_id)):
         if value:
             item[key] = value
+    code = next_record_code(project_id, 'test_case')
+    if code:
+        item['code'] = code
     return save('test_case_specs', item)
 
 
@@ -937,6 +943,60 @@ def set_default_template(project_id, applies_to, template_id):
     defaults[applies_to] = template_id
     project['default_templates'] = defaults
     save('projects', project)
+
+
+CODE_APPLIES_TO_TABLE = {'user_story': 'user_stories', 'test_case': 'test_case_specs'}
+
+
+def get_id_prefix(project_id, applies_to):
+    """Prefijo de identificador ('HU', 'TC', ...) que este proyecto usa para `applies_to`
+    ('user_story'|'test_case') — None si el proyecto nunca lo configuró (entonces sus registros no tienen
+    `code`, ver next_record_code)."""
+    project = get('projects', project_id)
+    return (project or {}).get('id_prefixes', {}).get(applies_to)
+
+
+def set_id_prefix(project_id, applies_to, prefix):
+    """Fija el prefijo de identificador del proyecto para `applies_to` y, la PRIMERA vez que se fija, numera
+    retroactivamente (por orden de creación) los registros que ya existan sin `code`. Una vez que el proyecto
+    ya tiene algún registro con `code` asignado para este tipo, el prefijo queda bloqueado — no se puede
+    cambiar ni re-disparar el backfill, para no mezclar dos prefijos distintos en el mismo proyecto/tipo."""
+    if applies_to not in CODE_APPLIES_TO_TABLE:
+        raise ValueError('Solo Historias de usuario y Casos de prueba tienen identificador')
+    prefix = (prefix or '').strip().upper()
+    if not re.fullmatch(r'[A-Z0-9][A-Z0-9-]{0,9}', prefix or ''):
+        raise ValueError('El prefijo debe tener entre 1 y 10 caracteres: letras, números o guión')
+    project = get('projects', project_id)
+    if project is None:
+        raise ValueError('Proyecto inexistente')
+    counters = dict(project.get('id_counters') or {})
+    if counters.get(applies_to, 0) > 0:
+        raise ValueError('El identificador de este tipo ya está en uso en este proyecto — no se puede cambiar el prefijo')
+    prefixes = dict(project.get('id_prefixes') or {})
+    prefixes[applies_to] = prefix
+    project['id_prefixes'] = prefixes
+    table = CODE_APPLIES_TO_TABLE[applies_to]
+    existing = [item for item in reversed(list_project_items(table, project_id)) if not item.get('code')]
+    for n, item in enumerate(existing, start=1):
+        item['code'] = f'{prefix}-{n:03d}'
+        save(table, item)
+    counters[applies_to] = len(existing)
+    project['id_counters'] = counters
+    save('projects', project)
+
+
+def next_record_code(project_id, applies_to):
+    """Código a asignar a un registro NUEVO ('HU-004', ...) — None si el proyecto no configuró prefijo para
+    `applies_to` (ver set_id_prefix), en cuyo caso el registro simplemente no tiene `code`."""
+    project = get('projects', project_id)
+    prefix = (project or {}).get('id_prefixes', {}).get(applies_to)
+    if not prefix:
+        return None
+    counters = dict(project.get('id_counters') or {})
+    counters[applies_to] = counters.get(applies_to, 0) + 1
+    project['id_counters'] = counters
+    save('projects', project)
+    return f'{prefix}-{counters[applies_to]:03d}'
 
 
 def _slugify_field_key(label):
