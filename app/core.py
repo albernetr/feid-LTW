@@ -698,12 +698,24 @@ TEST_CASE_TYPES = ('functional', 'regression', 'smoke', 'exploratory')
 TEST_CASE_STATUSES = ('draft', 'ready', 'automated')
 
 
+def _clean_criteria_ids(criteria_ids, story):
+    """Filtra a los ids de criterio que existan HOY en la Historia ligada — nunca se arrastra un id de otra
+    Historia (si `story_id` cambió) ni uno que ya no exista (si se borró el criterio de la Historia); en
+    cualquiera de esos dos casos el Caso de prueba simplemente deja de tenerlo marcado, sin error."""
+    if story is None:
+        return []
+    valid = {c['id'] for c in (story.get('criteria') or [])}
+    return [cid for cid in (criteria_ids or []) if cid in valid]
+
+
 def create_test_case_spec(title, project_id, story_id=None, feature_id=None, preconditions='', steps=None,
-                          priority='medium', type='functional', linked_case_id=None, source='manual', custom_fields=None, input_template_id=None):
+                          priority='medium', type='functional', linked_case_id=None, source='manual', custom_fields=None,
+                          input_template_id=None, criteria_ids=None):
     title = (title or '').strip()
     if not title:
         raise ValueError('El título del caso de prueba es obligatorio')
-    if story_id and get('user_stories', story_id) is None:
+    story = get('user_stories', story_id) if story_id else None
+    if story_id and story is None:
         raise ValueError('Historia de usuario inexistente')
     if feature_id and get('features', feature_id) is None:
         raise ValueError('Funcionalidad inexistente')
@@ -712,7 +724,7 @@ def create_test_case_spec(title, project_id, story_id=None, feature_id=None, pre
     item = {'title': title, 'preconditions': (preconditions or '').strip(), 'steps': _clean_test_steps(steps),
             'priority': priority if priority in PRIORITIES else 'medium', 'type': type if type in TEST_CASE_TYPES else 'functional',
             'status': 'automated' if linked_case_id else 'draft', 'source': source if source in STORY_SOURCES else 'manual', 'project_id': project_id,
-            'custom_fields': _clean_custom_fields(custom_fields)}
+            'custom_fields': _clean_custom_fields(custom_fields), 'criteria_ids': _clean_criteria_ids(criteria_ids, story)}
     for key, value in (('story_id', story_id), ('feature_id', feature_id), ('linked_case_id', linked_case_id), ('input_template_id', input_template_id)):
         if value:
             item[key] = value
@@ -723,14 +735,16 @@ def create_test_case_spec(title, project_id, story_id=None, feature_id=None, pre
 
 
 def update_test_case_spec(spec_id, title, story_id=None, feature_id=None, preconditions='', steps=None,
-                          priority='medium', type='functional', linked_case_id=None, status=None, custom_fields=None, input_template_id=None):
+                          priority='medium', type='functional', linked_case_id=None, status=None, custom_fields=None,
+                          input_template_id=None, criteria_ids=None):
     spec = get('test_case_specs', spec_id)
     if spec is None:
         raise ValueError('Caso de prueba inexistente')
     title = (title or '').strip()
     if not title:
         raise ValueError('El título del caso de prueba es obligatorio')
-    if story_id and get('user_stories', story_id) is None:
+    story = get('user_stories', story_id) if story_id else None
+    if story_id and story is None:
         raise ValueError('Historia de usuario inexistente')
     if feature_id and get('features', feature_id) is None:
         raise ValueError('Funcionalidad inexistente')
@@ -738,7 +752,7 @@ def update_test_case_spec(spec_id, title, story_id=None, feature_id=None, precon
         raise ValueError('Caso API/UI inexistente')
     spec.update({'title': title, 'preconditions': (preconditions or '').strip(), 'steps': _clean_test_steps(steps),
                 'priority': priority if priority in PRIORITIES else 'medium', 'type': type if type in TEST_CASE_TYPES else 'functional',
-                'custom_fields': _clean_custom_fields(custom_fields)})
+                'custom_fields': _clean_custom_fields(custom_fields), 'criteria_ids': _clean_criteria_ids(criteria_ids, story)})
     spec['story_id'] = story_id or None
     spec['feature_id'] = feature_id or None
     spec['linked_case_id'] = linked_case_id or None
@@ -856,7 +870,30 @@ def seed_default_spec_templates():
             save('spec_templates', current)
 
 
-def create_spec_template(name, kind, applies_to, body=None, project_id=None, description=''):
+def _clean_linked_story_fields(value, applies_to, project_id):
+    """Solo tiene sentido en una plantilla de ENTRADA de Caso de prueba: por cada plantilla «padre» de
+    Historia de usuario elegida, qué campos suyos se traen al previsualizador del Caso de prueba (ver
+    pages/test_case_specs.py). Se descarta por completo si la plantilla no es de ese tipo, y dentro de lo que
+    queda, se descarta cualquier plantilla padre que ya no sea visible para el proyecto y cualquier
+    field_key que ya no exista en el body ACTUAL de esa plantilla padre — así nunca queda apuntando a algo
+    borrado. No se propaga al promover/adoptar (ver promote_template/adopt_template): referencia plantillas de
+    ESTE proyecto, y un proyecto distinto (u otro nivel, global) no tiene ese mismo «padre» disponible."""
+    if applies_to != 'test_case' or not value:
+        return {}
+    parents = {t['id']: t for t in visible_templates('input', 'user_story', project_id)}
+    result = {}
+    for parent_id, field_keys in (value or {}).items():
+        parent = parents.get(parent_id)
+        if parent is None:
+            continue
+        valid_keys = template_field_keys(parent.get('body'))
+        kept = [k for k in (field_keys or []) if k in valid_keys]
+        if kept:
+            result[parent_id] = kept
+    return result
+
+
+def create_spec_template(name, kind, applies_to, body=None, project_id=None, description='', linked_story_fields=None):
     name = (name or '').strip()
     if not name:
         raise ValueError('El nombre de la plantilla es obligatorio')
@@ -865,11 +902,12 @@ def create_spec_template(name, kind, applies_to, body=None, project_id=None, des
     if applies_to not in TEMPLATE_APPLIES_TO:
         raise ValueError('«Aplica a» inválido')
     item = {'name': name, 'description': (description or '').strip(), 'kind': kind, 'applies_to': applies_to,
-            'body': _clean_template_body(body, applies_to), 'is_builtin': False, 'project_id': project_id}
+            'body': _clean_template_body(body, applies_to), 'is_builtin': False, 'project_id': project_id,
+            'linked_story_fields': _clean_linked_story_fields(linked_story_fields, applies_to, project_id)}
     return save('spec_templates', item)
 
 
-def update_spec_template(template_id, name, description='', body=None):
+def update_spec_template(template_id, name, description='', body=None, linked_story_fields=None):
     template = get('spec_templates', template_id)
     if template is None:
         raise ValueError('Plantilla inexistente')
@@ -879,7 +917,8 @@ def update_spec_template(template_id, name, description='', body=None):
     if not name:
         raise ValueError('El nombre de la plantilla es obligatorio')
     template.update({'name': name, 'description': (description or '').strip(),
-                     'body': _clean_template_body(body, template['applies_to'])})
+                     'body': _clean_template_body(body, template['applies_to']),
+                     'linked_story_fields': _clean_linked_story_fields(linked_story_fields, template['applies_to'], template['project_id'])})
     return save('spec_templates', template)
 
 

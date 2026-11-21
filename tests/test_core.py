@@ -973,6 +973,52 @@ def test_test_case_spec_custom_fields_round_trip():
     assert updated['custom_fields'] == {'severidad': 'baja'}
 
 
+def test_test_case_spec_criteria_ids_keep_only_ids_that_exist_in_the_linked_story():
+    project = core.create_project('Criterios ligados')
+    story = core.create_user_story('Pagar', project['id'], criteria=[{'text': 'uno'}, {'text': 'dos'}])
+    c1, c2 = story['criteria'][0]['id'], story['criteria'][1]['id']
+
+    spec = core.create_test_case_spec('TC', project['id'], story_id=story['id'], criteria_ids=[c1, c2, 'no-existe'])
+    assert sorted(spec['criteria_ids']) == sorted([c1, c2])
+
+    other_story = core.create_user_story('Otra', project['id'], criteria=[{'text': 'tres'}])
+    moved = core.update_test_case_spec(spec['id'], 'TC', story_id=other_story['id'], criteria_ids=[c1, c2])
+    assert moved['criteria_ids'] == []   # c1/c2 son de la Historia anterior, no de la nueva
+
+    without_story = core.update_test_case_spec(spec['id'], 'TC', criteria_ids=[c1])
+    assert without_story['criteria_ids'] == []   # sin story_id no hay criterios posibles
+
+
+def test_test_case_spec_drops_a_criteria_id_once_the_criterion_is_removed_from_the_story():
+    project = core.create_project('Criterio borrado')
+    story = core.create_user_story('Pagar', project['id'], criteria=[{'text': 'uno'}, {'text': 'dos'}])
+    c1, c2 = story['criteria'][0]['id'], story['criteria'][1]['id']
+    spec = core.create_test_case_spec('TC', project['id'], story_id=story['id'], criteria_ids=[c1, c2])
+    assert sorted(spec['criteria_ids']) == sorted([c1, c2])
+
+    core.update_user_story(story['id'], 'Pagar', criteria=[{'id': c1, 'text': 'uno'}])   # se borró el criterio c2
+    updated = core.update_test_case_spec(spec['id'], 'TC', story_id=story['id'], criteria_ids=[c1, c2])
+    assert updated['criteria_ids'] == [c1]
+
+
+def test_linked_story_fields_only_applies_to_test_case_input_templates_and_drops_invalid_references():
+    project = core.create_project('Campos ligados')
+    parent = core.create_spec_template('HU propia', 'input', 'user_story', project_id=project['id'], body=[
+        {'kind': 'field', 'label': 'Como', 'field_key': 'as_a'}])
+
+    # Se ignora por completo si la plantilla no es de Caso de prueba
+    not_test_case = core.create_spec_template('Otra HU', 'input', 'user_story', project_id=project['id'],
+                                               linked_story_fields={parent['id']: ['as_a']})
+    assert not_test_case['linked_story_fields'] == {}
+
+    tpl = core.create_spec_template('TC propia', 'input', 'test_case', project_id=project['id'],
+                                    linked_story_fields={parent['id']: ['as_a', 'no-existe'], 'no-existe': ['as_a']})
+    assert tpl['linked_story_fields'] == {parent['id']: ['as_a']}
+
+    updated = core.update_spec_template(tpl['id'], 'TC propia', body=[], linked_story_fields={parent['id']: ['as_a']})
+    assert updated['linked_story_fields'] == {parent['id']: ['as_a']}
+
+
 def test_save_custom_field_file_writes_to_artifacts_and_is_servable_via_evidence_path():
     result = core.save_custom_field_file(b'contenido-binario', 'Mi Reporte Final.png', content_type='image/png')
     assert result['filename'] == 'Mi Reporte Final.png' and result['content_type'] == 'image/png' and result['size'] == len(b'contenido-binario')
