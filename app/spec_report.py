@@ -469,35 +469,64 @@ def render_story_view_html(story, fields, custom_fields=None):
     return ''.join(parts)
 
 
-def render_test_case_view_html(spec, fields, custom_fields=None):
+def render_test_case_view_html(spec, fields, custom_fields=None, linked_story_title='', linked_story_fragment='', linked_criteria=None):
     """`spec`: preconditions/steps tal como viven en la base. `fields`/`custom_fields`: ver render_story_view_html
-    — mismo contrato, aplicado a Caso de prueba (preconditions/steps son sus únicos campos FIJOS hoy)."""
+    — mismo contrato, aplicado a Caso de prueba (preconditions/steps son sus únicos campos FIJOS hoy).
+    `linked_story_title`/`linked_story_fragment`: Historia ligada — `linked_story_fragment` es HTML ya
+    renderizado (por el caller, vía render_story_view_html con los campos que la plantilla de Caso de prueba
+    decidió traer — ver core.visible_templates/iter_template_fields en pages/test_case_specs.py), puede venir
+    vacío si no se configuró ninguno. `linked_criteria`: los criterios de esa Historia que este Caso de prueba
+    tiene marcados (ver test_case_specs.criteria_ids), mismo formato Gherkin que ya usa la Historia. Si hay
+    Historia ligada, todo esto (título + campos + criterios) se antepone junto, colapsable (`<details>`,
+    plegado con un clic, sin JS propio) — los criterios quedan justo debajo de los campos de la Historia, antes
+    de Precondición/Pasos del propio Caso de prueba. En ese caso, el contenido propio del Caso de prueba
+    (Precondición/Pasos/...) va en su propia caja con el mismo estilo — simetría visual con la de la Historia,
+    así no da la impresión de ser una continuación de ella — pero SIN colapsar: es el contenido principal que
+    se está editando, no contexto de referencia (a diferencia de la Historia, no tiene sentido ocultarlo)."""
     e = html.escape
     custom_fields = custom_fields or {}
     parts = []
+    if linked_story_title:
+        inner = linked_story_fragment or ''
+        if linked_criteria:
+            inner += _h3('Criterios cubiertos') + _render_content_html(linked_criteria)
+        parts.append(f'<details open style="margin-bottom:8px;border:1px solid #e5e7eb;border-radius:8px;padding:8px 12px;background:#f9fafb">'
+                     f'<summary style="cursor:pointer;font-weight:600">Historia: {e(linked_story_title)}</summary>'
+                     f'<div style="margin-top:8px">{inner}</div></details>')
+    own_parts = []
     for node in (fields or []):
         field_key, field_type = node.get('field_key'), node.get('field_type')
         if field_type is not None:
             value = custom_fields.get(field_key)
             if value not in (None, '', [], {}):
-                parts.append(_h3(node.get('label') or field_key) + _render_typed_content_html(value, field_type))
+                own_parts.append(_h3(node.get('label') or field_key) + _render_typed_content_html(value, field_type))
         elif field_key == 'preconditions':
             if spec.get('preconditions'):
-                parts.append(f'<p style="margin:6px 0"><b>Precondición</b><br>{e(spec["preconditions"])}</p>')
+                own_parts.append(f'<p style="margin:6px 0"><b>Precondición</b><br>{e(spec["preconditions"])}</p>')
         elif field_key == 'steps':
-            parts.append(_h3('Pasos de ejecución y resultado esperado'))
+            own_parts.append(_h3('Pasos de ejecución y resultado esperado'))
             steps = spec.get('steps') or []
             if not steps:
-                parts.append('<p style="color:#9ca3af;font-size:13px">Ninguno todavía.</p>')
+                own_parts.append('<p style="color:#9ca3af;font-size:13px">Ninguno todavía.</p>')
             else:
-                parts.append('<ol style="margin:0;padding-left:22px">' + ''.join(
+                # list-style-type explícito: el reset global de Quasar (ol/ul sin viñeta) aplica también acá
+                # adentro del visor en vivo — sin esto, los pasos no se ven numerados aunque el markup sea <ol>.
+                own_parts.append('<ol style="margin:0;padding-left:22px;list-style-type:decimal">' + ''.join(
                     f'<li style="margin:8px 0">{e(s.get("action", "")) or "—"} <span style="color:#9ca3af">→</span> {e(s.get("expected", "")) or "—"}</li>' for s in steps) + '</ol>')
         elif field_key == 'priority' and spec.get('priority'):
-            parts.append(f'<p style="margin:0 0 10px;font-size:13px;color:#6b7280">Prioridad: {e(core.PRIORITY_LABELS.get(spec["priority"], spec["priority"]))}</p>')
+            own_parts.append(f'<p style="margin:0 0 10px;font-size:13px;color:#6b7280">Prioridad: {e(core.PRIORITY_LABELS.get(spec["priority"], spec["priority"]))}</p>')
         elif field_key == 'type' and spec.get('type'):
-            parts.append(f'<p style="margin:0 0 10px;font-size:13px;color:#6b7280">Tipo: {e(_TYPE_ES.get(spec["type"], spec["type"]))}</p>')
+            own_parts.append(f'<p style="margin:0 0 10px;font-size:13px;color:#6b7280">Tipo: {e(_TYPE_ES.get(spec["type"], spec["type"]))}</p>')
         # 'title'/'story_id'/'feature_id'/'linked_case_id': metadatos sin redacción propia en el documento —
         # ya están en otro lado (el título del documento, la lista de Casos de prueba, ...).
+    own_html = ''.join(own_parts)
+    if linked_story_title:
+        # Misma caja que la Historia (borde+fondo), sin <details>: no tiene sentido colapsar el contenido
+        # principal que se está editando (a diferencia de la Historia, que es contexto de referencia).
+        parts.append(f'<div style="border:1px solid #e5e7eb;border-radius:8px;padding:8px 12px;background:#f9fafb">'
+                     f'<div style="font-weight:600;margin-bottom:8px">Caso de prueba</div>{own_html}</div>')
+    else:
+        parts.append(own_html)
     return ''.join(parts)
 
 

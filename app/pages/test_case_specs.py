@@ -171,14 +171,25 @@ def test_spec_detail(id: str = '', story_id: str = ''):
             context = {'kind': 'caso de prueba', 'current': {'title': d['meta']['title'], 'preconditions': _v(preconditions), 'steps': d['steps']}}
             return await run.io_bound(llm.spec_chat_reply, history, text, context)
 
+        async def _handle_check_coherence(text):
+            if not d['meta']['story_id'] or not d['meta']['criteria_ids']:
+                raise ValueError('Para validar coherencia primero ligá una Historia y marcá al menos un criterio en el panel «Criterios».')
+            linked_story = core.get('user_stories', d['meta']['story_id'])
+            linked_criteria = [c for c in linked_story['criteria'] if c['id'] in d['meta']['criteria_ids']]
+            case = {'preconditions': _v(preconditions), 'steps': d['steps']}
+            return await run.io_bound(llm.check_test_case_coherence, linked_criteria, case, text)
+
         PROFILE = AssistantProfile(
             name='spec',
             placeholder='Generá candidatos, o pedile que refine el caso de arriba…',
-            empty_hint='Pedile que genere candidatos (desde la Historia ligada, o desde una descripción), o que refine el caso de arriba.',
-            tooltip=('Pedile que genere candidatos (desde la Historia ligada, o desde una descripción), o que '
-                     'refine el caso de arriba. Lo que proponga queda para revisar antes de guardar/crear.'),
+            empty_hint='Pedile que genere candidatos (desde la Historia ligada, o desde una descripción), que refine el '
+                       'caso de arriba, o que valide coherencia (si ya ligaste criterios en el panel «Criterios»).',
+            tooltip=('Pedile que genere candidatos (desde la Historia ligada, o desde una descripción), que refine el '
+                     'caso de arriba, o que valide coherencia entre los criterios ligados y los pasos. Lo que proponga '
+                     'queda para revisar antes de guardar/crear.'),
             intents=[
                 AssistantIntent(keywords=llm.SPEC_REFINE_KEYWORDS, handler=_handle_refine),
+                AssistantIntent(keywords=llm.SPEC_COHERENCE_KEYWORDS, handler=_handle_check_coherence),
                 AssistantIntent(keywords=llm.SPEC_GENERATE_CASES_KEYWORDS, handler=_handle_generate_candidates,
                                 also_match=lambda text: not d['meta']['title'].strip()),
             ],
@@ -436,8 +447,24 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                 tpl = core.get('spec_templates', input_template.value) if input_template and input_template.value else None
                 fields = list(core.iter_template_fields(tpl.get('body'))) if tpl else \
                     [{'kind': 'field', 'field_key': k, 'field_type': None} for k in ('preconditions', 'steps')]
+                linked_story = core.get('user_stories', d['meta']['story_id']) if d['meta']['story_id'] else None
+                linked_story_title, linked_story_fragment, linked_criteria = '', '', None
+                if linked_story:
+                    # Siempre el título, como referencia — el resto de la Historia (campos + criterios) solo si
+                    # la plantilla de este Caso de prueba configuró qué campos traer de ESA plantilla padre (ver
+                    # spec_templates.py, sección "Historias relacionadas"); sin configuración, no se asume
+                    # mostrar todo. Todo junto queda colapsable (ver render_test_case_view_html).
+                    linked_story_title = linked_story['title']
+                    echoed_keys = (tpl.get('linked_story_fields') or {}).get(linked_story.get('input_template_id'), []) if tpl else []
+                    if echoed_keys:
+                        parent_tpl = core.get('spec_templates', linked_story['input_template_id'])
+                        echoed_fields = [f for f in core.iter_template_fields(parent_tpl.get('body')) if f.get('field_key') in echoed_keys]
+                        linked_story_fragment = spec_report.render_story_view_html(linked_story, echoed_fields, linked_story.get('custom_fields'))
+                    linked_criteria = [c for c in (linked_story.get('criteria') or []) if c['id'] in d['meta']['criteria_ids']]
                 fragment = spec_report.render_test_case_view_html({'preconditions': _v(preconditions), 'steps': d['steps'],
-                                                                   'priority': d['meta']['priority'], 'type': d['meta']['type']}, fields, d['custom'])
+                                                                   'priority': d['meta']['priority'], 'type': d['meta']['type']}, fields, d['custom'],
+                                                                  linked_story_title=linked_story_title, linked_story_fragment=linked_story_fragment,
+                                                                  linked_criteria=linked_criteria)
                 ui.html(live_doc_html(fragment, doc_typography()[0]), sanitize=False).classes('w-full')
 
             def save():

@@ -435,6 +435,24 @@ def test_spec_chat_reply_is_plain_text_and_carries_context(fake):
         llm.spec_chat_reply([], '   ')
 
 
+def test_check_test_case_coherence_is_plain_text_and_describes_gherkin_criteria_and_steps(fake):
+    configure(fake)
+    fake.queue('El criterio de pago válido no está cubierto: ningún paso confirma el pago.')
+    criteria = [{'text': 'Pago válido', 'given': 'una tarjeta válida', 'when': 'confirma el pago', 'then': 'se aprueba la compra'}]
+    case = {'preconditions': 'sesión iniciada', 'steps': [{'action': 'Ir a pago', 'expected': 'veo el formulario'}]}
+    reply = llm.check_test_case_coherence(criteria, case)
+    assert reply == 'El criterio de pago válido no está cubierto: ningún paso confirma el pago.'
+    sent = fake.requests[-1]['body']['messages'][-1]['content']
+    assert 'Dado una tarjeta válida, cuando confirma el pago, entonces se aprueba la compra' in sent
+    assert 'sesión iniciada' in sent and 'Ir a pago' in sent
+
+
+def test_check_test_case_coherence_requires_at_least_one_linked_criterion(fake):
+    configure(fake)
+    with pytest.raises(llm.LLMError, match='No hay criterios ligados'):
+        llm.check_test_case_coherence([], {'preconditions': '', 'steps': []})
+
+
 # --------------------------------------------------------------------------- importar: texto y/o imagen (Fase 3)
 
 def test_generate_from_source_requires_text_or_image(fake):

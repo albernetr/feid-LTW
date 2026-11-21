@@ -87,6 +87,15 @@ body{background:#f3f4f6}
 .ltw-live-doc table{width:100%;border-collapse:collapse;font-size:var(--ltw-doc-size,15px)}
 .ltw-live-doc th,.ltw-live-doc td{text-align:left;padding:4px 8px;border-bottom:1px solid #e5e7eb;vertical-align:top}
 .ltw-live-doc th{background:#f9fafb;color:#374151}
+/* <details>/<summary> (Historia ligada de un Caso de prueba, ver spec_report.render_test_case_view_html): el
+   triángulo nativo del navegador para expandir/colapsar también queda anulado por el reset de Quasar (mismo
+   motivo que list-style:none en ol/ul más arriba) — sin esto, un <summary> se ve como texto plano sin ninguna
+   pista de que se puede abrir/cerrar. Se repone a mano, rotando con [open] en vez de depender del marcador
+   nativo (que varía entre navegadores).*/
+.ltw-live-doc summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:6px}
+.ltw-live-doc summary::-webkit-details-marker{display:none}
+.ltw-live-doc summary::before{content:'▸';display:inline-block;transition:transform .15s;color:#6b7280;font-size:12px}
+.ltw-live-doc details[open]>summary::before{transform:rotate(90deg)}
 </style>'''
 
 # Tamaño de texto, tipo de letra y espaciado entre secciones — UNA sola preferencia compartida (remembered())

@@ -285,3 +285,21 @@ def test_render_test_case_view_html_shows_priority_and_type_only_when_the_templa
     fields_with_meta = fields + [{'field_key': 'priority', 'field_type': None}, {'field_key': 'type', 'field_type': None}]
     html = spec_report.render_test_case_view_html(spec, fields_with_meta, {})
     assert 'Prioridad: Alta' in html and 'Tipo: Regresión' in html
+
+
+def test_render_test_case_view_html_collapses_the_linked_story_with_its_fields_and_covered_criteria_together():
+    fields = [{'field_key': 'preconditions', 'field_type': None}]
+    spec = {'preconditions': 'cuenta activa'}
+    without = spec_report.render_test_case_view_html(spec, fields, {})
+    assert 'Historia' not in without and 'Criterios cubiertos' not in without and '<details' not in without
+
+    with_story = spec_report.render_test_case_view_html(spec, fields, {}, linked_story_title='Pagar',
+                                                        linked_story_fragment='<p>Como cliente</p>')
+    assert with_story.startswith('<details')
+    assert 'Historia: Pagar' in with_story and 'Como cliente' in with_story
+    assert with_story.index('Historia: Pagar') < with_story.index('Como cliente') < with_story.index('Precondición')   # título -> campos -> propio
+
+    linked_criteria = [{'text': 'Pago exitoso', 'given': 'cuenta activa', 'when': 'pago válido', 'then': 'confirmación', 'status': 'pending'}]
+    with_criteria = spec_report.render_test_case_view_html(spec, fields, {}, linked_story_title='Pagar', linked_criteria=linked_criteria)
+    assert 'Criterios cubiertos' in with_criteria and 'Pago exitoso' in with_criteria and 'confirmación' in with_criteria
+    assert with_criteria.index('Criterios cubiertos') < with_criteria.index('Precondición')   # los criterios quedan dentro del bloque de la Historia

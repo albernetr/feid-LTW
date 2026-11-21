@@ -749,6 +749,18 @@ GENERATE_TEST_CASES_SYSTEM = (
     'razonables (datos inválidos, sin permisos, etc.) cuando el criterio lo sugiera. Responde en español.')
 
 
+def _describe_criterion(c):
+    """Un criterio de aceptación como una línea legible: su resumen + Gherkin si lo tiene (Dado/Cuando/
+    Entonces), o solo el resumen si no — mismo formateador para generar Casos de prueba y para validar
+    coherencia (ver check_test_case_coherence)."""
+    if not isinstance(c, dict):
+        return str(c)
+    if c.get('given') or c.get('when') or c.get('then'):
+        return (f'{c.get("text", "").strip()}: ' if c.get('text') else '') + \
+               f'Dado {c.get("given", "")}, cuando {c.get("when", "")}, entonces {c.get("then", "")}'
+    return c.get('text', '')
+
+
 def generate_test_cases_messages(story=None, criteria=None, environment=None):
     parts = []
     if story:
@@ -759,14 +771,7 @@ def generate_test_cases_messages(story=None, criteria=None, environment=None):
         if criteria is None:
             criteria = story.get('criteria')
     if criteria:
-        def describe(c):
-            if not isinstance(c, dict):
-                return str(c)
-            if c.get('given') or c.get('when') or c.get('then'):
-                return (f'{c.get("text", "").strip()}: ' if c.get('text') else '') + \
-                       f'Dado {c.get("given", "")}, cuando {c.get("when", "")}, entonces {c.get("then", "")}'
-            return c.get('text', '')
-        texts = [t for t in (describe(c) for c in criteria) if t]
+        texts = [t for t in (_describe_criterion(c) for c in criteria) if t]
         if texts:
             parts.append('Criterios de aceptación:\n' + '\n'.join(f'- {t}' for t in texts))
     if not parts:
@@ -883,6 +888,42 @@ def spec_chat_reply(history, text, context=None, config=None):
     if not (text or '').strip():
         raise LLMError('Escribí algo para el Asistente.')
     system, user = spec_chat_messages(history, text, context)
+    return ask(system, user, config)
+
+
+# --------------------------------------------------------------------------- Caso de prueba: validar coherencia
+# con los Criterios de aceptación ligados (ver test_case_specs.criteria_ids) — distinto del "Revisar" genérico:
+# acá el Asistente conoce específicamente qué criterios dice cubrir este Caso de prueba y evalúa, criterio por
+# criterio, si algún paso lo verifica — no modifica nada, solo señala huecos de cobertura.
+
+SPEC_COHERENCE_KEYWORDS = ('coheren', 'cobertura', 'cubre', 'cubierto', 'cubiertos')
+
+COHERENCE_SYSTEM = (
+    'Eres un ingeniero de QA senior revisando si un Caso de prueba realmente verifica los Criterios de '
+    'aceptación que dice cubrir. Te paso esos criterios (en formato Gherkin cuando lo tienen) y el Caso de '
+    'prueba (precondición y pasos). Por cada criterio, indicá si algún paso lo verifica o no, y si no, qué '
+    'falta específicamente (un dato, una validación, un paso). No reescribas el caso ni propongas pasos nuevos '
+    '— solo tu análisis, como una lista corta por criterio. Respondé en español, en texto plano (sin JSON, sin '
+    'markdown pesado).')
+
+
+def coherence_messages(criteria, case, instruction=''):
+    if not criteria:
+        raise LLMError('No hay criterios ligados para validar — marcá al menos uno en el panel «Criterios».')
+    criteria_text = '\n'.join(f'- {_describe_criterion(c)}' for c in criteria)
+    steps = case.get('steps') or []
+    steps_text = '\n'.join(f'{i + 1}. {s.get("action", "")} → {s.get("expected", "")}' for i, s in enumerate(steps)) or '(sin pasos todavía)'
+    parts = [f'Criterios de aceptación ligados a este Caso de prueba:\n{criteria_text}',
+             f'Precondición: {case.get("preconditions", "") or "(ninguna)"}',
+             f'Pasos del Caso de prueba:\n{steps_text}']
+    if (instruction or '').strip():
+        parts.append(f'Instrucción adicional: {instruction.strip()}')
+    return COHERENCE_SYSTEM, redact(_clip('\n\n'.join(parts)))
+
+
+def check_test_case_coherence(criteria, case, instruction='', config=None):
+    """Texto plano (no JSON) — análisis de cobertura criterio↔pasos; nunca modifica el Caso de prueba."""
+    system, user = coherence_messages(criteria, case, instruction)
     return ask(system, user, config)
 
 

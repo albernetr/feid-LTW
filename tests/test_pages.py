@@ -1357,6 +1357,27 @@ async def test_test_case_spec_links_criteria_shows_their_detail_and_clears_them_
     assert updated['story_id'] == other_story['id'] and updated['criteria_ids'] == []
 
 
+async def test_test_case_spec_document_shows_linked_story_title_echoed_fields_and_covered_criteria(user: User):
+    project = core.create_project('Previsualizador coherente')
+    core.set_active_project(project['id'])
+    parent = core.create_spec_template('HU propia', 'input', 'user_story', project_id=project['id'], body=[
+        {'kind': 'field', 'label': 'Como', 'field_key': 'as_a'}])
+    tc_tpl = core.create_spec_template('TC con contexto', 'input', 'test_case', project_id=project['id'],
+                                       body=[{'kind': 'field', 'label': 'Precondición', 'field_key': 'preconditions'},
+                                             {'kind': 'field', 'label': 'Pasos', 'field_key': 'steps'}],
+                                       linked_story_fields={parent['id']: ['as_a']})
+    story = core.create_user_story('Pagar', project['id'], as_a='cliente registrado',
+                                   criteria=[{'text': 'Pago exitoso'}], input_template_id=parent['id'])
+    spec = core.create_test_case_spec('TC', project['id'], story_id=story['id'], criteria_ids=[story['criteria'][0]['id']],
+                                      input_template_id=tc_tpl['id'])
+
+    await user.open(f'/test-specs/edit?id={spec["id"]}')
+    await user.should_see('Historia: Pagar')
+    await user.should_see('cliente registrado')
+    await user.should_see('Criterios cubiertos')
+    await user.should_see('Pago exitoso')
+
+
 def _by_marker(user, marker):
     return sorted(user.find(marker=marker).elements, key=lambda e: e.id)
 
@@ -1850,6 +1871,32 @@ async def test_spec_assistant_generates_candidates_from_the_linked_story_and_loa
         user.find(marker='spec-use-candidate').click()
         await eventually(lambda: user.find(marker='spec-title').elements.pop().value == 'Pago válido')
         assert core.list_items('test_case_specs') == []   # cargar un candidato no guarda nada
+
+
+async def test_spec_assistant_coherence_blocks_without_linked_criteria_and_checks_coverage_when_linked(user: User):
+    from app import llm
+    from sample_app.fake_llm import FakeLLM
+    project = core.create_project('Asistente coherencia')
+    core.set_active_project(project['id'])
+    story = core.create_user_story('Pagar', project['id'], criteria=[
+        {'text': 'Pago válido', 'given': 'una tarjeta válida', 'when': 'confirma el pago', 'then': 'se aprueba la compra'}])
+    c1 = story['criteria'][0]['id']
+    spec = core.create_test_case_spec('TC', project['id'], story_id=story['id'])
+
+    await user.open(f'/test-specs/edit?id={spec["id"]}')
+    user.find(marker='spec-assistant-input').type('¿Está cubierta la coherencia de este caso?')
+    user.find(marker='spec-assistant-send').click()
+    await user.should_see('ligá una Historia y marcá al menos un criterio', retries=30)
+
+    user.find(marker=f'spec-criterion-check-{c1}').click()
+    with FakeLLM() as fake:
+        llm.save_config({'preset': 'local', 'protocol': 'openai', 'base_url': fake.url + '/v1', 'model': 'modelo-demo', 'auth': 'none'})
+        fake.queue('El criterio de pago válido no está cubierto: ningún paso confirma el pago.')
+        user.find(marker='spec-assistant-input').type('Valida la cobertura de los criterios ligados')
+        user.find(marker='spec-assistant-send').click()
+        await user.should_see('no está cubierto', retries=30)
+        sent = fake.requests[-1]['body']['messages'][-1]['content']
+        assert 'Dado una tarjeta válida, cuando confirma el pago, entonces se aprueba la compra' in sent
 
 
 async def test_story_detail_shows_the_coverage_matrix_with_last_run_status(user: User):
