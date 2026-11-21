@@ -13,11 +13,11 @@
 
 ## Protocolo para agentes y espacio de trabajo
 - El diagnóstico de los fallos es **heurístico** (categorías por código HTTP, forma de la respuesta y tipo de error): orienta, no decide. `where_to_look` solo contiene lo que el autor de la spec puso en `code_hints`, el contrato OpenAPI importado y los cambios observados; la herramienta **no lee tu código**.
-- `POST /agent/v1/run` es síncrono (una suite larga mantiene la petición abierta) y guarda en el proyecto de la spec; para no dejar rastro usa la CLI sin `--persist`.
+- `POST /agent/v1/run` corre `run_spec` en un threadpool aparte (no bloquea el event loop de la interfaz mientras una suite larga está en curso) y guarda en el proyecto de la spec; para no dejar rastro usa la CLI sin `--persist`.
 - La spec cubre casos API (no casos UI) y no importa Postman/OpenAPI: eso lo hace el agente generando la spec.
 - El token de la API local vive en la base del workspace: con una base compartida, quien tenga acceso a ella lo ve. Regéneralo si hace falta.
-- El bloqueo de host de la API del agente compara el header `Host` de la petición (defensa contra DNS-rebinding desde un navegador), no la IP real de la conexión — un cliente que no sea un navegador puede mandar cualquier `Host`. La protección real de "solo local" depende de que el servidor escuche en `127.0.0.1` (el valor por defecto), no de este chequeo: no expongas el puerto por un proxy, túnel o mapeo de contenedor sin entender esto.
-- No hay límite de intentos en la verificación del token (sin rate limiting) ni límite de tamaño/tiempo en `POST /agent/v1/run` o `/agent/v1/validate` — una spec enorme o maliciosa, ya autenticada, puede colgar el proceso (una sola suite se ejecuta de forma síncrona en el mismo proceso de la interfaz). Mitigado hoy solo por el token largo y aleatorio y por el bind a `127.0.0.1`.
+- El bloqueo de "solo local" de la API del agente exige DOS cosas a la vez: la IP real de la conexión (`request.client.host`) sea loopback, Y el header `Host` también lo sea (esto último, además, bloquea el acceso estilo DNS-rebinding desde un navegador). Igual, no expongas el puerto por un proxy/túnel/mapeo de contenedor que reescriba la IP de origen tal como la ve el proceso.
+- `POST /agent/v1/run` y `/agent/v1/validate` rechazan (413) un cuerpo de más de 5 MB antes de procesarlo, y la verificación del token bloquea (429) una IP tras 10 intentos fallidos en 60 segundos.
 - El historial del espacio de trabajo guarda el cuerpo enviado y la respuesta (hasta 100 000 caracteres) de cada envío, también en una base compartida: usa datos de preproducción.
 - Una petición a la vez en el editor (no hay varias pestañas de borrador); los separadores recuerdan su posición por navegador.
 - El editor JSON no ofrece autocompletado; el visor de respuestas limita el texto a 200 000 caracteres.

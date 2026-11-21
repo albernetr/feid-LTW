@@ -213,9 +213,10 @@ def test_cli_uses_a_throwaway_workspace_unless_asked(sample_app, second_app, tmp
 def test_http_api_requires_the_token_and_is_local_only(sample_app, second_app):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+    agent._agent_failed_attempts.clear()
     app = FastAPI()
     agent.register_api(app)
-    client = TestClient(app, base_url='http://127.0.0.1')
+    client = TestClient(app, base_url='http://127.0.0.1', client=('127.0.0.1', 12345))               # IP real del socket
     token = agent.agent_token()
     assert token == agent.agent_token() and len(token) >= 24                                        # generated once, then stable
     spec = make_spec(sample_app, second_app)
@@ -224,6 +225,10 @@ def test_http_api_requires_the_token_and_is_local_only(sample_app, second_app):
     assert client.post('/agent/v1/run', json=spec).status_code == 401
     assert client.post('/agent/v1/run', json=spec, headers={'Authorization': 'Bearer nope'}).status_code == 401
     assert client.post('/agent/v1/run', json=spec, headers={**auth, 'Host': 'evil.example.com'}).status_code == 403   # DNS-rebinding style access
+    not_local = TestClient(app, base_url='http://127.0.0.1', client=('203.0.113.5', 12345))          # IP real no local...
+    assert not_local.post('/agent/v1/run', json=spec, headers=auth).status_code == 403                # ...token y Host correctos no alcanzan
+    too_big = {'format': 'ltw.spec/1', 'cases': [{'name': 'x', 'method': 'GET', 'path': '/', 'body': {'x': 'y' * (agent.AGENT_MAX_BODY_BYTES + 1)}}]}
+    assert client.post('/agent/v1/run', json=too_big, headers=auth).status_code == 413
     assert client.post('/agent/v1/validate', json=spec, headers=auth).json()['valid'] is True
     bad = client.post('/agent/v1/run', json={'format': 'ltw.spec/1', 'cases': [{'name': 'x', 'method': 'NOPE', 'path': '/'}]}, headers=auth)
     assert bad.status_code == 422 and bad.json()['errors'][0]['path'] == '$.cases[0].method'
@@ -232,6 +237,23 @@ def test_http_api_requires_the_token_and_is_local_only(sample_app, second_app):
     failing_id = report['failures'][0]['id']
     assert client.get(f'/agent/v1/failures/{failing_id}', headers=auth).json()['kind'] == 'assertion'
     assert client.get(f'/agent/v1/failures/{failing_id}?format=md', headers=auth).text.startswith('# Fallo de prueba')
+
+
+def test_http_api_rate_limits_repeated_failed_tokens(sample_app, second_app):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    agent._agent_failed_attempts.clear()
+    app = FastAPI()
+    agent.register_api(app)
+    client = TestClient(app, base_url='http://127.0.0.1', client=('::1', 12345))   # loopback distinto al de los otros tests, para no compartir el contador
+    spec = make_spec(sample_app, second_app)
+    for _ in range(agent.AGENT_RATE_LIMIT_ATTEMPTS):
+        assert client.post('/agent/v1/run', json=spec, headers={'Authorization': 'Bearer nope'}).status_code == 401
+    blocked = client.post('/agent/v1/run', json=spec, headers={'Authorization': 'Bearer nope'})
+    assert blocked.status_code == 429
+    real_token = {'Authorization': f'Bearer {agent.agent_token()}'}
+    assert client.post('/agent/v1/run', json=spec, headers=real_token).status_code == 429             # bloqueado incluso con el token correcto
+    agent._agent_failed_attempts.clear()
 
 
 # --------------------------------------------------------------------------- ltw.spec_bundle/1 (Especificación)
@@ -329,9 +351,10 @@ def test_export_spec_bundle_rejects_an_unknown_project():
 def test_http_api_specs_endpoints_require_the_token_and_round_trip():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+    agent._agent_failed_attempts.clear()
     app = FastAPI()
     agent.register_api(app)
-    client = TestClient(app, base_url='http://127.0.0.1')
+    client = TestClient(app, base_url='http://127.0.0.1', client=('127.0.0.1', 12345))
     token = agent.agent_token()
     auth = {'Authorization': f'Bearer {token}'}
     bundle = make_bundle()

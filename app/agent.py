@@ -647,17 +647,52 @@ def check_token(header_value):
     return bool(supplied) and hmac.compare_digest(supplied.encode(), expected.encode())
 
 
+AGENT_MAX_BODY_BYTES = 5 * 1024 * 1024   # mismo límite que el tap del Observador (app/observer.py)
+AGENT_RATE_LIMIT_ATTEMPTS = 10            # intentos de token fallidos...
+AGENT_RATE_LIMIT_WINDOW_S = 60            # ...permitidos por IP en esta ventana, antes de bloquear con 429
+
+_agent_failed_attempts = {}   # ip -> [timestamps de intentos de token fallidos], solo en memoria de este proceso
+
+
+def _agent_rate_limited(peer):
+    now = time.time()
+    attempts = [t for t in _agent_failed_attempts.get(peer, []) if now - t < AGENT_RATE_LIMIT_WINDOW_S]
+    _agent_failed_attempts[peer] = attempts
+    return len(attempts) >= AGENT_RATE_LIMIT_ATTEMPTS
+
+
+def _agent_record_failed_attempt(peer):
+    _agent_failed_attempts.setdefault(peer, []).append(time.time())
+
+
 def register_api(app):
     """Mounts /agent/v1/* on the NiceGUI (FastAPI) app. Loopback only + bearer token: a web page cannot call it."""
     from fastapi import Header, HTTPException, Request
     from fastapi.responses import JSONResponse, PlainTextResponse
+    from starlette.concurrency import run_in_threadpool
 
     def guard(request: Request, authorization):
+        peer = request.client.host if request.client else ''
         host = (request.headers.get('host') or '').split(':')[0]
-        if host not in ('127.0.0.1', 'localhost', '[::1]'):
+        # Dos chequeos distintos, los dos deben pasar: `peer` es la IP real del socket (lo que de verdad
+        # evita que alguien no-local entre, aunque mande cualquier Host); el header Host además bloquea el
+        # acceso estilo DNS-rebinding (un navegador en la máquina, pero resolviendo un dominio ajeno).
+        if peer not in ('127.0.0.1', '::1') or host not in ('127.0.0.1', 'localhost', '[::1]'):
             raise HTTPException(403, 'Solo se acepta acceso local')
+        if _agent_rate_limited(peer):
+            raise HTTPException(429, 'Demasiados intentos de token fallidos — esperá un minuto')
         if not check_token(authorization):
+            _agent_record_failed_attempt(peer)
             raise HTTPException(401, 'Falta el token: cabecera Authorization: Bearer <token> (mostrado en el espacio de trabajo → Agente)')
+
+    async def _read_json_body(request: Request):
+        declared = request.headers.get('content-length')
+        if declared is not None and int(declared) > AGENT_MAX_BODY_BYTES:
+            raise HTTPException(413, f'La spec supera el límite de {AGENT_MAX_BODY_BYTES // (1024 * 1024)} MB')
+        body = await request.body()
+        if len(body) > AGENT_MAX_BODY_BYTES:
+            raise HTTPException(413, f'La spec supera el límite de {AGENT_MAX_BODY_BYTES // (1024 * 1024)} MB')
+        return json.loads(body)
 
     @app.get('/agent/v1/schema')
     def schema():
@@ -666,15 +701,17 @@ def register_api(app):
     @app.post('/agent/v1/validate')
     async def validate(request: Request, authorization: str = Header(None)):
         guard(request, authorization)
-        return JSONResponse(validate_spec(await request.json()))
+        return JSONResponse(validate_spec(await _read_json_body(request)))
 
     @app.post('/agent/v1/run')
     async def run(request: Request, authorization: str = Header(None)):
         guard(request, authorization)
-        spec = await request.json()
+        spec = await _read_json_body(request)
         overrides = {'base_url': request.query_params.get('base_url')} if request.query_params.get('base_url') else None
         try:
-            return JSONResponse(run_spec(spec, overrides=overrides, ltw_command=None))
+            # run_spec es síncrono y puede tardar (una suite larga, timeouts de hasta 300s por paso) — en el
+            # threadpool para no bloquear el único event loop de la interfaz mientras corre.
+            return JSONResponse(await run_in_threadpool(run_spec, spec, overrides=overrides, ltw_command=None))
         except SpecError as exc:
             return JSONResponse({'format': FORMAT_REPORT, 'summary': {'status': 'invalid_spec'}, 'errors': exc.errors}, status_code=422)
 
