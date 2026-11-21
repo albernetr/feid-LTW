@@ -1564,7 +1564,8 @@ async def test_spec_templates_come_preseeded_and_support_adopt_and_promote(user:
     await user.should_see('Especificación detallada')
     local_before = len([t for t in core.list_items('spec_templates') if t.get('project_id') == project['id']])
 
-    user.find('Adoptar').click()
+    invest = next(t for t in core.list_items('spec_templates') if t['name'] == 'Historia de usuario (INVEST)' and t.get('project_id') is None)
+    user.find(marker=f'template-row-adopt-{invest["id"]}').click()
     await user.should_see('adoptada a este proyecto')
     local_after = len([t for t in core.list_items('spec_templates') if t.get('project_id') == project['id']])
     assert local_after == local_before + 1

@@ -298,14 +298,17 @@ def test_spec_detail(id: str = '', story_id: str = ''):
             # los dos, no metida dentro de la tarjeta "Campos" de un solo lado — y se crea UNA sola vez, fuera
             # del ciclo de refresh de workspace_area, para no perder la selección en curso del usuario cada vez
             # que ese mismo cambio dispara su propio refresh (ver el comentario sobre esto en user_stories.py).
-            input_templates = [t for t in core.list_items('spec_templates') if t.get('kind') == 'input' and t.get('applies_to') == 'test_case'
-                              and (t.get('project_id') is None or t.get('project_id') == pid)]
+            input_templates = core.visible_templates('input', 'test_case', pid)
             saved_tpl_id = (current or {}).get('input_template_id')
-            default_tpl_id = saved_tpl_id if any(t['id'] == saved_tpl_id for t in input_templates) else \
+            project_default_id = core.get_default_template_id(pid, 'test_case')
+            default_tpl_id = (saved_tpl_id if any(t['id'] == saved_tpl_id for t in input_templates) else None) or \
+                (project_default_id if any(t['id'] == project_default_id for t in input_templates) else None) or \
                 (input_templates[0]['id'] if input_templates else None)
             if input_templates:
+                # Para esta primera versión, un Caso de prueba YA creado no puede cambiar de plantilla de
+                # entrada (solo al crearlo) — mismo criterio que Historias de usuario, ver user_stories.py.
                 input_template = ui.select({t['id']: t['name'] for t in input_templates}, value=default_tpl_id, label='Plantilla de entrada') \
-                    .props('outlined dense').classes('w-full').mark('spec-input-template')
+                    .props('outlined dense' + (' disable' if current else '')).classes('w-full').mark('spec-input-template')
 
             known_renderers = {}
 
@@ -388,7 +391,7 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                     [{'kind': 'field', 'field_key': k, 'field_type': None} for k in ('preconditions', 'steps')]
                 fragment = spec_report.render_test_case_view_html({'preconditions': _v(preconditions), 'steps': d['steps'],
                                                                    'priority': d['meta']['priority'], 'type': d['meta']['type']}, fields, d['custom'])
-                ui.html(live_doc_html(fragment, doc_typography()[0])).classes('w-full')
+                ui.html(live_doc_html(fragment, doc_typography()[0]), sanitize=False).classes('w-full')
 
             def save():
                 if current:

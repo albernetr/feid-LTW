@@ -8,6 +8,7 @@ resuelve contra `custom_fields` del registro."""
 import html
 import io
 import json
+import re
 from . import core, reporting, evidence_report
 
 FORMAT = 'ltw.spec_report/1'
@@ -341,6 +342,8 @@ def _render_typed_content_html(content, field_type):
         return '<p class="muted">No aplica a este documento.</p>'
     if field_type in ('text', 'textarea'):
         style = ' style="white-space:pre-wrap"' if field_type == 'textarea' else ''
+        if re.fullmatch(r'https?://\S+', content.strip()):
+            return f'<p{style}><a href="{e(content)}" target="_blank" rel="noopener">{e(content)}</a></p>'
         return f'<p{style}>{e(content)}</p>'
     if field_type == 'list':
         items = []

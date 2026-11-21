@@ -47,8 +47,7 @@ async def _download_story_report(story, template, kind):
 
 
 def _output_templates(pid):
-    return [t for t in core.list_items('spec_templates') if t.get('kind') == 'output' and t.get('applies_to') == 'report'
-            and (t.get('project_id') is None or t.get('project_id') == pid)]
+    return core.visible_templates('output', 'report', pid)
 
 
 def _open_export_matrix_dialog(pid):
@@ -575,20 +574,26 @@ def story_detail(id: str = ''):
             # a los dos lados (riel Y documento), por eso vive arriba de los dos — y se crea UNA sola vez, fuera
             # del ciclo de refresh de workspace_area, para no perder la selección en curso del usuario cada vez
             # que ese mismo cambio dispara su propio refresh.
-            input_templates = [t for t in core.list_items('spec_templates') if t.get('kind') == 'input' and t.get('applies_to') == 'user_story'
-                              and (t.get('project_id') is None or t.get('project_id') == pid)]
+            input_templates = core.visible_templates('input', 'user_story', pid)
             # Qué plantilla elegir al (re)abrir la historia: la que se guardó la última vez que se guardó la
-            # historia (`input_template_id`), si todavía existe entre las visibles del proyecto — si no
-            # (historias viejas, de antes de que esto se guardara), el heurístico de siempre por forma de contenido.
+            # historia (`input_template_id`), si todavía existe entre las visibles del proyecto — si no (historia
+            # NUEVA, o una vieja de antes de que esto se guardara), la que el proyecto fijó como "por defecto"
+            # (ver core.set_default_template/pages/spec_templates.py) y, a falta de eso, el heurístico de
+            # siempre por forma de contenido.
             saved_tpl_id = (current or {}).get('input_template_id')
+            project_default_id = core.get_default_template_id(pid, 'user_story')
             has_content = bool((current or {}).get('content'))
             default_tpl_id = (saved_tpl_id if any(t['id'] == saved_tpl_id for t in input_templates) else None) or \
+                (project_default_id if any(t['id'] == project_default_id for t in input_templates) else None) or \
                 next((t['id'] for t in input_templates if has_content and 'content' in core.template_field_keys(t.get('body'))),
                     next((t['id'] for t in input_templates if not has_content and {'as_a', 'i_want', 'so_that'} & core.template_field_keys(t.get('body'))),
                          input_templates[0]['id'] if input_templates else None))
             if input_templates:
+                # Para esta primera versión, una historia YA creada no puede cambiar de plantilla de entrada
+                # (solo al crearla) — evita que cambiar la plantilla a mitad de camino deje campos ya cargados
+                # «huérfanos» (fuera de la nueva plantilla, pero sin perderse: custom_fields los conserva igual).
                 input_template = ui.select({t['id']: t['name'] for t in input_templates}, value=default_tpl_id, label='Plantilla de entrada') \
-                    .props('outlined dense').classes('w-full').mark('story-input-template')
+                    .props('outlined dense' + (' disable' if current else '')).classes('w-full').mark('story-input-template')
 
             known_renderers = {}
 
@@ -795,7 +800,7 @@ def story_detail(id: str = ''):
                     'out_of_scope': _v(out_of_scope),
                     'dependency_titles': [story_titles[sid] for sid in (d['meta']['depends_on'] or []) if sid in story_titles],
                 }, fields, d['custom'])
-                ui.html(live_doc_html(fragment, doc_typography()[0])).classes('w-full')
+                ui.html(live_doc_html(fragment, doc_typography()[0]), sanitize=False).classes('w-full')
 
             def save():
                 if current:

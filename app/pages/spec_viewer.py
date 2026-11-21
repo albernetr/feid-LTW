@@ -9,8 +9,7 @@ from .common import frame, require_project, protected_page, remembered, tabbed_s
 
 
 def _output_templates(pid):
-    return [t for t in core.list_items('spec_templates') if t.get('kind') == 'output' and t.get('applies_to') == 'report'
-            and (t.get('project_id') is None or t.get('project_id') == pid)]
+    return core.visible_templates('output', 'report', pid)
 
 
 def _split_tab_groups(sections):
@@ -74,10 +73,10 @@ def _render_viewer(title, back_label, back_route, build_data):
                 typography = doc_typography()[0]
                 tab_sections, rest_sections = _split_tab_groups(data['sections'])
                 panels = [('document', 'Documento', 'description',
-                          (lambda rest=rest_sections: ui.html(live_doc_html(spec_report.render_sections_html(rest), typography)).classes('w-full')))]
+                          (lambda rest=rest_sections: ui.html(live_doc_html(spec_report.render_sections_html(rest), typography), sanitize=False).classes('w-full')))]
                 for i, section in enumerate(tab_sections):
                     panels.append((f'tab{i}', section.get('label') or f'Sección {i + 1}', 'tab',
-                                   (lambda section=section: ui.html(live_doc_html(spec_report.render_sections_html(section['children']), typography)).classes('w-full'))))
+                                   (lambda section=section: ui.html(live_doc_html(spec_report.render_sections_html(section['children']), typography), sanitize=False).classes('w-full'))))
                 with ui.element('div').classes('w-full').style('height: calc(100vh - 170px)' if compact else ''):
                     tabbed_split_view(panels, mode=mode_box['value'], max_open=max(len(panels), 1), compact=compact)
             template_select.on_value_change(lambda e: body.refresh())

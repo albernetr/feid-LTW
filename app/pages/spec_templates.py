@@ -53,6 +53,9 @@ def _new_group_node():
     return {'id': core.uid(), 'kind': 'group', 'label': 'Nueva sección', 'width': 'full', 'as_tab': False, 'children': []}
 
 
+_TEMPLATE_TABS = [('user_story', 'Historias de usuario'), ('test_case', 'Casos de prueba'), ('report', 'Reportes')]
+
+
 @protected_page('/spec-templates')
 def spec_templates_list():
     with frame('Plantillas', '/spec-templates', doc_style=True):
@@ -66,35 +69,92 @@ def spec_templates_list():
         global_templates = sorted([t for t in all_templates if t.get('project_id') is None], key=lambda t: t['name'])
         local_templates = sorted([t for t in all_templates if t.get('project_id') == pid], key=lambda t: t['name'])
 
-        def template_row(t, badge_label, badge_color, action_label=None, action=None):
+        def template_row(t, badge_label, badge_color, actions=()):
+            # `actions`: lista de dicts {icon, tooltip, color, on_click, disabled} — on_click=None (la estrella
+            # YA default) o disabled=True (eliminar/desvincular bloqueado por uso) rinden el mismo ui.button,
+            # solo que sin handler o con la prop 'disable' — así el tamaño es SIEMPRE el mismo botón, nunca un
+            # ui.icon aparte (que rendía más chico que los botones de al lado). `click.stop` evita que el click
+            # de un botón dispare también el click de la fila entera (que navega a editar la plantilla).
             with ui.row().classes('items-center gap-2 w-full no-wrap cursor-pointer hover:bg-gray-50') \
                     .on('click', lambda _, tid=t['id']: ui.navigate.to(f'/spec-templates/edit?id={tid}')):
                 ui.badge(badge_label, color=badge_color)
-                ui.badge(KIND_LABELS.get(t['kind'], t['kind']), color='grey-5')
                 ui.label(t['name']).classes('text-sm font-medium')
-                ui.label(APPLIES_LABELS.get(t['applies_to'], t['applies_to'])).classes('text-xs text-gray-500')
+                n = core.count_template_usage(t['id'])
+                ui.label(f'— {n}').classes('text-xs text-gray-400').tooltip('Historias/Casos de prueba que la tienen asignada')
                 ui.space()
-                if action_label and action:
-                    ui.button(action_label, on_click=lambda _, t=t: action(t)).props('flat dense size=sm color=primary').on('click.stop', lambda: None)
+                for a in actions:
+                    ui.button(icon=a['icon'], on_click=(lambda _, t=t, fn=a['on_click']: fn(t)) if a.get('on_click') else None) \
+                        .props(f'flat dense round color={a["color"]}' + (' disable' if a.get('disabled') else '')) \
+                        .tooltip(a['tooltip']).on('click.stop', lambda: None).mark(f'template-row-{a["name"]}-{t["id"]}')
 
         def do_adopt(t):
             core.adopt_template(t['id'], pid)
             ui.notify(f'«{t["name"]}» adoptada a este proyecto', type='positive')
             ui.navigate.reload()
 
-        with ui.card().classes('w-full'):
-            ui.label('Biblioteca global').classes('font-semibold')
-            if not global_templates:
-                empty_state('Sin plantillas globales todavía.')
-            for t in global_templates:
-                template_row(t, 'Por defecto' if t.get('is_builtin') else 'Global', 'primary', 'Adoptar', do_adopt)
+        def do_promote(t):
+            core.promote_template(t['id'])
+            ui.notify(f'Copia de «{t["name"]}» publicada en la biblioteca global', type='positive')
+            ui.navigate.reload()
+
+        def do_set_default(t):
+            core.set_default_template(pid, t['applies_to'], t['id'])
+            ui.notify(f'«{t["name"]}» es ahora la plantilla por defecto', type='positive')
+            ui.navigate.reload()
+
+        def do_remove(t, inherited):
+            def remove():
+                core.delete_spec_template(t['id'])
+                ui.notify('Plantilla desvinculada de este proyecto' if inherited else 'Plantilla eliminada', type='positive')
+                ui.navigate.reload()
+            message = (f'¿Desvincular «{t["name"]}» de este proyecto? No se borra ningún contenido — sigue '
+                      f'disponible en la Biblioteca global, la podés volver a adoptar cuando quieras.' if inherited
+                      else f'¿Eliminar la plantilla «{t["name"]}»? No se puede deshacer.')
+            confirm(message, remove, confirm_label='Desvincular' if inherited else 'Eliminar')
+
+        def tabbed_templates(templates, row_actions):
+            tab_key, set_tab_key = remembered('spec_templates_tab', default='user_story')
+            with ui.tabs(value=tab_key, on_change=lambda e: set_tab_key(e.value)).props('dense no-caps').classes('w-full') as tabs:
+                for key, label in _TEMPLATE_TABS:
+                    ui.tab(key, label=f'{label} ({sum(1 for t in templates if t["applies_to"] == key)})')
+            with ui.tab_panels(tabs, value=tab_key).classes('w-full'):
+                for key, label in _TEMPLATE_TABS:
+                    with ui.tab_panel(key).classes('p-0'):
+                        rows = [t for t in templates if t['applies_to'] == key]
+                        if not rows:
+                            empty_state('Nada acá todavía.')
+                        for t in rows:
+                            template_row(t, *row_actions(t))
 
         with ui.card().classes('w-full'):
-            ui.label(f'Propias de este proyecto ({len(local_templates)})').classes('font-semibold')
-            if not local_templates:
-                empty_state('Todavía no adoptaste ni creaste ninguna plantilla propia.')
-            for t in local_templates:
-                template_row(t, 'Propia', 'grey-7')
+            ui.label(f'Disponibles en este proyecto ({len(local_templates)})').classes('font-semibold')
+
+            def local_row(t):
+                inherited = bool(t.get('cloned_from'))
+                actions = []
+                if not inherited:   # promover solo tiene sentido para una plantilla de verdad propia
+                    actions.append({'name': 'promote', 'icon': 'publish', 'tooltip': 'Promover a la biblioteca global', 'color': 'primary', 'on_click': do_promote})
+                if t['applies_to'] in ('user_story', 'test_case'):
+                    if core.get_default_template_id(pid, t['applies_to']) == t['id']:
+                        actions.append({'name': 'default', 'icon': 'star', 'tooltip': 'Es la plantilla por defecto', 'color': 'amber-8'})
+                    else:
+                        actions.append({'name': 'default', 'icon': 'star_outline', 'tooltip': 'Establecer como plantilla por defecto', 'color': 'grey-7', 'on_click': do_set_default})
+                n = core.count_template_usage(t['id'])
+                remove_tooltip = ('Desvincular de este proyecto' if inherited else 'Eliminar') if n == 0 else \
+                    (f'No se puede {"desvincular" if inherited else "eliminar"}: {n} Historia(s)/Caso(s) de prueba la tienen asignada — '
+                     f'no es posible mientras esté en uso, para esta versión.')
+                actions.append({'name': 'remove', 'icon': 'link_off' if inherited else 'delete', 'tooltip': remove_tooltip, 'color': 'negative',
+                               'on_click': (lambda t, inherited=inherited: do_remove(t, inherited)) if n == 0 else None, 'disabled': n > 0})
+                return ('Heredada' if inherited else 'Propia', 'blue-grey-6' if inherited else 'grey-7', actions)
+            tabbed_templates(local_templates, local_row)
+
+        with ui.card().classes('w-full'):
+            ui.label('Biblioteca global').classes('font-semibold')
+
+            def global_row(t):
+                return ('Del sistema' if t.get('is_builtin') else 'Global', 'primary',
+                       [{'name': 'adopt', 'icon': 'get_app', 'tooltip': 'Adoptar a este proyecto', 'color': 'primary', 'on_click': do_adopt}])
+            tabbed_templates(global_templates, global_row)
 
 
 @protected_page('/spec-templates/edit')
@@ -163,6 +223,8 @@ def spec_template_detail(id: str = ''):
                         ui.label(current['name'] if current else 'Nueva plantilla').classes('ltw-doc-title text-2xl font-semibold')
                         if is_global:
                             ui.badge('Global — solo lectura, adoptala para editarla', color='primary')
+                        elif is_mine and current.get('cloned_from'):
+                            ui.badge('Heredada — clonada de la biblioteca global, se puede editar/desvincular (no promover)', color='blue-grey-6')
                     ui.button(icon='open_in_new', on_click=guard(preview)).props('flat round dense').mark('template-preview') \
                         .tooltip('Vista previa con datos de ejemplo, en una pestaña nueva')
                 with ui.row().classes('gap-1 shrink-0'):
@@ -329,7 +391,7 @@ def spec_template_detail(id: str = ''):
                         core.adopt_template(current['id'], pid)
                         ui.notify('Plantilla adoptada a este proyecto', type='positive')
                         ui.navigate.to('/spec-templates')
-                    ui.button('Adoptar a este proyecto', icon='content_copy', on_click=guard(adopt)).props('color=primary').mark('template-adopt')
+                    ui.button('Adoptar a este proyecto', icon='get_app', on_click=guard(adopt)).props('color=primary').mark('template-adopt')
                 else:
                     def save():
                         if current:
@@ -343,25 +405,36 @@ def spec_template_detail(id: str = ''):
                     ui.button('Guardar cambios' if current else 'Crear plantilla', icon='save', on_click=guard(save)).props('color=primary').mark('template-save')
 
                     if current and is_mine:
-                        def promote():
-                            core.promote_template(current['id'])
-                            ui.notify('Copia publicada en la biblioteca global', type='positive')
-                            ui.navigate.to('/spec-templates')
-                        ui.button('Promover a la biblioteca global', icon='publish', on_click=guard(promote)).props('outline dense color=primary').mark('template-promote')
+                        is_inherited = bool(current.get('cloned_from'))
+                        if not is_inherited:   # promover solo tiene sentido para una plantilla de verdad propia
+                            def promote():
+                                core.promote_template(current['id'])
+                                ui.notify('Copia publicada en la biblioteca global', type='positive')
+                                ui.navigate.to('/spec-templates')
+                            ui.button('Promover a la biblioteca global', icon='publish', on_click=guard(promote)).props('outline dense color=primary').mark('template-promote')
 
                         def remove(t=current):
                             core.delete_spec_template(t['id'])
-                            ui.notify('Plantilla eliminada', type='positive')
+                            ui.notify('Plantilla desvinculada de este proyecto' if is_inherited else 'Plantilla eliminada', type='positive')
                             ui.navigate.to('/spec-templates')
-                        ui.button('Eliminar plantilla', icon='delete', on_click=lambda: confirm(f'¿Eliminar la plantilla «{current["name"]}»?', remove)) \
-                            .props('flat dense color=negative').mark('template-delete')
+                        usage = core.count_template_usage(current['id'])
+                        remove_label = 'Desvincular de este proyecto' if is_inherited else 'Eliminar plantilla'
+                        if usage:
+                            ui.button(remove_label, icon='link_off' if is_inherited else 'delete').props('flat dense color=negative disable').mark('template-delete') \
+                                .tooltip(f'No se puede {"desvincular" if is_inherited else "eliminar"}: {usage} Historia(s)/Caso(s) de prueba la tienen asignada.')
+                        else:
+                            message = (f'¿Desvincular «{current["name"]}» de este proyecto? No se borra ningún contenido — sigue disponible '
+                                      f'en la Biblioteca global.' if is_inherited else f'¿Eliminar la plantilla «{current["name"]}»? No se puede deshacer.')
+                            ui.button(remove_label, icon='link_off' if is_inherited else 'delete',
+                                     on_click=lambda: confirm(message, remove, confirm_label='Desvincular' if is_inherited else 'Eliminar')) \
+                                .props('flat dense color=negative').mark('template-delete')
 
             @ui.refreshable
             def document_view():
                 draft = {'name': name.value or 'Vista previa', 'applies_to': applies_to.value, 'body': d['body']}
                 try:
                     data = spec_report.build_template_preview(draft)
-                    ui.html(live_doc_html(spec_report.render_sections_html(data['sections']), doc_typography()[0])).classes('w-full')
+                    ui.html(live_doc_html(spec_report.render_sections_html(data['sections']), doc_typography()[0]), sanitize=False).classes('w-full')
                 except ValueError as exc:
                     ui.label(str(exc)).classes('text-sm text-amber-700')
 

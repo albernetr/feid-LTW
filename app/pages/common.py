@@ -110,7 +110,10 @@ def doc_typography():
 
 def live_doc_html(fragment, typography):
     """Envuelve un fragmento HTML (de spec_report: render_sections_html/render_story_view_html/
-    render_test_case_view_html) en el contenedor que aplica la tipografía elegida — pasar a ui.html() tal cual."""
+    render_test_case_view_html) en el contenedor que aplica la tipografía elegida — pasar a ui.html(sanitize=False)
+    tal cual (sanitize=False porque spec_report escapa con html.escape() cada valor dinámico que incrusta; con
+    sanitize=True, DOMPurify recorta en silencio el atributo target de los links de campos tipo URL, ver
+    spec_report._render_typed_content_html)."""
     size = DOC_SIZE_PX.get(typography.get('size'), DOC_SIZE_PX['normal'])
     font = DOC_FONT_STACKS.get(typography.get('font'), DOC_FONT_STACKS['default'])
     gap = DOC_SPACING_PX.get(typography.get('spacing'), DOC_SPACING_PX['normal'])

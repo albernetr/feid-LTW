@@ -878,12 +878,65 @@ def update_spec_template(template_id, name, description='', body=None):
 
 
 def delete_spec_template(template_id):
+    """Elimina una plantilla PROPIA del proyecto — o, si es una adoptada (`cloned_from`), solo DESVINCULA la
+    copia local; el original de la biblioteca global nunca se toca acá (ver pages/spec_templates.py, que es
+    quien decide cuál palabra usar en la UI — la operación de datos es la misma en los dos casos). Para esta
+    primera versión, bloqueada por completo mientras haya Historias/Casos de prueba que la tengan asignada
+    (ver count_template_usage) — no hay todavía una forma de reasignarlos en bloque a otra plantilla."""
     template = get('spec_templates', template_id)
     if template is None:
         raise ValueError('Plantilla inexistente')
     if template.get('project_id') is None:
         raise ValueError('Las plantillas globales no se eliminan desde un proyecto')
+    if count_template_usage(template_id) > 0:
+        raise ValueError('No se puede eliminar/desvincular: hay Historias o Casos de prueba que la tienen asignada ahora mismo')
+    # Si era la plantilla por defecto del proyecto para algún applies_to, ese puntero quedaría apuntando a un
+    # id inexistente — se limpia acá para no tener que validarlo cada vez que se lee (ver get_default_template_id).
+    project = get('projects', template['project_id'])
+    if project is not None:
+        defaults = dict(project.get('default_templates') or {})
+        if any(tid == template_id for tid in defaults.values()):
+            project['default_templates'] = {k: v for k, v in defaults.items() if v != template_id}
+            save('projects', project)
     delete('spec_templates', template_id)
+
+
+def count_template_usage(template_id):
+    """Cuántas Historias de usuario y Casos de prueba tienen esta plantilla de ENTRADA asignada ahora mismo —
+    para avisar (no bloquear) antes de eliminarla, ver delete_spec_template/pages/spec_templates.py. Una
+    plantilla de SALIDA (reporte) nunca queda ligada a un registro, así que acá siempre da 0 para esas — no
+    hace falta distinguir el caso, el conteo ya resuelve a cero por su cuenta."""
+    return (sum(1 for s in list_items('user_stories') if s.get('input_template_id') == template_id)
+            + sum(1 for s in list_items('test_case_specs') if s.get('input_template_id') == template_id))
+
+
+def get_default_template_id(project_id, applies_to):
+    """La plantilla de ENTRADA que usan, por defecto, las Historias/Casos de prueba NUEVOS de este proyecto
+    para `applies_to` ('user_story'|'test_case') — None si el proyecto no fijó ninguna (ver set_default_template),
+    en cuyo caso el caller sigue con su heurístico de siempre (ver user_stories.py/test_case_specs.py)."""
+    project = get('projects', project_id)
+    return (project or {}).get('default_templates', {}).get(applies_to)
+
+
+def set_default_template(project_id, applies_to, template_id):
+    """Fija la plantilla por defecto de este proyecto para `applies_to` — un solo default activo a la vez por
+    tipo (fijar uno nuevo reemplaza al anterior, no hace falta "quitarlo" antes). Solo Historias de usuario y
+    Casos de prueba tienen default (ver get_default_template_id); un Reporte se elige a mano cada vez que se
+    exporta/visualiza, nunca queda ligado a un registro, así que "por defecto" no aplica ahí."""
+    if applies_to not in ('user_story', 'test_case'):
+        raise ValueError('Solo Historias de usuario y Casos de prueba tienen plantilla por defecto')
+    project = get('projects', project_id)
+    if project is None:
+        raise ValueError('Proyecto inexistente')
+    template = get('spec_templates', template_id)
+    if template is None or template.get('kind') != 'input' or template.get('applies_to') != applies_to:
+        raise ValueError('Plantilla inválida para este tipo')
+    if not any(t['id'] == template_id for t in visible_templates('input', applies_to, project_id)):
+        raise ValueError('Esa plantilla no está disponible para este proyecto')
+    defaults = dict(project.get('default_templates') or {})
+    defaults[applies_to] = template_id
+    project['default_templates'] = defaults
+    save('projects', project)
 
 
 def _slugify_field_key(label):
@@ -967,6 +1020,16 @@ def iter_template_fields(body):
 
 def template_field_keys(body):
     return {n['field_key'] for n in iter_template_fields(body) if n.get('field_key')}
+
+
+def visible_templates(kind, applies_to, project_id):
+    """Plantillas que un selector (de entrada o de salida) debe ofrecer para ESTE proyecto: las propias del
+    proyecto, más las globales que todavía no adoptó (ver adopt_template) — create_project() adopta de entrada
+    cada plantilla global `is_builtin`, así que sin este filtro cada una aparecería DOS veces (la global y la
+    copia propia recién clonada, con el mismo nombre) apenas se crea un proyecto."""
+    all_templates = [t for t in list_items('spec_templates') if t.get('kind') == kind and t.get('applies_to') == applies_to]
+    adopted_from = {t['cloned_from'] for t in all_templates if t.get('project_id') == project_id and t.get('cloned_from')}
+    return [t for t in all_templates if t.get('project_id') == project_id or (t.get('project_id') is None and t['id'] not in adopted_from)]
 
 
 def template_top_level_groups(body):
