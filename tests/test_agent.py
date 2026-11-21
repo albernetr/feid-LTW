@@ -261,7 +261,7 @@ def test_validate_spec_bundle_reports_precise_errors():
     assert agent.validate_spec_bundle('no es un objeto')['valid'] is False
 
 
-def test_import_spec_bundle_creates_then_upserts_by_title():
+def test_import_spec_bundle_creates_then_upserts_by_title_when_the_project_has_no_id_prefix():
     bundle = make_bundle()
     result = agent.import_spec_bundle(bundle)
     project = result['project']
@@ -277,6 +277,29 @@ def test_import_spec_bundle_creates_then_upserts_by_title():
     assert again['stories']['Recuperar contraseña']['as_a'] == 'usuario registrado'
     assert again['test_cases']['Enviar email']['id'] == spec['id']
     assert again['test_cases']['Enviar email']['preconditions'] == 'cuenta activa y verificada'
+    assert len(core.list_items('user_stories')) == 1 and len(core.list_items('test_case_specs')) == 1
+
+
+def test_import_spec_bundle_upserts_by_code_even_when_the_title_changes():
+    project = core.create_project('Especificación agente')
+    core.set_id_prefix(project['id'], 'user_story', 'HU')
+    core.set_id_prefix(project['id'], 'test_case', 'TC')
+
+    bundle = make_bundle()
+    result = agent.import_spec_bundle(bundle)
+    story = result['stories']['Recuperar contraseña']
+    spec = result['test_cases']['Enviar email']
+    assert story['code'] == 'HU-001' and spec['code'] == 'TC-001'
+
+    bundle['stories'][0]['code'] = story['code']
+    bundle['stories'][0]['title'] = 'Recuperar contraseña por email'
+    bundle['stories'][0]['test_cases'][0]['code'] = spec['code']
+    bundle['stories'][0]['test_cases'][0]['title'] = 'Enviar email de recuperación'
+    again = agent.import_spec_bundle(bundle)
+    updated_story = again['stories']['Recuperar contraseña por email']
+    updated_spec = again['test_cases']['Enviar email de recuperación']
+    assert updated_story['id'] == story['id'] and updated_story['title'] == 'Recuperar contraseña por email'
+    assert updated_spec['id'] == spec['id'] and updated_spec['title'] == 'Enviar email de recuperación'
     assert len(core.list_items('user_stories')) == 1 and len(core.list_items('test_case_specs')) == 1
 
 
@@ -315,7 +338,8 @@ def test_http_api_specs_endpoints_require_the_token_and_round_trip():
     assert client.get('/agent/v1/specs/schema').json()['title'] == 'ltw.spec_bundle/1'                 # público
     assert client.post('/agent/v1/specs/import', json=bundle).status_code == 401
     imported = client.post('/agent/v1/specs/import', json=bundle, headers=auth).json()
-    assert imported['stories'] == ['Recuperar contraseña'] and imported['test_cases'] == ['Enviar email']
+    assert imported['stories'] == [{'code': '', 'title': 'Recuperar contraseña'}]
+    assert imported['test_cases'] == [{'code': '', 'title': 'Enviar email'}]
     invalid = client.post('/agent/v1/specs/import', json={'format': 'ltw.spec_bundle/1', 'stories': [{'title': ''}]}, headers=auth)
     assert invalid.status_code == 422
     assert client.get('/agent/v1/specs/export', params={'project': 'Especificación agente'}).status_code == 401

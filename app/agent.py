@@ -153,10 +153,10 @@ _SPEC_CRITERION = {'type': 'object', 'required': ['text'], 'additionalProperties
                    'properties': {'text': {'type': 'string', 'minLength': 1}, 'status': {'enum': ['pending', 'met']}}}
 _SPEC_STEP = {'type': 'object', 'additionalProperties': False, 'properties': {'action': {'type': 'string'}, 'expected': {'type': 'string'}}}
 _SPEC_TEST_CASE = {'type': 'object', 'required': ['title'], 'additionalProperties': False, 'properties': {
-    'title': {'type': 'string', 'minLength': 1, 'maxLength': 200}, 'preconditions': {'type': 'string'},
+    'title': {'type': 'string', 'minLength': 1, 'maxLength': 200}, 'code': {'type': 'string'}, 'preconditions': {'type': 'string'},
     'steps': {'type': 'array', 'items': _SPEC_STEP}, 'priority': {'enum': list(core.PRIORITIES)}, 'type': {'enum': list(core.TEST_CASE_TYPES)}}}
 _SPEC_STORY = {'type': 'object', 'required': ['title'], 'additionalProperties': False, 'properties': {
-    'title': {'type': 'string', 'minLength': 1, 'maxLength': 200}, 'as_a': {'type': 'string'}, 'i_want': {'type': 'string'}, 'so_that': {'type': 'string'},
+    'title': {'type': 'string', 'minLength': 1, 'maxLength': 200}, 'code': {'type': 'string'}, 'as_a': {'type': 'string'}, 'i_want': {'type': 'string'}, 'so_that': {'type': 'string'},
     'priority': {'enum': list(core.PRIORITIES)}, 'criteria': {'type': 'array', 'items': _SPEC_CRITERION}, 'test_cases': {'type': 'array', 'items': _SPEC_TEST_CASE}}}
 SPEC_BUNDLE_SCHEMA = {
     '$schema': 'https://json-schema.org/draft/2020-12/schema', '$id': 'https://local-test-workspace/ltw.spec_bundle.1.schema.json',
@@ -174,8 +174,10 @@ def validate_spec_bundle(bundle):
 
 
 def import_spec_bundle(bundle, project_name=None):
-    """Upsert (por título, dentro del proyecto) Historias de usuario y sus Casos de prueba — mismo espíritu
-    idempotente que import_spec para casos/suites ejecutables; un Caso de prueba se identifica por su título
+    """Upsert Historias de usuario y sus Casos de prueba — idempotente. Si el proyecto tiene identificador
+    configurado (ver core.set_id_prefix) y el item trae `code`, el match es por `code` (único en el proyecto,
+    el título puede cambiar libremente sin duplicar); si no trae `code` (proyecto sin identificador, o bundle
+    viejo), cae al comportamiento de siempre: match por título — un Caso de prueba, además, por su título
     DENTRO de la Historia a la que pertenece (puede repetirse en otra Historia sin pisarla)."""
     report = validate_spec_bundle(bundle)
     if not report['valid']:
@@ -184,7 +186,11 @@ def import_spec_bundle(bundle, project_name=None):
     pid = project['id']
     stories_out, cases_out = {}, {}
     for item in bundle['stories']:
-        existing = next((s for s in core.list_project_items('user_stories', pid) if s['title'] == item['title']), None)
+        code = item.get('code')
+        if code:
+            existing = next((s for s in core.list_project_items('user_stories', pid) if s.get('code') == code), None)
+        else:
+            existing = next((s for s in core.list_project_items('user_stories', pid) if s['title'] == item['title']), None)
         if existing:
             story = core.update_user_story(existing['id'], item['title'], item.get('as_a', ''), item.get('i_want', ''), item.get('so_that', ''),
                                            existing.get('feature_id'), item.get('priority', 'medium'), item.get('criteria', []), existing.get('status'))
@@ -193,7 +199,11 @@ def import_spec_bundle(bundle, project_name=None):
                                            None, item.get('priority', 'medium'), item.get('criteria', []), source='agent')
         stories_out[item['title']] = story
         for tc in item.get('test_cases', []):
-            existing_tc = next((s for s in core.list_project_items('test_case_specs', pid) if s['title'] == tc['title'] and s.get('story_id') == story['id']), None)
+            tc_code = tc.get('code')
+            if tc_code:
+                existing_tc = next((s for s in core.list_project_items('test_case_specs', pid) if s.get('code') == tc_code), None)
+            else:
+                existing_tc = next((s for s in core.list_project_items('test_case_specs', pid) if s['title'] == tc['title'] and s.get('story_id') == story['id']), None)
             if existing_tc:
                 spec = core.update_test_case_spec(existing_tc['id'], tc['title'], story['id'], existing_tc.get('feature_id'), tc.get('preconditions', ''),
                                                   tc.get('steps', []), tc.get('priority', 'medium'), tc.get('type', 'functional'), existing_tc.get('linked_case_id'))
@@ -214,10 +224,10 @@ def export_spec_bundle(project_name):
         specs_by_story.setdefault(spec.get('story_id'), []).append(spec)
     stories = []
     for story in core.list_project_items('user_stories', pid):
-        stories.append({'title': story['title'], 'as_a': story.get('as_a', ''), 'i_want': story.get('i_want', ''), 'so_that': story.get('so_that', ''),
-                        'priority': story.get('priority', 'medium'),
+        stories.append({'title': story['title'], 'code': story.get('code', ''), 'as_a': story.get('as_a', ''), 'i_want': story.get('i_want', ''),
+                        'so_that': story.get('so_that', ''), 'priority': story.get('priority', 'medium'),
                         'criteria': [{'text': c['text'], 'status': c.get('status', 'pending')} for c in story.get('criteria', [])],
-                        'test_cases': [{'title': tc['title'], 'preconditions': tc.get('preconditions', ''), 'steps': tc.get('steps', []),
+                        'test_cases': [{'title': tc['title'], 'code': tc.get('code', ''), 'preconditions': tc.get('preconditions', ''), 'steps': tc.get('steps', []),
                                         'priority': tc.get('priority', 'medium'), 'type': tc.get('type', 'functional')}
                                        for tc in specs_by_story.get(story['id'], [])]})
     return {'format': FORMAT_SPEC_BUNDLE, 'project': project['name'], 'stories': stories}
@@ -685,7 +695,8 @@ def register_api(app):
         except SpecError as exc:
             return JSONResponse({'format': FORMAT_SPEC_BUNDLE, 'valid': False, 'errors': exc.errors}, status_code=422)
         return JSONResponse({'format': FORMAT_SPEC_BUNDLE, 'project': result['project'],
-                             'stories': list(result['stories'].keys()), 'test_cases': list(result['test_cases'].keys())})
+                             'stories': [{'code': s.get('code', ''), 'title': s['title']} for s in result['stories'].values()],
+                             'test_cases': [{'code': s.get('code', ''), 'title': s['title']} for s in result['test_cases'].values()]})
 
     @app.get('/agent/v1/specs/export')
     def specs_export(project: str, request: Request, authorization: str = Header(None)):

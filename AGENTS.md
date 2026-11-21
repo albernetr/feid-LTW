@@ -136,20 +136,20 @@ Aparte del protocolo de arriba (que es para **casos ejecutables**: API/UI, pensa
   "format": "ltw.spec_bundle/1",
   "project": "Integración",
   "stories": [
-    {"title": "Recuperar contraseña por email", "as_a": "usuario registrado",
+    {"title": "Recuperar contraseña por email", "code": "HU-014", "as_a": "usuario registrado",
      "i_want": "poder recuperar el acceso a mi cuenta si olvido la contraseña",
      "so_that": "no perder el acceso a mis datos", "priority": "high",
      "criteria": [{"text": "Dado un email válido, se envía un enlace de recuperación", "status": "pending"}],
-     "test_cases": [{"title": "Solicitar recuperación con email válido", "preconditions": "Cuenta activa",
+     "test_cases": [{"title": "Solicitar recuperación con email válido", "code": "TC-031", "preconditions": "Cuenta activa",
                       "steps": [{"action": "Ingresar el email", "expected": "Se confirma el envío"}],
                       "priority": "high", "type": "functional"}]}
   ]
 }
 ```
 
-- **Idempotente**: upsert por **título**, dentro del proyecto — las Historias por su propio título, los Casos de prueba por su título dentro de la Historia a la que pertenecen (el mismo título puede repetirse en otra Historia sin pisarla). Reenviar un bundle corregido actualiza en lugar de duplicar.
+- **Idempotente**: si el proyecto tiene identificador configurado (pantalla Proyecto → «Identificadores», un prefijo por Historias/Casos de prueba) y el item trae `code`, el upsert es por **`code`** — único dentro del proyecto, lo asigna el servidor y nunca cambia, así que el **título se puede editar libremente sin duplicar**. Si el item no trae `code` (proyecto sin identificador configurado, o un bundle viejo) cae al comportamiento anterior: upsert por **título** — las Historias por su propio título, los Casos de prueba por su título dentro de la Historia a la que pertenecen (el mismo título puede repetirse en otra Historia sin pisarla). `code` nunca se manda en la creación inicial (el servidor lo asigna y lo devuelve); para actualizar en vez de duplicar en el próximo envío, el agente debe guardar el `code` que le devolvió el import/export anterior y reenviarlo.
 - `GET /agent/v1/specs/schema` — el JSON Schema de `ltw.spec_bundle/1`.
-- `POST /agent/v1/specs/import[?project=NOMBRE]` — body: el bundle → crea/actualiza Historias y Casos de prueba; responde `{format, project, stories: [título…], test_cases: [título…]}` (o `422` con `errors[]` si el bundle no valida).
-- `GET /agent/v1/specs/export?project=NOMBRE` — devuelve el bundle actual de ese proyecto (todas sus Historias y Casos de prueba), en el mismo formato — para que un agente lea lo que ya existe antes de enriquecerlo.
+- `POST /agent/v1/specs/import[?project=NOMBRE]` — body: el bundle → crea/actualiza Historias y Casos de prueba; responde `{format, project, stories: [{code, title}…], test_cases: [{code, title}…]}` (`code` es `""` si el proyecto no tiene identificador configurado) (o `422` con `errors[]` si el bundle no valida).
+- `GET /agent/v1/specs/export?project=NOMBRE` — devuelve el bundle actual de ese proyecto (todas sus Historias y Casos de prueba, con su `code` si lo tienen), en el mismo formato — para que un agente lea lo que ya existe antes de enriquecerlo.
 
 Mismo guard que el resto de la API (`127.0.0.1` + `Authorization: Bearer <token>`, mostrado en **Espacio de trabajo → Agente**). Esto **no** reemplaza `ltw.spec/1`: ese sigue siendo el protocolo para casos ejecutables (API/UI) con sus aserciones; este es solo para el documento de planificación de la Especificación.

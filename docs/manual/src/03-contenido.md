@@ -209,7 +209,7 @@ El editor de Plantillas (`/spec-templates/edit`) construye un **árbol** de secc
 
 ### API para agentes: `ltw.spec_bundle/1`
 
-Aparte del protocolo de casos ejecutables (ver «Protocolo para agentes» en `AGENTS.md`), la Especificación tiene su propio protocolo, pensado para que un agente externo (p. ej. uno que lee requisitos o tickets) la alimente o la lea sin pasar por la UI: `GET /agent/v1/specs/schema` (el esquema), `POST /agent/v1/specs/import[?project=NOMBRE]` (crea o actualiza Historias y Casos de prueba, por título — idempotente) y `GET /agent/v1/specs/export?project=NOMBRE` (devuelve lo que ya existe). Mismo guard que el resto de la API local (`127.0.0.1` + el token de **Espacio de trabajo → Agente**). El detalle completo, con un ejemplo de bundle, está en `AGENTS.md`.
+Aparte del protocolo de casos ejecutables (ver «Protocolo para agentes» en `AGENTS.md`), la Especificación tiene su propio protocolo, pensado para que un agente externo (p. ej. uno que lee requisitos o tickets) la alimente o la lea sin pasar por la UI: `GET /agent/v1/specs/schema` (el esquema), `POST /agent/v1/specs/import[?project=NOMBRE]` (crea o actualiza Historias y Casos de prueba, idempotente) y `GET /agent/v1/specs/export?project=NOMBRE` (devuelve lo que ya existe). Si el proyecto tiene un **identificador** configurado (Proyecto → «Identificadores»), el upsert es por ese `code` (el título se puede renombrar sin duplicar); si no, cae al comportamiento anterior por título. Mismo guard que el resto de la API local (`127.0.0.1` + el token de **Espacio de trabajo → Agente**). El detalle completo, con un ejemplo de bundle, está en `AGENTS.md`.
 
 ---
 
