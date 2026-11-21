@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.0 — 2026-11-21
+
+### Añadido
+- **Materializar un Flujo real al guardar un Caso de prueba de Especificación**: cada step API que ya se ejecutó con éxito ("Ejecutar este paso") se convierte, al guardar, en un Caso API real — agrupados en un Flujo (nunca en un Caso suelto, incluso con un único step). Nunca duplica: vuelve a guardar sobre el mismo Caso/Flujo de la vez anterior. Alcance de esta vuelta: solo pasos API (UI y Chat quedan en Backlog). `core.materialize_spec_steps_as_flow`.
+- **Nombre descriptivo del Caso/Flujo materializado**: `HU-014 · CA-002 · TC-001 · Paso 1 · resumen corto del step` (cada segmento se omite si no aplica) en vez de un nombre interno sin contexto. La identidad para no duplicar es un campo aparte (`materialized_from`), así que renombrar el texto del step no crea un registro nuevo.
+- **Código propio para Criterios de aceptación** (`CA-00x`), configurable en Proyecto → Identificadores igual que Historias de usuario y Casos de prueba.
+
+### Confirmado (sin cambios de código)
+- Revisión de superficie para liberar a la comunidad el camino de pruebas de backend (Casos API, Flujos, Suites, protocolo de agente): batería completa de pytest en verde, instalación limpia de punta a punta (CLI + API HTTP + token) desde un clon nuevo, y una revisión de seguridad del endpoint del agente — ver nuevas entradas en [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) (bloqueo de host vs. IP real, sin rate limiting en `/agent/v1/run`). El protocolo `ltw.spec/1`/`ltw.report/1`/`ltw.failure/1` se confirma como la versión 1 estable del contrato (ver "Versionado" en [AGENTS.md](AGENTS.md)): de acá en más el número solo cambia con una ruptura de compatibilidad real.
+- Multiusuario/concurrencia (dos agentes corriendo specs contra el mismo proyecto a la vez) queda deliberadamente afuera de este corte — deseable para una segunda versión, no bloqueante para este alcance.
+
 ## 1.1.0 — 2026-10-31
 
 ### Añadido

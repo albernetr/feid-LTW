@@ -16,6 +16,8 @@
 - `POST /agent/v1/run` es síncrono (una suite larga mantiene la petición abierta) y guarda en el proyecto de la spec; para no dejar rastro usa la CLI sin `--persist`.
 - La spec cubre casos API (no casos UI) y no importa Postman/OpenAPI: eso lo hace el agente generando la spec.
 - El token de la API local vive en la base del workspace: con una base compartida, quien tenga acceso a ella lo ve. Regéneralo si hace falta.
+- El bloqueo de host de la API del agente compara el header `Host` de la petición (defensa contra DNS-rebinding desde un navegador), no la IP real de la conexión — un cliente que no sea un navegador puede mandar cualquier `Host`. La protección real de "solo local" depende de que el servidor escuche en `127.0.0.1` (el valor por defecto), no de este chequeo: no expongas el puerto por un proxy, túnel o mapeo de contenedor sin entender esto.
+- No hay límite de intentos en la verificación del token (sin rate limiting) ni límite de tamaño/tiempo en `POST /agent/v1/run` o `/agent/v1/validate` — una spec enorme o maliciosa, ya autenticada, puede colgar el proceso (una sola suite se ejecuta de forma síncrona en el mismo proceso de la interfaz). Mitigado hoy solo por el token largo y aleatorio y por el bind a `127.0.0.1`.
 - El historial del espacio de trabajo guarda el cuerpo enviado y la respuesta (hasta 100 000 caracteres) de cada envío, también en una base compartida: usa datos de preproducción.
 - Una petición a la vez en el editor (no hay varias pestañas de borrador); los separadores recuerdan su posición por navegador.
 - El editor JSON no ofrece autocompletado; el visor de respuestas limita el texto a 200 000 caracteres.

@@ -1407,7 +1407,7 @@ async def test_test_case_spec_save_materializes_a_flow_from_a_successfully_execu
     [flow] = [s for s in core.list_items('suites') if s['project_id'] == project['id']]
     assert flow['name'] == updated['code']
     [case] = [c for c in core.list_items('cases') if c['project_id'] == project['id']]
-    assert case['name'] == f'{updated["code"]} · paso 1' and case['path'] == '/health'
+    assert case['name'] == f'{updated["code"]} · Paso 1 · chequear salud' and case['path'] == '/health'
 
     # Guardar de nuevo sin cambiar nada no duplica ni el Caso ni el Flujo
     user.find(marker='spec-save').click()
