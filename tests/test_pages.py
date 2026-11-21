@@ -1327,6 +1327,36 @@ async def test_test_case_spec_can_be_created_from_a_story_and_linked_to_an_autom
     await user.should_see('Pagar con tarjeta válida')                 # ligado, se ve desde la historia también
 
 
+async def test_test_case_spec_links_criteria_shows_their_detail_and_clears_them_on_story_change(user: User):
+    project = core.create_project('Criterios ligados UI')
+    core.set_active_project(project['id'])
+    story = core.create_user_story('Pagar', project['id'], criteria=[{'text': 'uno', 'given': 'una cuenta activa', 'when': 'pago', 'then': 'ok'}, {'text': 'dos'}])
+    c1, c2 = story['criteria'][0]['id'], story['criteria'][1]['id']
+    other_story = core.create_user_story('Otra', project['id'], criteria=[{'text': 'tres'}])
+
+    await user.open(f'/test-specs/edit?story_id={story["id"]}')
+    user.find(marker='spec-title').type('TC con criterios')
+    await user.should_see(marker=f'spec-criterion-check-{c1}')
+    await user.should_see(marker=f'spec-criterion-check-{c2}')
+
+    user.find(marker=f'spec-criterion-detail-{c1}').click()
+    await user.should_see('una cuenta activa')
+    user.find('Cerrar').click()
+
+    user.find(marker=f'spec-criterion-check-{c1}').click()
+    user.find(marker='spec-save').click()
+    await user.should_see('Caso de prueba creado')
+    [spec] = core.list_items('test_case_specs')
+    assert spec['criteria_ids'] == [c1]
+
+    await user.open(f'/test-specs/edit?id={spec["id"]}')
+    _by_id(user.find(marker='spec-story'))[0].set_value(other_story['id'])
+    user.find(marker='spec-save').click()
+    await user.should_see('Caso de prueba actualizado')
+    updated = core.get('test_case_specs', spec['id'])
+    assert updated['story_id'] == other_story['id'] and updated['criteria_ids'] == []
+
+
 def _by_marker(user, marker):
     return sorted(user.find(marker=marker).elements, key=lambda e: e.id)
 
@@ -1614,6 +1644,31 @@ async def test_spec_templates_come_preseeded_and_support_adopt_and_promote(user:
     await user.should_see('Copia publicada')
     promoted = next(t for t in core.list_items('spec_templates') if t.get('promoted_from') == mine['id'])
     assert promoted['project_id'] is None
+
+
+async def test_spec_template_editor_links_fields_from_a_parent_story_template(user: User):
+    project = core.create_project('Plantillas ligadas')
+    core.set_active_project(project['id'])
+    parent = core.create_spec_template('HU propia', 'input', 'user_story', project_id=project['id'], body=[
+        {'kind': 'field', 'label': 'Como', 'field_key': 'as_a'}, {'kind': 'field', 'label': 'Quiero', 'field_key': 'i_want'}])
+
+    await user.open('/spec-templates/edit')
+    user.find(marker='template-name').type('TC con contexto de Historia')
+    _by_id(user.find(marker='template-applies-to'))[0].set_value('test_case')
+    await user.should_see(marker=f'template-linked-story-{parent["id"]}')
+    _by_id(user.find(marker=f'template-linked-story-{parent["id"]}'))[0].set_value(['as_a'])
+    user.find(marker='template-save').click()
+    await user.should_see('Plantilla creada')
+
+    tpl = next(t for t in core.list_items('spec_templates') if t['name'] == 'TC con contexto de Historia')
+    assert tpl['linked_story_fields'] == {parent['id']: ['as_a']}
+
+
+async def test_spec_template_editor_hides_the_linked_story_section_for_non_test_case_templates(user: User):
+    project = core.create_project('Plantillas no ligadas')
+    core.set_active_project(project['id'])
+    await user.open('/spec-templates/edit')   # nueva plantilla: por defecto applies_to='user_story'
+    await user.should_see('Esto solo aplica a una plantilla de ENTRADA de Caso de prueba.')
 
 
 async def test_builtin_templates_cannot_be_edited_or_deleted_from_the_ui(user: User):

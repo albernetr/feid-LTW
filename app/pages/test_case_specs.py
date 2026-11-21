@@ -108,7 +108,8 @@ def test_spec_detail(id: str = '', story_id: str = ''):
             # elegida (como cualquier otro campo de un grupo), y así no se pierde una edición sin guardar.
             'meta': {'title': (current or {}).get('title', ''), 'story_id': (current or {}).get('story_id') or (story_id or None),
                      'feature_id': (current or {}).get('feature_id'), 'priority': (current or {}).get('priority', 'medium'),
-                     'type': (current or {}).get('type', 'functional'), 'linked_case_id': (current or {}).get('linked_case_id')}}
+                     'type': (current or {}).get('type', 'functional'), 'linked_case_id': (current or {}).get('linked_case_id'),
+                     'criteria_ids': list((current or {}).get('criteria_ids') or [])}}
         preconditions = None
         title = story = feature = priority = type_ = linked = input_template = None
 
@@ -319,13 +320,58 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                     .mark('spec-title').on_value_change(lambda e: (d['meta'].__setitem__('title', e.value), document_view.refresh()))
             known_renderers['title'] = render_title
 
+            def _on_story_change(e):
+                d['meta']['story_id'] = e.value
+                d['meta']['criteria_ids'] = []   # son criterios de la Historia anterior, ya no aplican
+                criteria_panel.refresh()
+                document_view.refresh()
+
             def render_story():
                 nonlocal story
                 stories = core.list_project_items('user_stories', pid)
                 story = ui.select({s['id']: s['title'] for s in stories}, value=d['meta']['story_id'],
                                   label='Historia de usuario (opcional)', clearable=True).props('outlined dense').classes('w-full').mark('spec-story') \
-                    .on_value_change(lambda e: d['meta'].__setitem__('story_id', e.value))
+                    .on_value_change(_on_story_change)
             known_renderers['story_id'] = render_story
+
+            def criterion_detail_dialog(criterion):
+                """Detalle de solo lectura de UN criterio — se abre antes de decidir si ligarlo (botón «Ver
+                más» de criteria_panel), mismo molde que agent_brief/show_run en common.py."""
+                with ui.dialog() as dialog, ui.card().classes('w-[560px] max-w-full gap-2'):
+                    ui.label(criterion.get('text') or 'Criterio de aceptación').classes('text-lg font-semibold')
+                    for label, key in (('Dado (contexto inicial)', 'given'), ('Cuando (acción)', 'when'), ('Entonces (resultado esperado)', 'then')):
+                        if criterion.get(key):
+                            ui.label(label).classes('text-xs font-semibold text-gray-500 uppercase tracking-wide mt-1')
+                            ui.label(criterion[key]).classes('text-sm')
+                    ui.label(f'Estado: {"Cumplido" if criterion.get("status") == "met" else "Pendiente"}').classes('text-xs text-gray-500 mt-1')
+                    with ui.row().classes('justify-end w-full mt-2'):
+                        ui.button('Cerrar', on_click=dialog.close).props('flat')
+                dialog.open()
+
+            @ui.refreshable
+            def criteria_panel():
+                if not d['meta']['story_id']:
+                    empty_state('Elegí primero una Historia de usuario.')
+                    return
+                linked_story = core.get('user_stories', d['meta']['story_id'])
+                criteria = (linked_story or {}).get('criteria') or []
+                if not criteria:
+                    empty_state('Esa Historia todavía no tiene Criterios de aceptación.')
+                    return
+                def toggle(e, c):
+                    if e.value and c['id'] not in d['meta']['criteria_ids']:
+                        d['meta']['criteria_ids'].append(c['id'])
+                    elif not e.value and c['id'] in d['meta']['criteria_ids']:
+                        d['meta']['criteria_ids'].remove(c['id'])
+                    document_view.refresh()
+
+                for c in criteria:
+                    with ui.row().classes('items-center gap-2 w-full no-wrap'):
+                        ui.checkbox(value=c['id'] in d['meta']['criteria_ids']).mark(f'spec-criterion-check-{c["id"]}') \
+                            .on_value_change(lambda e, c=c: toggle(e, c))
+                        ui.label(c.get('text') or c.get('given') or 'Criterio').classes('text-sm grow truncate')
+                        ui.button('Ver más', on_click=lambda _, c=c: criterion_detail_dialog(c)).props('flat dense size=sm color=primary') \
+                            .mark(f'spec-criterion-detail-{c["id"]}')
 
             def render_feature():
                 nonlocal feature
@@ -398,13 +444,13 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                 if current:
                     core.update_test_case_spec(current['id'], d['meta']['title'], d['meta']['story_id'], d['meta']['feature_id'], _v(preconditions),
                                                d['steps'], d['meta']['priority'], d['meta']['type'], d['meta']['linked_case_id'], custom_fields=d['custom'],
-                                               input_template_id=input_template.value if input_template else None)
+                                               input_template_id=input_template.value if input_template else None, criteria_ids=d['meta']['criteria_ids'])
                     ui.notify('Caso de prueba actualizado', type='positive')
                     ui.navigate.to(f'/test-specs/edit?id={current["id"]}')
                 else:
                     spec = core.create_test_case_spec(d['meta']['title'], pid, d['meta']['story_id'], d['meta']['feature_id'], _v(preconditions),
                                                        d['steps'], d['meta']['priority'], d['meta']['type'], d['meta']['linked_case_id'], custom_fields=d['custom'],
-                                                       input_template_id=input_template.value if input_template else None)
+                                                       input_template_id=input_template.value if input_template else None, criteria_ids=d['meta']['criteria_ids'])
                     ui.notify('Caso de prueba creado', type='positive')
                     ui.navigate.to(f'/test-specs/edit?id={spec["id"]}')
 
@@ -428,9 +474,13 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                         {'kind': 'field', 'field_key': 'title', 'field_type': None, 'label': 'Título'},
                         {'kind': 'field', 'field_key': 'preconditions', 'field_type': None, 'label': 'Precondición'},
                         {'kind': 'field', 'field_key': 'steps', 'field_type': None, 'label': 'Pasos de ejecución'}]}]
-                return [Panel(g['id'], g['label'], g['icon'] or 'folder',
-                              (lambda grp=g: render_template_tree(grp['children'], d['custom'], known_renderers, on_change=lambda: document_view.refresh())))
-                        for g in groups]
+                panels = [Panel(g['id'], g['label'], g['icon'] or 'folder',
+                                (lambda grp=g: render_template_tree(grp['children'], d['custom'], known_renderers, on_change=lambda: document_view.refresh())))
+                          for g in groups]
+                # "Criterios" no depende de la plantilla (su contenido lo da la Historia ligada, que puede
+                # cambiar en caliente) — panel propio, siempre presente, igual que "Documento"/"Asistente".
+                panels.append(Panel('criteria', 'Criterios', 'checklist', criteria_panel))
+                return panels
 
             # "document" y "assistant" siempre son ancla de centro (nunca aparecen en el riel) — igual que en
             # user_stories.py; cuáles grupos dinámicos del riel entran al centro lo decide workspace_layout solo

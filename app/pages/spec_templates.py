@@ -192,16 +192,19 @@ def spec_template_detail(id: str = ''):
         # normalize_template_body: una plantilla guardada ANTES de este esquema (sobre todo una global, que
         # nunca se vuelve a guardar sola) puede seguir teniendo nodos planos viejos sin 'kind' — normalizar acá
         # garantiza que render_node (que sí asume la forma de árbol) nunca reciba uno crudo.
-        d = {'body': core.normalize_template_body((current or {}).get('body', []), (current or {}).get('applies_to', 'report'))}
+        d = {'body': core.normalize_template_body((current or {}).get('body', []), (current or {}).get('applies_to', 'report')),
+             'linked_story_fields': dict((current or {}).get('linked_story_fields') or {})}
 
         # name/description/kind/applies_to/body_rows: se asignan recién dentro de render_general/render_sections
         # (nonlocal) — ambos corren durante la llamada a workspace_layout, antes de que el usuario pueda
         # disparar _refresh/preview/save, así que están siempre asignados para cuando de verdad se necesitan.
-        name = description = kind = applies_to = body_rows = None
+        name = description = kind = applies_to = body_rows = linked_story_panel = None
 
         def _refresh():
             if body_rows:
                 body_rows.refresh()
+            if linked_story_panel:
+                linked_story_panel.refresh()
             document_view.refresh()
 
         def toggle_compact():
@@ -385,6 +388,33 @@ def spec_template_detail(id: str = ''):
                         ui.button('Agregar sección', icon='add', on_click=lambda: (d['body'].append(_new_group_node()), _refresh())) \
                             .props('outline dense color=primary').mark('template-add-group')
 
+            def render_linked_story():
+                nonlocal linked_story_panel
+
+                @ui.refreshable
+                def _panel():
+                    if not (applies_to.value == 'test_case' and kind.value == 'input'):
+                        ui.label('Esto solo aplica a una plantilla de ENTRADA de Caso de prueba.').classes('text-sm text-gray-400')
+                        return
+                    ui.label('Por cada plantilla de Historia de usuario/Requerimiento del proyecto, elegí qué campos suyos se '
+                             'muestran en el previsualizador del Caso de prueba cuando está ligado a una Historia que la usa — '
+                             'sin elegir ninguno, no se muestra nada de la Historia más allá de su título.').classes('text-sm text-gray-500')
+                    parents = core.visible_templates('input', 'user_story', pid)
+                    if not parents:
+                        empty_state('Este proyecto no tiene plantillas de Historia de usuario todavía.')
+                        return
+                    for parent in parents:
+                        fields = list(core.iter_template_fields(parent.get('body')))
+                        if not fields:
+                            continue
+                        options = {f['field_key']: f.get('label') or f['field_key'] for f in fields}
+                        current_keys = [k for k in d['linked_story_fields'].get(parent['id'], []) if k in options]
+                        ui.select(options, multiple=True, clearable=True, value=current_keys, label=parent['name']) \
+                            .props('outlined dense use-chips').classes('w-full').mark(f'template-linked-story-{parent["id"]}') \
+                            .on_value_change(lambda e, parent=parent: d['linked_story_fields'].__setitem__(parent['id'], e.value))
+                linked_story_panel = _panel
+                _panel()
+
             def side_extra():
                 if is_global:
                     def adopt():
@@ -395,11 +425,13 @@ def spec_template_detail(id: str = ''):
                 else:
                     def save():
                         if current:
-                            core.update_spec_template(current['id'], name.value, description.value or '', d['body'])
+                            core.update_spec_template(current['id'], name.value, description.value or '', d['body'],
+                                                      linked_story_fields=d['linked_story_fields'])
                             ui.notify('Plantilla actualizada', type='positive')
                             ui.navigate.to(f'/spec-templates/edit?id={current["id"]}')
                         else:
-                            template = core.create_spec_template(name.value, kind.value, applies_to.value, d['body'], pid, description.value or '')
+                            template = core.create_spec_template(name.value, kind.value, applies_to.value, d['body'], pid, description.value or '',
+                                                                 linked_story_fields=d['linked_story_fields'])
                             ui.notify('Plantilla creada', type='positive')
                             ui.navigate.to(f'/spec-templates/edit?id={template["id"]}')
                     ui.button('Guardar cambios' if current else 'Crear plantilla', icon='save', on_click=guard(save)).props('color=primary').mark('template-save')
@@ -449,6 +481,7 @@ def spec_template_detail(id: str = ''):
                     side_panels=[
                         Panel('general', 'General', 'tune', render_general),
                         Panel('sections', 'Secciones y campos', 'account_tree', render_sections),
+                        Panel('linked_story', 'Historias relacionadas', 'link', render_linked_story),
                     ],
                     center_anchors=[Panel('document', '', '', render_document)],
                     prefix='template', get_pref=get_pref, set_pref=set_pref,
