@@ -650,17 +650,20 @@ def story_detail(id: str = ''):
 
             def render_as_a():
                 nonlocal as_a
-                as_a = ui.input('Como (rol)', value=(current or {}).get('as_a', '')).props('outlined dense').classes('w-full').mark('story-as-a').on_value_change(lambda e: document_view.refresh())
+                as_a = ui.textarea('Como (rol)', value=(current or {}).get('as_a', '')).props('outlined dense autogrow').classes('w-full') \
+                    .style('max-height:140px;overflow-y:auto').mark('story-as-a').on_value_change(lambda e: document_view.refresh())
             known_renderers['as_a'] = render_as_a
 
             def render_i_want():
                 nonlocal i_want
-                i_want = ui.input('Quiero (acción o funcionalidad)', value=(current or {}).get('i_want', '')).props('outlined dense').classes('w-full').on_value_change(lambda e: document_view.refresh())
+                i_want = ui.textarea('Quiero (acción o funcionalidad)', value=(current or {}).get('i_want', '')).props('outlined dense autogrow').classes('w-full') \
+                    .style('max-height:140px;overflow-y:auto').mark('story-i-want').on_value_change(lambda e: document_view.refresh())
             known_renderers['i_want'] = render_i_want
 
             def render_so_that():
                 nonlocal so_that
-                so_that = ui.input('Para (beneficio o razón)', value=(current or {}).get('so_that', '')).props('outlined dense').classes('w-full').on_value_change(lambda e: document_view.refresh())
+                so_that = ui.textarea('Para (beneficio o razón)', value=(current or {}).get('so_that', '')).props('outlined dense autogrow').classes('w-full') \
+                    .style('max-height:140px;overflow-y:auto').mark('story-so-that').on_value_change(lambda e: document_view.refresh())
             known_renderers['so_that'] = render_so_that
 
             def render_content():
