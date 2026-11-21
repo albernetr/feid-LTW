@@ -1298,6 +1298,84 @@ async def test_stories_and_test_specs_lists_show_the_code_column_when_the_projec
     assert any(row['code'] == 'TC-001' for row in specs_table.rows)
 
 
+async def test_test_case_spec_step_config_dialog_sets_api_technical_fields(user: User):
+    project = core.create_project('Paso configurado API')
+    core.set_active_project(project['id'])
+    spec = core.create_test_case_spec('TC', project['id'], steps=[{'action': 'pagar', 'expected': 'se aprueba'}])
+
+    await user.open(f'/test-specs/edit?id={spec["id"]}')
+    user.find(marker='spec-step-config-0').click()
+    await user.should_see(marker='spec-step-type')
+    _by_id(user.find(marker='spec-step-type'))[0].set_value('api')
+    await user.should_see(marker='spec-step-method')
+    _by_id(user.find(marker='spec-step-method'))[0].set_value('POST')
+    user.find(marker='spec-step-path').type('/pay')
+    user.find(marker='spec-step-config-save').click()
+    user.find(marker='spec-save').click()
+    await user.should_see('Caso de prueba actualizado')
+
+    updated = core.get('test_case_specs', spec['id'])
+    [step] = updated['steps']
+    assert step['type'] == 'api'
+    assert step['technical']['method'] == 'POST' and step['technical']['path'] == '/pay'
+
+
+async def test_test_case_spec_step_config_dialog_sets_ui_technical_action(user: User):
+    project = core.create_project('Paso configurado UI')
+    core.set_active_project(project['id'])
+    spec = core.create_test_case_spec('TC', project['id'], steps=[{'action': 'ir a pago', 'expected': 'veo el formulario'}])
+
+    await user.open(f'/test-specs/edit?id={spec["id"]}')
+    user.find(marker='spec-step-config-0').click()
+    await user.should_see(marker='spec-step-type')
+    _by_id(user.find(marker='spec-step-type'))[0].set_value('ui')
+    await user.should_see(marker='spec-step-ui-action')
+    user.find(marker='spec-step-config-save').click()
+    user.find(marker='spec-save').click()
+    await user.should_see('Caso de prueba actualizado')
+
+    updated = core.get('test_case_specs', spec['id'])
+    [step] = updated['steps']
+    assert step['type'] == 'ui' and step['technical']['action'] == 'click'   # default
+
+
+async def test_test_case_spec_step_config_dialog_preserves_type_manual_drops_technical(user: User):
+    project = core.create_project('Paso manual')
+    core.set_active_project(project['id'])
+    spec = core.create_test_case_spec('TC', project['id'], steps=[
+        {'action': 'ir a pago', 'expected': 'veo el formulario', 'type': 'api', 'technical': {'method': 'GET', 'path': '/x'}}])
+
+    await user.open(f'/test-specs/edit?id={spec["id"]}')
+    user.find(marker='spec-step-config-0').click()
+    await user.should_see(marker='spec-step-type')
+    _by_id(user.find(marker='spec-step-type'))[0].set_value('manual')
+    user.find(marker='spec-step-config-save').click()
+    user.find(marker='spec-save').click()
+    await user.should_see('Caso de prueba actualizado')
+
+    updated = core.get('test_case_specs', spec['id'])
+    [step] = updated['steps']
+    assert step['type'] == 'manual' and step['technical'] == {}
+
+
+async def test_test_case_spec_step_config_dialog_executes_an_api_step_without_persisting_a_run(user: User, sample_app):
+    project = core.create_project('Ejecutar paso')
+    core.set_active_project(project['id'])
+    core.save('environments', {'name': 'local', 'project_id': project['id'], 'base_url': sample_app.url, 'auth': {'type': 'none'}, 'variables': {}})
+    spec = core.create_test_case_spec('TC', project['id'], steps=[{'action': 'chequear salud', 'expected': 'responde ok'}])
+
+    await user.open(f'/test-specs/edit?id={spec["id"]}')
+    user.find(marker='spec-step-config-0').click()
+    await user.should_see(marker='spec-step-type')
+    _by_id(user.find(marker='spec-step-type'))[0].set_value('api')
+    await user.should_see(marker='spec-step-method')
+    user.find(marker='spec-step-path').type('/health')
+    _by_id(user.find(marker='spec-step-env'))[0].set_value(core.list_items('environments')[0]['id'])
+    user.find(marker='spec-step-run').click()
+    await user.should_see('HTTP 200', retries=30)
+    assert core.list_items('runs') == []   # persist=False: no ensucia el historial
+
+
 async def test_test_case_spec_can_be_created_from_a_story_and_linked_to_an_automated_case(user: User):
     project = core.create_project('Casos de prueba UI')
     core.set_active_project(project['id'])

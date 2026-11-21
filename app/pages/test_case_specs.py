@@ -1,12 +1,19 @@
 import copy
+import json
 from nicegui import ui, run
-from .. import assistant_memory, core, llm, spec_report
+from .. import assistant_memory, automation, core, llm, spec_report
 from ..assistant import AssistantIntent, AssistantProfile, assistant_header, assistant_memory_menu_items, assistant_panel
-from .common import frame, guard, confirm, empty_state, require_project, protected_page, render_template_tree, doc_typography, live_doc_html, typography_button, remembered
+from .common import frame, guard, confirm, empty_state, kv_editor, require_project, protected_page, render_template_tree, doc_typography, live_doc_html, \
+    typography_button, remembered, show_run
+from .widgets import assertion_rows
 from ..layouts import Panel, workspace_layout
 
 STATUS_LABELS = {'draft': 'Borrador', 'ready': 'Listo', 'automated': 'Automatizado'}
 TYPE_LABELS = {'functional': 'Funcional', 'regression': 'Regresión', 'smoke': 'Smoke', 'exploratory': 'Exploratorio'}
+STEP_TYPE_LABELS = {'manual': 'Manual', 'api': 'API', 'ui': 'UI (navegador)'}
+_STEP_LOCATOR_LABELS = {'label': 'Etiqueta (label)', 'text': 'Texto', 'role': 'Rol ARIA', 'testid': 'data-testid', 'placeholder': 'Placeholder'}
+_STEP_ROLES = ['button', 'link', 'heading', 'textbox', 'checkbox', 'combobox', 'listitem', 'row', 'cell', 'tab', 'dialog', 'img']
+_STEP_FIELD_LABELS = {'url': 'URL o ruta', 'value': 'Valor', 'expected': 'Esperado'}
 
 
 @protected_page('/test-specs')
@@ -418,6 +425,132 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                     .classes('w-full').mark('spec-preconditions').on_value_change(lambda e: document_view.refresh())
             known_renderers['preconditions'] = render_preconditions
 
+            def _step_technical_editor(step_type, technical):
+                """Sección «técnica» del modal de un step — reusa EXACTO el mismo esquema/widgets que ya usan
+                los Casos ejecutables (ver cases.py para API, ui_cases.py para UI) — nada inventado aparte."""
+                if step_type == 'manual':
+                    ui.label('Sin sección técnica para un paso Manual.').classes('text-sm text-gray-400')
+                    return
+                if step_type == 'api':
+                    technical.setdefault('headers', {}); technical.setdefault('query', {}); technical.setdefault('variables', {})
+                    technical.setdefault('assertions', [])
+                    with ui.row().classes('gap-2 w-full items-start'):
+                        ui.select(list(core.HTTP_METHODS), value=technical.get('method', 'GET'), label='Método').props('outlined dense').classes('w-32') \
+                            .mark('spec-step-method').on_value_change(lambda e: technical.__setitem__('method', e.value))
+                        ui.input('Ruta', value=technical.get('path', '')).props('outlined dense').classes('grow').mark('spec-step-path') \
+                            .on_value_change(lambda e: technical.__setitem__('path', e.value))
+                    ui.label('Headers').classes('text-sm font-semibold mt-2'); kv_editor(technical['headers'], 'Header', 'Valor')
+                    ui.label('Query').classes('text-sm font-semibold mt-2'); kv_editor(technical['query'], 'Parámetro', 'Valor')
+                    ui.label('Variables').classes('text-sm font-semibold mt-2'); kv_editor(technical['variables'], 'Nombre', 'Valor')
+                    body_box = ui.textarea('Body JSON (opcional)', value=json.dumps(technical['body'], indent=2, ensure_ascii=False)
+                                           if technical.get('body') is not None else '').props('outlined autogrow').classes('w-full font-mono mt-2') \
+                        .mark('spec-step-body')
+                    body_box.on('blur', lambda: technical.__setitem__(
+                        'body', json.loads(body_box.value) if (body_box.value or '').strip() else None))
+                    ui.label('Aserciones').classes('text-sm font-semibold mt-2')
+                    assertion_rows(lambda: technical['assertions'])
+                elif step_type == 'ui':
+                    technical.setdefault('action', 'click')
+
+                    @ui.refreshable
+                    def action_fields():
+                        needs = automation.STEP_ACTIONS[technical['action']]['needs']
+                        if 'locator' in needs:
+                            spec = technical.setdefault('locator', {'by': 'label', 'value': ''})
+                            ui.select(_STEP_LOCATOR_LABELS, value=spec.get('by', 'label'), label='Ubicar por') \
+                                .props('outlined dense').classes('w-44').on_value_change(
+                                    lambda e, sp=spec: (sp.clear(), sp.__setitem__('by', e.value), action_fields.refresh()))
+                            if spec.get('by') == 'role':
+                                ui.select(_STEP_ROLES, value=spec.get('role'), label='Rol', with_input=True, new_value_mode='add-unique') \
+                                    .props('outlined dense').classes('w-36').on_value_change(lambda e, sp=spec: sp.__setitem__('role', e.value))
+                                ui.input('Nombre accesible', value=spec.get('value', '')).props('outlined dense').classes('grow') \
+                                    .on_value_change(lambda e, sp=spec: sp.__setitem__('value', e.value))
+                            else:
+                                ui.input('Valor del locator', value=spec.get('value', '')).props('outlined dense').classes('grow') \
+                                    .on_value_change(lambda e, sp=spec: sp.__setitem__('value', e.value))
+                        for field in ('url', 'value', 'expected'):
+                            if field in needs:
+                                ui.input(_STEP_FIELD_LABELS[field], value=str(technical.get(field, ''))).props('outlined dense').classes('grow') \
+                                    .on_value_change(lambda e, f=field: technical.__setitem__(f, e.value))
+                    with ui.row().classes('gap-2 w-full items-start'):
+                        ui.select({k: v['label'] for k, v in automation.STEP_ACTIONS.items()}, value=technical['action'], label='Acción') \
+                            .props('outlined dense').classes('w-52').mark('spec-step-ui-action').on_value_change(
+                                lambda e: (technical.__setitem__('action', e.value), action_fields.refresh()))
+                        action_fields()
+
+            def step_config_dialog(s):
+                """Configurar un step: tipo + datos de entrada de negocio + mapping (campo de negocio ->
+                ubicación técnica) + sección técnica (solo si type es api/ui) — se muta `s` in-place al
+                confirmar, sin persistir nada aparte (igual que action/expected, el guardado real es el botón
+                general de la página)."""
+                data = dict(s.get('data') or {})
+                mapping = dict(s.get('mapping') or {})
+                technical = copy.deepcopy(s.get('technical') or {})
+                with ui.dialog() as dialog, ui.card().classes('w-[720px] max-w-full gap-2'):
+                    ui.label('Configurar paso').classes('text-lg font-semibold')
+                    type_select = ui.select(STEP_TYPE_LABELS, value=s.get('type', 'manual'), label='Tipo').props('outlined dense').classes('w-48') \
+                        .mark('spec-step-type')
+                    ui.label('Datos de entrada (negocio)').classes('text-sm font-semibold mt-2')
+                    kv_editor(data, 'Campo', 'Valor')
+                    ui.label('Mapping (campo de negocio → ubicación técnica)').classes('text-sm font-semibold mt-2')
+                    kv_editor(mapping, 'Campo de negocio', 'Ubicación técnica')
+                    ui.separator().classes('my-1')
+                    ui.label('Técnica').classes('text-sm font-semibold')
+
+                    @ui.refreshable
+                    def technical_section():
+                        _step_technical_editor(type_select.value, technical)
+                    type_select.on_value_change(lambda e: technical_section.refresh())
+                    technical_section()
+
+                    async def run_step():
+                        env = core.get('environments', env_select.value) if env_select.value else None
+                        if env is None:
+                            raise ValueError('Elegí un ambiente para ejecutar')
+                        if type_select.value == 'api':
+                            case = {'method': technical.get('method', 'GET'), 'path': technical.get('path', ''),
+                                   'headers': technical.get('headers', {}), 'query': technical.get('query', {}),
+                                   'variables': technical.get('variables', {}), 'body': technical.get('body'),
+                                   'extract': technical.get('extract', []), 'assertions': technical.get('assertions', [])}
+                        elif type_select.value == 'ui':
+                            case = {'id': None, 'project_id': pid, 'name': d['meta']['title'] or 'Paso', 'steps': [technical]}
+                        else:
+                            raise ValueError('Un paso Manual no se puede ejecutar')
+                        with ui.dialog() as busy, ui.card():
+                            ui.spinner(size='lg')
+                            ui.label('Ejecutando…')
+                        busy.open()
+                        try:
+                            if type_select.value == 'api':
+                                result = await run.io_bound(core.execute_api, case, env, None, False)
+                            else:
+                                result = await run.io_bound(automation.execute_ui, case, env)
+                        finally:
+                            busy.close()
+                        show_run(result)
+
+                    envs = core.list_project_items('environments', pid)
+                    with ui.row().classes('justify-between items-center w-full mt-2'):
+                        with ui.row().classes('gap-2 items-center'):
+                            if envs:
+                                env_select = ui.select({e['id']: e['name'] for e in envs}, label='Ambiente').props('outlined dense').classes('w-48') \
+                                    .mark('spec-step-env')
+                                ui.button('Ejecutar este paso', icon='play_arrow', on_click=guard(run_step)).props('outline color=positive') \
+                                    .bind_visibility_from(type_select, 'value', lambda v: v in ('api', 'ui')).mark('spec-step-run')
+                        with ui.row().classes('gap-2'):
+                            ui.button('Cancelar', on_click=dialog.close).props('flat')
+
+                            def confirm_config():
+                                s['type'] = type_select.value
+                                s['data'] = data
+                                s['mapping'] = mapping
+                                s['technical'] = technical if type_select.value != 'manual' else {}
+                                dialog.close()
+                                step_rows.refresh()
+                                document_view.refresh()
+                            ui.button('Guardar', icon='save', on_click=confirm_config).props('color=primary').mark('spec-step-config-save')
+                dialog.open()
+
             @ui.refreshable
             def step_rows():
                 if not d['steps']:
@@ -429,6 +562,8 @@ def test_spec_detail(id: str = '', story_id: str = ''):
                             .on_value_change(lambda e, s=s: (s.__setitem__('action', e.value), document_view.refresh()))
                         ui.textarea('Resultado esperado', value=s.get('expected', '')).props('outlined dense autogrow').classes('grow').mark('spec-step-expected') \
                             .on_value_change(lambda e, s=s: (s.__setitem__('expected', e.value), document_view.refresh()))
+                        ui.button(icon='settings', on_click=lambda _, s=s: step_config_dialog(s)).props('flat round dense').classes('mt-1') \
+                            .tooltip('Configurar (tipo, datos de entrada, mapping, técnica)').mark(f'spec-step-config-{index}')
                         ui.button(icon='delete', on_click=lambda _, s=s: (d['steps'].remove(s), step_rows.refresh(), document_view.refresh())) \
                             .props('flat round dense color=negative').classes('mt-1')
 
