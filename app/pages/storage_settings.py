@@ -5,7 +5,7 @@ SQLite esté activo, listos para reactivar sin volver a escribirlos. El cambio s
 aplicación — nunca se aplica en caliente (ver manual, capítulo 15.4)."""
 import os
 from nicegui import run, ui
-from .. import azure_sql_backend, core, storage_config, storage_sync
+from .. import assistant_memory, assistant_memory_config, azure_sql_backend, core, storage_config, storage_sync
 from .common import frame, guard, confirm, confirm_with_phrase, protected_page, team_config_card
 
 SYNC_TABLE_LABELS = {'projects': 'Proyectos', 'module_groups': 'Grupos de módulos', 'modules': 'Componentes',
@@ -163,5 +163,54 @@ def storage_settings():
                 folder_input.set_value(saved)
                 ui.notify('Carpeta de evidencia guardada', type='positive')
             ui.button('Guardar', icon='save', on_click=guard(save_folder)).props('outline').mark('evidence-folder-save')
+
+        with ui.card().classes('w-full'):
+            ui.label('Memoria del Asistente de IA').classes('text-lg font-semibold')
+            ui.label('Dónde vive el historial de los hilos del Asistente (Historias de usuario, Casos de prueba, '
+                      'Chat) cuando «Recordar esta conversación» está activado — independiente del backend de '
+                      'datos de arriba.').classes('text-sm text-gray-500')
+            mem_env_driven = bool(os.environ.get('LTW_ASSISTANT_MEMORY_BACKEND', '').strip())
+            mem_active = assistant_memory_config.active_backend()
+            if mem_env_driven:
+                ui.label('Fijado por la variable de entorno LTW_ASSISTANT_MEMORY_BACKEND: para cambiarlo, cambiá '
+                          'esa variable y reiniciá — esta pantalla no puede anularla.').classes('text-xs text-amber-700')
+            else:
+                mem_backend_select = ui.select({'json': 'Archivos JSON', 'sqlite': 'SQLite propio'}, value=mem_active,
+                                               label='Backend de memoria').props('outlined dense').classes('w-64').mark('assistant-memory-backend-select')
+
+                def save_mem_backend():
+                    assistant_memory_config.set_active(mem_backend_select.value)
+                    ui.notify('Guardado y en efecto ya mismo — a diferencia del backend de datos, este no necesita reiniciar.',
+                             type='positive', multi_line=True)
+                    ui.navigate.reload()
+                ui.button('Guardar', icon='save', on_click=guard(save_mem_backend)).props('outline').mark('assistant-memory-backend-save')
+
+            ui.separator().classes('my-2')
+            memory_adapter = assistant_memory.get_adapter()
+            threads = sorted(memory_adapter.list_threads(), key=lambda r: r.get('updated_at') or '', reverse=True)
+            if not threads:
+                ui.label('No hay hilos guardados todavía.').classes('text-sm text-gray-400')
+            else:
+                for row in threads:
+                    with ui.row().classes('items-center gap-2 w-full no-wrap'):
+                        ui.label(row['id']).classes('text-sm grow font-mono')
+                        ui.label(f'{row["turn_count"]} turno(s)').classes('text-xs text-gray-500')
+                        ui.badge('recuerda' if row['enabled'] else 'apagado', color='primary' if row['enabled'] else 'grey')
+
+                        def clear_one(tid=row['id']):
+                            memory_adapter.clear(tid)
+                            ui.notify('Hilo limpiado', type='positive')
+                            ui.navigate.reload()
+                        ui.button(icon='delete_sweep', on_click=guard(clear_one)).props('flat dense round color=negative') \
+                            .mark(f'assistant-memory-row-clear-{row["id"]}').tooltip('Limpiar este hilo')
+
+                def clear_all_threads():
+                    memory_adapter.clear_all()
+                    ui.notify('Memoria del Asistente limpiada', type='positive')
+                    ui.navigate.reload()
+                ui.button('Limpiar todo', icon='delete_forever', on_click=lambda: confirm_with_phrase(
+                    'Esto borra TODO el historial de TODOS los hilos del Asistente (Historias de usuario, Casos '
+                    'de prueba, Chat) — no se puede deshacer.', ACTIVATE_PHRASE, clear_all_threads, 'Borrar todo')) \
+                    .props('outline color=negative').mark('assistant-memory-clear-all')
 
         team_config_card()

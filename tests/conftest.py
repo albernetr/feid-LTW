@@ -4,7 +4,7 @@ import keyring.backend
 import pytest
 from nicegui import app as nicegui_app
 from nicegui.testing import User
-from app import core
+from app import assistant_memory, core
 
 
 class FakeAzureCursor:
@@ -116,6 +116,10 @@ def isolated_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(core, 'ROOT', tmp_path / 'home')
     monkeypatch.setattr(core, 'DB', tmp_path / 'home' / 'workspace.sqlite3')
     monkeypatch.setattr(core, 'ARTIFACTS', tmp_path / 'home' / 'evidence')
+    # assistant_memory.get_adapter() cachea una instancia por backend a nivel de módulo — sin limpiarla acá,
+    # un test reusaría el adaptador JSON/SQLite de un test ANTERIOR, todavía apuntando al core.ROOT (ya
+    # borrado) de ese test, en vez de al tmp_path de este.
+    assistant_memory._cached.clear()
     previous = keyring.get_keyring()
     keyring.set_keyring(MemoryKeyring())
     core.initialize()

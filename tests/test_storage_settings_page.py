@@ -2,7 +2,7 @@
 («Escribe CONFIRMAR»), y el aviso cuando LTW_BACKEND (variable de entorno) manda por encima de todo."""
 import pytest
 from nicegui.testing import User
-from app import azure_sql_backend, storage_config
+from app import assistant_memory, assistant_memory_config, azure_sql_backend, storage_config
 
 
 def _fill_probe_form(user):
@@ -99,6 +99,52 @@ async def test_evidence_folder_rejects_a_path_that_is_not_an_existing_writable_f
     user.find(marker='evidence-folder-path').type('esto-no-existe')
     user.find(marker='evidence-folder-save').click()
     await user.should_see('no es una carpeta existente')
+
+
+# --------------------------------------------------------------------------- memoria del Asistente de IA (paso 7)
+
+async def test_assistant_memory_section_lists_threads_and_clears_one(user: User):
+    adapter = assistant_memory.get_adapter()
+    adapter.append('user_story:abc', {'who': 'user', 'text': 'hola'})
+    adapter.append('chat:draft', {'who': 'user', 'text': 'otro hilo'})
+    await user.open('/storage')
+    await user.should_see('user_story:abc')
+    await user.should_see('chat:draft')
+    user.find(marker='assistant-memory-row-clear-user_story:abc').click()
+    await user.should_not_see('user_story:abc')
+    await user.should_see('chat:draft')
+    assert adapter.load('user_story:abc') == []
+    assert adapter.load('chat:draft') != []
+
+
+async def test_assistant_memory_clear_all_requires_confirmation_phrase(user: User):
+    adapter = assistant_memory.get_adapter()
+    adapter.append('user_story:abc', {'who': 'user', 'text': 'hola'})
+    await user.open('/storage')
+    user.find(marker='assistant-memory-clear-all').click()
+    await user.should_see('Escribe CONFIRMAR')
+    user.find(marker='confirm-phrase-input').type('CONFIRMAR')
+    user.find(marker='confirm-phrase-accept').click()
+    await user.should_see('No hay hilos guardados todavía')
+    assert adapter.list_threads() == []
+
+
+async def test_assistant_memory_empty_state_hides_clear_all(user: User):
+    await user.open('/storage')
+    await user.should_see('No hay hilos guardados todavía')
+    with pytest.raises(AssertionError):
+        user.find(marker='assistant-memory-clear-all')
+
+
+async def test_assistant_memory_backend_switch_persists_and_applies_without_restart(user: User):
+    await user.open('/storage')
+    await user.should_see('Archivos JSON')
+    select = user.find(marker='assistant-memory-backend-select').elements.pop()
+    select.set_value('sqlite')
+    user.find(marker='assistant-memory-backend-save').click()
+    await user.should_see('en efecto ya mismo')
+    assert assistant_memory_config.active_backend() == 'sqlite'
+    assert isinstance(assistant_memory.get_adapter(), assistant_memory.SqliteMemoryAdapter)
 
 
 @pytest.mark.no_auto_login   # las variables de entorno deben estar puestas *antes* de crear/loguear la cuenta

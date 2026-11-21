@@ -165,8 +165,10 @@ _cached = {}
 
 
 def get_adapter():
-    """El adaptador activo para este proceso — cacheado (una sola instancia por backend), sin cambio en
-    caliente: igual que el backend de datos, cambiar de adaptador requiere reiniciar la app."""
+    """El adaptador activo — una instancia por backend, cacheada para no reinstanciar en cada llamada. A
+    diferencia del backend de datos (storage_config.py), SÍ cambia en caliente: active_backend() se vuelve a
+    leer en cada llamada, así que cambiar el backend de memoria (ver storage_settings.py) tiene efecto
+    inmediato, sin reiniciar — no hay una conexión que abrir de antemano como con Azure SQL."""
     backend = active_backend()
     if backend not in _cached:
         _cached[backend] = _ADAPTERS_BY_BACKEND[backend]()
