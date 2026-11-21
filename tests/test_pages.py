@@ -1184,7 +1184,6 @@ async def test_ui_case_record_step_screenshots_checkbox_is_saved_and_restored(us
 async def test_saved_cases_are_unified_across_both_workspaces(user: User):
     """A test case is a test case, API or UI: both workspaces show the full list of saved cases, and clicking
     one of the other kind takes you to the workspace that actually edits that kind."""
-    import asyncio
     project = core.create_project('Unif')
     core.set_active_project(project['id'])
     env = core.save('environments', {'name': 'e', 'project_id': project['id'], 'base_url': 'http://x', 'auth': {'type': 'none'}, 'variables': {}})
@@ -1197,17 +1196,18 @@ async def test_saved_cases_are_unified_across_both_workspaces(user: User):
     await user.should_see('Casos (API y UI)')
     await user.should_see('Login UI')                             # the UI case shows up here too
     user.find(f'ws-saved-{ui_case["id"]}').click()
-    await asyncio.sleep(0.3)                                       # ui.navigate.to runs as a background task in tests
-    assert user.client.page.path == '/ui-cases'                   # navigated away to edit it where it belongs
+    # ui.navigate.to corre como tarea en segundo plano en los tests (ver el mismo comentario en
+    # test_creating_and_running_a_case_from_the_ui_stamps_created_by_and_executed_by más arriba) — un sleep
+    # fijo es frágil bajo carga (p. ej. pytest-xdist con varios workers compitiendo por CPU); eventually()
+    # espera la condición real, sin importar cuánto tarde.
+    await eventually(lambda: user.client.page.path == '/ui-cases')   # navegó a editarlo donde corresponde
 
     await user.open('/ui-cases')
     await user.should_see('Guardados')
     user.find('Guardados').click()
-    await asyncio.sleep(0.3)
-    await user.should_see('Ping')                                 # the API case shows up here too
+    await user.should_see('Ping', retries=30)                       # the API case shows up here too
     user.find(f'ui-saved-api-{api_case["id"]}').click()
-    await asyncio.sleep(0.5)
-    assert user.client.page.path == '/workspace'
+    await eventually(lambda: user.client.page.path == '/workspace')
 
     await user.open(f'/workspace?case={api_case["id"]}')
     await user.should_see('ws-url')
