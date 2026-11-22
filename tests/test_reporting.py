@@ -57,6 +57,46 @@ def test_collect_counts_and_lists_suite_groups_not_just_suites(world):
     assert 'Suites' in reporting.render_html(report) and 'regresión' in reporting.render_markdown(report)
 
 
+def test_build_suite_group_report_data_tracks_members_last_run_within_this_suite(world):
+    project, cases, suite = world
+    env = core.save('environments', {'name': 'e', 'project_id': project['id'], 'base_url': 'http://x', 'auth': {'type': 'none'}, 'variables': {}})
+    group = core.save_suite_group('regresión', project['id'], [{'type': 'flow', 'id': suite['id']}, {'type': 'case', 'id': cases['pago']['id']}], environment_id=env['id'])
+    suite_group_run(project, group, 'passed', ago(2))
+    run_failed = suite_group_run(project, group, 'failed', ago(1))
+    run_failed['item_runs'] = [{'type': 'flow', 'id': suite['id'], 'name': 'compra', 'status': 'passed'},
+                              {'type': 'case', 'id': cases['pago']['id'], 'name': 'pago', 'status': 'failed'}]
+    core.save('runs', run_failed)
+
+    data = reporting.build_suite_group_report_data(group['id'], days=14, now=NOW)
+    assert data['title'] == 'regresión' and data['status'] == 'failed' and data['runs'] == 2
+    by_name = {m['name']: m['status'] for m in data['members']}
+    assert by_name == {'compra': 'passed', 'pago': 'failed'}
+    html = reporting.render_suite_group_html(data)
+    assert '<svg' in html and 'compra' in html and 'Falló' in html
+    assert 'regresión' in reporting.render_suite_group_markdown(data)
+    assert reporting.render_suite_group_docx(data)[:2] == b'PK'
+
+    with pytest.raises(ValueError):
+        reporting.build_suite_group_report_data('no-existe')
+
+
+def test_build_case_report_data_tracks_its_own_run_history(world):
+    project, cases, _ = world
+    case_run(project, cases['login'], 'passed', ago(3), ms=50)
+    case_run(project, cases['login'], 'failed', ago(1), ms=200, error='timeout')
+
+    data = reporting.build_case_report_data(cases['login']['id'], days=14, now=NOW)
+    assert data['title'] == 'login' and data['status'] == 'failed' and data['runs'] == 2
+    assert data['recent'][0]['status'] == 'failed' and data['recent'][1]['status'] == 'passed'   # mas reciente primero
+    html = reporting.render_case_html(data)
+    assert '<svg' in html and 'login' in html and 'timeout' in html
+    assert 'login' in reporting.render_case_markdown(data)
+    assert reporting.render_case_docx(data)[:2] == b'PK'
+
+    with pytest.raises(ValueError):
+        reporting.build_case_report_data('no-existe')
+
+
 def test_all_green(world):
     project, cases, suite = world
     for case in cases.values():

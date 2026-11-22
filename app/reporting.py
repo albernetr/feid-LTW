@@ -399,6 +399,153 @@ def render(report, kind):
     raise ValueError('Formato no reconocido (html, md, json o pdf)')
 
 
+# --------------------------------------------------------------------------- reporte de UNA Suite (suite_group)
+
+FORMAT_SUITE_GROUP = 'ltw.suite_group_report/1'
+
+
+def build_suite_group_report_data(group_id, days=14, now=None):
+    """Agregado histórico de UNA Suite (suite_groups) — mismo espíritu que collect(), acotado a un grupo en
+    vez de todo el proyecto. El estado de cada miembro es el de la ÚLTIMA corrida de ESTA Suite (sus propios
+    item_runs), no el último run suelto de ese Flujo/Caso en cualquier otro lado — responde "¿qué pasó la
+    última vez que se corrió ESTA Suite?", no el estado global del miembro."""
+    group = core.get('suite_groups', group_id)
+    if group is None:
+        raise ValueError('Suite inexistente')
+    now = now or dt.datetime.now(dt.timezone.utc)
+    start, previous_start = now - dt.timedelta(days=days), now - dt.timedelta(days=2 * days)
+    runs = [r for r in core.list_items('runs') if r.get('type') == 'suite_group' and r.get('group_id') == group_id]
+    for r in runs:
+        r['_t'] = _when(r.get('started_at'))
+    runs = sorted((r for r in runs if r['_t']), key=lambda r: r['_t'])
+    decisive = [r for r in runs if r['status'] in DECISIVE]
+    period = [r for r in decisive if start <= r['_t'] <= now]
+    previous = [r for r in decisive if previous_start <= r['_t'] < start]
+    rate = _rate(sum(r['status'] == 'passed' for r in period), len(period))
+    rate_prev = _rate(sum(r['status'] == 'passed' for r in previous), len(previous))
+    last = decisive[-1] if decisive else None
+
+    last_item_runs = {(it.get('type'), it.get('id')): it for it in (last or {}).get('item_runs', [])}
+    members = []
+    for m in group.get('members') or []:
+        item = last_item_runs.get((m['type'], m['id']))
+        record = core.get('suites' if m['type'] == 'flow' else 'cases', m['id']) or {}
+        members.append({'type': m['type'], 'id': m['id'], 'name': (item or {}).get('name') or record.get('name', ''),
+                        'status': item['status'] if item else 'never'})
+
+    trend = []
+    for offset in range(days - 1, -1, -1):
+        day = _local_day(now) - dt.timedelta(days=offset)
+        todays = [r for r in decisive if _local_day(r['_t']) == day]
+        ok = sum(r['status'] == 'passed' for r in todays)
+        trend.append({'day': day.isoformat(), 'runs': len(todays), 'passed': ok, 'failed': len(todays) - ok, 'success_rate': _pct(_rate(ok, len(todays)))})
+
+    return {'format': FORMAT_SUITE_GROUP, 'title': group.get('name', ''), 'group_id': group_id, 'generated_at': now.isoformat(),
+            'period': {'days': days}, 'status': last['status'] if last else 'never', 'last_run': last['started_at'] if last else None,
+            'runs': len(period), 'success_rate': _pct(rate), 'success_rate_previous': _pct(rate_prev),
+            'delta': None if rate is None or rate_prev is None else round((rate - rate_prev) * 100, 1),
+            'members': members, 'trend': trend}
+
+
+def _suite_group_doc(data):
+    blocks = [rd.badge(STATUS_ES.get(data['status'], 'Sin ejecutar'), STATUS_COLOR.get(data['status'], '#6b7280')),
+              rd.cards([{'value': f'{data["success_rate"]}%' if data['success_rate'] is not None else '—', 'label': 'Tasa de éxito'},
+                       {'value': _arrow(data['delta']), 'label': 'vs. periodo anterior'},
+                       {'value': data['runs'], 'label': 'Ejecuciones'}]),
+              rd.heading('Ejecuciones por día'), rd.svg(trend_svg(data['trend'])), rd.text('Verde: pasaron · Rojo: fallaron'),
+              rd.heading('Miembros'),
+              rd.table(['Miembro', 'Tipo', 'Estado'],
+                      [[m['name'], 'Flujo' if m['type'] == 'flow' else 'Caso', STATUS_ES.get(m['status'], 'Sin ejecutar')] for m in data['members']])]
+    meta = f'Últimos {data["period"]["days"]} días · generado {_fmt(data["generated_at"])}'
+    return rd.doc(data['title'], blocks, meta=meta)
+
+
+def render_suite_group_html(data):
+    return report_render.render_html(_suite_group_doc(data))
+
+
+def render_suite_group_markdown(data):
+    return report_render.render_markdown(_suite_group_doc(data))
+
+
+def render_suite_group_docx(data):
+    return report_render.render_docx(_suite_group_doc(data))
+
+
+# --------------------------------------------------------------------------- reporte de UN Caso (Pruebas: API/UI)
+
+FORMAT_CASE = 'ltw.case_report/1'
+
+
+def build_case_report_data(case_id, days=14, now=None):
+    """Agregado histórico de UN Caso (API o UI) — su historial de corridas propio, no una ejecución puntual
+    (eso ya lo cubre evidence_report.py). Responde "¿cómo le ha ido a este Caso en el tiempo?"."""
+    case = core.get('cases', case_id)
+    if case is None:
+        raise ValueError('Caso inexistente')
+    now = now or dt.datetime.now(dt.timezone.utc)
+    start, previous_start = now - dt.timedelta(days=days), now - dt.timedelta(days=2 * days)
+    runs = [r for r in core.list_items('runs') if r.get('type') in ('api', 'ui') and r.get('case_id') == case_id]
+    for r in runs:
+        r['_t'] = _when(r.get('started_at'))
+    runs = sorted((r for r in runs if r['_t']), key=lambda r: r['_t'])
+    decisive = [r for r in runs if r['status'] in DECISIVE]
+    period = [r for r in decisive if start <= r['_t'] <= now]
+    previous = [r for r in decisive if previous_start <= r['_t'] < start]
+    rate = _rate(sum(r['status'] == 'passed' for r in period), len(period))
+    rate_prev = _rate(sum(r['status'] == 'passed' for r in previous), len(previous))
+    last = decisive[-1] if decisive else None
+    durations = [r['duration_ms'] for r in period if r.get('duration_ms')]
+
+    recent = [{'started_at': r['started_at'], 'status': r['status'], 'duration_ms': r.get('duration_ms'),
+              'detail': _failure_text(r) if r['status'] != 'passed' else ''} for r in decisive[-20:]]
+
+    trend = []
+    for offset in range(days - 1, -1, -1):
+        day = _local_day(now) - dt.timedelta(days=offset)
+        todays = [r for r in decisive if _local_day(r['_t']) == day]
+        ok = sum(r['status'] == 'passed' for r in todays)
+        trend.append({'day': day.isoformat(), 'runs': len(todays), 'passed': ok, 'failed': len(todays) - ok, 'success_rate': _pct(_rate(ok, len(todays)))})
+
+    return {'format': FORMAT_CASE, 'title': case.get('name', ''), 'case_id': case_id, 'case_type': case.get('type', 'api'),
+            'target': f'{case.get("method", "")} {case.get("path", "")}'.strip() if case.get('type', 'api') == 'api' else '',
+            'generated_at': now.isoformat(), 'period': {'days': days}, 'status': last['status'] if last else 'never',
+            'last_run': last['started_at'] if last else None, 'runs': len(period),
+            'success_rate': _pct(rate), 'success_rate_previous': _pct(rate_prev),
+            'delta': None if rate is None or rate_prev is None else round((rate - rate_prev) * 100, 1),
+            'avg_duration_ms': round(statistics.mean(durations)) if durations else None, 'recent': recent[::-1], 'trend': trend}
+
+
+def _case_doc(data):
+    blocks = [rd.badge(STATUS_ES.get(data['status'], 'Sin ejecutar'), STATUS_COLOR.get(data['status'], '#6b7280'))]
+    if data['target']:
+        blocks.append(rd.text(data['target']))
+    blocks.append(rd.cards([{'value': f'{data["success_rate"]}%' if data['success_rate'] is not None else '—', 'label': 'Tasa de éxito'},
+                           {'value': _arrow(data['delta']), 'label': 'vs. periodo anterior'},
+                           {'value': data['runs'], 'label': 'Ejecuciones'},
+                           {'value': f'{data["avg_duration_ms"]} ms' if data['avg_duration_ms'] is not None else '—', 'label': 'Respuesta media'}]))
+    blocks += [rd.heading('Ejecuciones por día'), rd.svg(trend_svg(data['trend'])), rd.text('Verde: pasaron · Rojo: fallaron')]
+    if data['recent']:
+        blocks.append(rd.heading('Corridas recientes'))
+        blocks.append(rd.table(['Inicio', 'Estado', 'Duración', 'Detalle'],
+            [[_fmt(r['started_at']), STATUS_ES.get(r['status'], r['status']), f'{r["duration_ms"]} ms' if r['duration_ms'] is not None else '—', r['detail'][:160]]
+             for r in data['recent']]))
+    meta = f'Últimos {data["period"]["days"]} días · generado {_fmt(data["generated_at"])}'
+    return rd.doc(data['title'], blocks, meta=meta)
+
+
+def render_case_html(data):
+    return report_render.render_html(_case_doc(data))
+
+
+def render_case_markdown(data):
+    return report_render.render_markdown(_case_doc(data))
+
+
+def render_case_docx(data):
+    return report_render.render_docx(_case_doc(data))
+
+
 # --------------------------------------------------------------------------- command line
 
 def cli(argv):

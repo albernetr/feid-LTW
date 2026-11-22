@@ -4,7 +4,9 @@ solo reporte combinado — a diferencia de un Flujo, que es UNA secuencia ordena
 con lo suyo propio; lo único que comparten es el ambiente (para los Casos sueltos) y quedar en un solo reporte."""
 from nicegui import ui, run
 from .. import core, automation
-from .common import frame, guard, confirm, empty_state, require_project, show_run, status_badge, protected_page, current_user_id
+from .. import reporting
+from .common import frame, guard, confirm, empty_state, require_project, show_run, status_badge, protected_page, current_user_id, \
+    download_health_report, view_health_report_in_tab
 
 
 async def run_group(group):
@@ -127,6 +129,17 @@ def suite_groups_list():
                         ui.label(f'{flows} flujo(s) · {cases} caso(s) suelto(s) · {policy}'
                                  + (f' · creado por {core.user_display_name(group["created_by"])}' if group.get('created_by') else '')).classes('text-sm text-gray-500')
                     ui.button(icon='play_arrow', on_click=guard(lambda g=group: run_group(g))).props('flat round color=positive').tooltip('Ejecutar')
+                    with ui.button(icon='assessment').props('flat round').tooltip('Reporte'):
+                        with ui.menu():
+                            with ui.column().classes('p-2 gap-1'):
+                                gid = group['id']
+                                ui.button('Vista previa', icon='open_in_new',
+                                         on_click=guard(lambda i=gid: view_health_report_in_tab('suite_group', reporting.build_suite_group_report_data(i)))) \
+                                    .props('flat dense no-caps')
+                                for label, fmt in (('HTML', 'html'), ('PDF', 'pdf'), ('Word', 'docx'), ('Markdown', 'md')):
+                                    ui.button(label, icon='download',
+                                             on_click=guard(lambda i=gid, f=fmt: download_health_report('suite_group', reporting.build_suite_group_report_data(i), f))) \
+                                        .props('flat dense no-caps')
                     ui.button(icon='edit', on_click=lambda _, i=group['id']: ui.navigate.to(f'/suite-groups/edit?id={i}')).props('flat round').tooltip('Editar')
 
                     def remove(g=group):

@@ -1,7 +1,8 @@
 import json
 from nicegui import ui, run
-from .. import core
-from .common import frame, guard, confirm, empty_state, require_project, kv_editor, show_run, status_badge, protected_page, current_user_id
+from .. import core, reporting
+from .common import frame, guard, confirm, empty_state, require_project, kv_editor, show_run, status_badge, protected_page, current_user_id, \
+    download_health_report, view_health_report_in_tab
 from .widgets import assertion_rows, dynamic_variable_chips
 
 HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
@@ -91,6 +92,17 @@ def cases_list():
                             tail = f' · {", ".join(extra_tags)}' if extra_tags else ''
                             ui.label(f'{case.get("path", "")} · {len(case.get("assertions", []))} aserciones{tail}').classes('font-mono text-sm text-gray-500')
                         ui.button(icon='play_arrow', on_click=guard(lambda c=case: run_case(c, env_select.value))).props('flat round color=positive').tooltip('Ejecutar')
+                        with ui.button(icon='assessment').props('flat round').tooltip('Reporte (historial de corridas)'):
+                            with ui.menu():
+                                with ui.column().classes('p-2 gap-1'):
+                                    cid = case['id']
+                                    ui.button('Vista previa', icon='open_in_new',
+                                             on_click=guard(lambda i=cid: view_health_report_in_tab('case', reporting.build_case_report_data(i)))) \
+                                        .props('flat dense no-caps')
+                                    for label, fmt in (('HTML', 'html'), ('PDF', 'pdf'), ('Word', 'docx'), ('Markdown', 'md')):
+                                        ui.button(label, icon='download',
+                                                 on_click=guard(lambda i=cid, f=fmt: download_health_report('case', reporting.build_case_report_data(i), f))) \
+                                            .props('flat dense no-caps')
                         ui.button(icon='edit', on_click=lambda _, i=case['id']: ui.navigate.to(f'/cases/edit?id={i}')).props('flat round').tooltip('Editar')
 
                         def duplicate(c=case):

@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from fastapi.responses import RedirectResponse
 from nicegui import app, ui, run
-from .. import core, automation, evidence_report, integrations, llm
+from .. import core, automation, evidence_report, integrations, llm, reporting
 from ..layouts import app_shell
 
 NAV = [
@@ -726,6 +726,45 @@ def open_evidence_in_new_tab(view_id, filename, client=None):
     (opcional, ver _run_js) evita la resolución de context.client cuando quien llama viene de «Hablale al
     Asistente», con un refresh previo en el mismo turno de por medio."""
     _run_js(client, f'window.open({json.dumps(f"/evidence/{view_id}/{filename}")}, "_blank")', 5.0)
+
+
+_HEALTH_REPORT_RENDERERS = {'suite_group': (reporting.render_suite_group_html, reporting.render_suite_group_markdown, reporting.render_suite_group_docx),
+                            'case': (reporting.render_case_html, reporting.render_case_markdown, reporting.render_case_docx)}
+
+
+async def render_health_report(kind, data, fmt):
+    """Mismo espíritu que render_evidence, para el reporte histórico de una Suite o de un Caso (Pruebas) —
+    `kind` es 'suite_group' o 'case', `data` ya viene armado por reporting.build_suite_group_report_data/
+    build_case_report_data (quien llama decide cuál, acá solo se renderiza)."""
+    html_fn, md_fn, docx_fn = _HEALTH_REPORT_RENDERERS[kind]
+    if fmt == 'pdf':
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / 'r.pdf'
+            await run.io_bound(reporting.render_pdf, html_fn(data), target)
+            return target.read_bytes(), CONTENT_TYPES['pdf']
+    if fmt == 'docx':
+        return await run.io_bound(docx_fn, data), CONTENT_TYPES['docx']
+    if fmt == 'md':
+        return md_fn(data).encode('utf-8'), CONTENT_TYPES['md']
+    return html_fn(data).encode('utf-8'), CONTENT_TYPES['html']
+
+
+def _health_report_stem(data):
+    return re.sub(r'[\\/:*?"<>|]+', '_', data.get('title') or 'reporte').replace(' ', '_')
+
+
+async def download_health_report(kind, data, fmt):
+    content, _ = await render_health_report(kind, data, fmt)
+    ui.download(content, f'{_health_report_stem(data)}.{fmt}')
+    ui.notify('Reporte generado', type='positive')
+
+
+def view_health_report_in_tab(kind, data, client=None):
+    html = _HEALTH_REPORT_RENDERERS[kind][0](data)
+    view_id = core.uid()
+    filename = f'{view_id}-health-report.html'
+    (core.ARTIFACTS / filename).write_text(html, encoding='utf-8')
+    open_evidence_in_new_tab(view_id, filename, client=client)
 
 
 async def _save_evidence_to_folder(run_doc, llm_verdict=None):
