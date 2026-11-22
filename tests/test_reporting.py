@@ -30,11 +30,31 @@ def suite_run(project, suite, status, when, finished=None):
                               'finished_at': finished, 'case_runs': []})
 
 
+def suite_group_run(project, group, status, when, finished=None):
+    return core.save('runs', {'type': 'suite_group', 'group_id': group['id'], 'group_name': group.get('name', ''), 'project_id': project['id'], 'status': status,
+                              'started_at': when, 'finished_at': finished, 'item_runs': []})
+
+
 def test_without_runs_it_says_so_instead_of_inventing_a_color(world):
     project, _, _ = world
     report = reporting.collect(project['id'], 14, now=NOW)
     assert report['rag']['level'] == 'grey' and report['kpis']['success_rate'] is None and 'Aún no hay ejecuciones' in report['headline']
     assert report['kpis']['cases']['never'] == 3 and len(report['trend']) == 14
+
+
+def test_collect_counts_and_lists_suite_groups_not_just_suites(world):
+    """Antes, una Suite (suite_groups) ni se contaba ni se listaba en el resumen ejecutivo — el filtro de runs
+    solo tomaba type == 'suite' (un Flujo). Ahora una Suite fallando también pone el semáforo en rojo."""
+    project, cases, suite = world
+    for case in cases.values():
+        case_run(project, case, 'passed', ago(1))
+    group = core.save_suite_group('regresión', project['id'], [{'type': 'flow', 'id': suite['id']}])
+    suite_group_run(project, group, 'failed', ago(1))
+    report = reporting.collect(project['id'], 14, now=NOW)
+    assert report['kpis']['suite_groups_total'] == 1 and report['kpis']['suite_groups_failing'] == 1
+    assert report['suite_groups'][0]['name'] == 'regresión' and report['suite_groups'][0]['status'] == 'failed'
+    assert report['rag']['level'] == 'red' and any('suite(s) fallan' in r for r in report['rag']['reasons'])
+    assert 'Suites' in reporting.render_html(report) and 'regresión' in reporting.render_markdown(report)
 
 
 def test_all_green(world):

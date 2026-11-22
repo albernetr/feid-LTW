@@ -6,7 +6,7 @@ import json
 import statistics
 import sys
 from pathlib import Path
-from . import core, observer
+from . import core, observer, report_doc as rd, report_render
 
 FORMAT = 'ltw.status/1'
 RANGES = (7, 14, 30, 90)
@@ -134,6 +134,24 @@ def collect(project_id=None, days=14, now=None, notes='', title=''):
                            'spark': [r['status'] for r in mine[-12:]], 'last_duration_ms': duration, 'run_id': last['id'] if last else None})
     suite_rows.sort(key=lambda s: ({'failed': 0, 'error': 0, 'never': 1, 'passed': 2}.get(s['status'], 2), s['name'].lower()))
 
+    # Suites (suite_groups): un grupo de Flujos y/o Casos sueltos, un nivel arriba de un Flujo (ver
+    # core.save_suite_group) — mismo cálculo que suite_rows, pero antes el resumen ejecutivo nunca las
+    # contaba ni las listaba (el filtro de abajo solo tomaba type == 'suite').
+    groups = core.list_project_items('suite_groups', project_id)
+    group_runs = [r for r in runs if r.get('type') == 'suite_group']
+    group_rows = []
+    for group in groups:
+        mine = [r for r in group_runs if r.get('group_id') == group['id'] and r['status'] in DECISIVE]
+        period, prev = [r for r in mine if in_period(r)], [r for r in mine if in_previous(r)]
+        last = mine[-1] if mine else None
+        rate_s, rate_p = _rate(sum(r['status'] == 'passed' for r in period), len(period)), _rate(sum(r['status'] == 'passed' for r in prev), len(prev))
+        group_rows.append({'group_id': group['id'], 'name': group.get('name', ''), 'members': len(group.get('members') or []),
+                           'status': last['status'] if last else 'never', 'last_run': last['started_at'] if last else None,
+                           'runs': len(period), 'success_rate': _pct(rate_s),
+                           'delta': None if rate_s is None or rate_p is None else round((rate_s - rate_p) * 100, 1),
+                           'spark': [r['status'] for r in mine[-12:]], 'run_id': last['id'] if last else None})
+    group_rows.sort(key=lambda s: ({'failed': 0, 'error': 0, 'never': 1, 'passed': 2}.get(s['status'], 2), s['name'].lower()))
+
     unstable = []
     for case_id, items in history.items():
         window = [r['status'] == 'passed' for r in items if in_period(r)]
@@ -170,12 +188,14 @@ def collect(project_id=None, days=14, now=None, notes='', title=''):
             'executions': len(decisive), 'executions_previous': len(decisive_prev), 'cases': counts,
             'suites_total': len(suite_rows), 'suites_healthy': sum(s['status'] == 'passed' for s in suite_rows),
             'suites_failing': sum(s['status'] in ('failed', 'error') for s in suite_rows), 'suites_never_run': sum(s['status'] == 'never' for s in suite_rows),
+            'suite_groups_total': len(group_rows), 'suite_groups_healthy': sum(s['status'] == 'passed' for s in group_rows),
+            'suite_groups_failing': sum(s['status'] in ('failed', 'error') for s in group_rows), 'suite_groups_never_run': sum(s['status'] == 'never' for s in group_rows),
             'avg_response_ms': round(statistics.mean(all_durations)) if all_durations else None}
     level, reasons = _traffic_light(kpis, drift, overdue, enabled, scheduler_on)
     report = {'format': FORMAT, 'title': title or 'Reporte de estatus de pruebas', 'generated_at': now.isoformat(), 'notes': notes,
               'tool': {'name': 'local-test-workspace'}, 'project': {'id': project_id, 'name': project['name'] if project else 'Todos los proyectos'},
               'period': {'days': days, 'from': start.isoformat(), 'to': now.isoformat()}, 'rag': {'level': level, 'label': RAG[level], 'reasons': reasons},
-              'kpis': kpis, 'trend': trend, 'suites': suite_rows, 'failing': failing, 'unstable': unstable[:8], 'slow': slow,
+              'kpis': kpis, 'trend': trend, 'suites': suite_rows, 'suite_groups': group_rows, 'failing': failing, 'unstable': unstable[:8], 'slow': slow,
               'observer': {'modules': len(modules), 'with_changes': len(drift), 'unbaselined': sum(m['unbaselined'] for m in modules),
                            'changes': [{'module': m['module'], 'pending': m['drift'], 'company': m.get('company', ''), 'owner': m.get('owner', '')} for m in drift]},
               'schedules': {'total': len(schedules), 'enabled': len(enabled), 'overdue': len(overdue), 'scheduler_running': scheduler_on},
@@ -199,6 +219,8 @@ def _traffic_light(kpis, drift, overdue, enabled, scheduler_on):
     rate = kpis['success_rate']
     if kpis['suites_failing']:
         worsen('red', f'{kpis["suites_failing"]} flujo(s) fallan en su última ejecución.')
+    if kpis['suite_groups_failing']:
+        worsen('red', f'{kpis["suite_groups_failing"]} suite(s) fallan en su última ejecución.')
     if rate is not None and rate < AMBER_RATE * 100:
         worsen('red', f'La tasa de éxito del periodo es {rate}% (mínimo aceptable {int(AMBER_RATE * 100)}%).')
     elif rate is not None and rate < GREEN_RATE * 100:
@@ -212,6 +234,8 @@ def _traffic_light(kpis, drift, overdue, enabled, scheduler_on):
         worsen('amber', f'{len(overdue)} programación(es) vencidas sin ejecutarse' + ('' if scheduler_on else ' (el scheduler está detenido).'))
     if kpis['suites_never_run']:
         reasons.append(f'{kpis["suites_never_run"]} flujo(s) nunca se han ejecutado (informativo).')
+    if kpis['suite_groups_never_run']:
+        reasons.append(f'{kpis["suite_groups_never_run"]} suite(s) nunca se han ejecutado (informativo).')
     if level == 'green' and not reasons:
         reasons.append('Todo lo ejecutado pasa y no hay cambios pendientes.')
     return level, reasons
@@ -226,6 +250,8 @@ def headline(report):
     if k['delta'] is not None:
         trend = f' ({"+" if k["delta"] >= 0 else ""}{k["delta"]} puntos frente a los {days} días anteriores)'
     text = f'{k["suites_healthy"]} de {k["suites_total"]} flujos sanos' if k['suites_total'] else 'Sin flujos definidos'
+    if k['suite_groups_total']:
+        text += f'; {k["suite_groups_healthy"]} de {k["suite_groups_total"]} suites sanas'
     failing = k['cases']['failed'] + k['cases']['error']
     return (f'{text}; tasa de éxito {k["success_rate"]}%{trend}; '
             f'{failing} caso(s) fallando de {k["cases"]["total"]}.')
@@ -281,102 +307,79 @@ def summary_text(report):
     return '\n'.join(lines)
 
 
-def render_markdown(report):
+def _spark_text(statuses):
+    """Mismo espíritu que spark_svg (últimas corridas) pero en texto — para Markdown, que no tiene SVG."""
+    return ', '.join(STATUS_ES.get(s, s) for s in statuses) if statuses else '—'
+
+
+def _status_doc(report):
+    """Arma el árbol de bloques genérico (ver report_doc.py) de este reporte — un solo lugar de verdad que
+    luego HTML/Markdown/PDF renderizan igual (ver report_render.py). DOCX queda explícitamente sin soportar
+    acá (ver render/cli más abajo), como ya era el caso antes de esta migración."""
     k = report['kpis']
-    lines = [f'# {report["title"]}', '', f'**Proyecto:** {report["project"]["name"]} · **Periodo:** últimos {report["period"]["days"]} días · **Generado:** {_fmt(report["generated_at"])}', '',
-             f'## Estado general: {report["rag"]["label"]}', '', report['headline'], '']
-    lines += [f'- {r}' for r in report['rag']['reasons']] + ['']
+    blocks = [rd.banner(RAG_COLOR[report['rag']['level']], f'Estado general: {report["rag"]["label"]}',
+                        [report['headline']] + report['rag']['reasons'])]
     if report.get('notes'):
-        lines += ['## Comentarios', '', report['notes'], '']
-    lines += ['## Indicadores', '', '| Indicador | Valor |', '|---|---|',
-              f'| Tasa de éxito | {k["success_rate"] if k["success_rate"] is not None else "—"}% ({_arrow(k["delta"])} vs. periodo anterior) |',
-              f'| Ejecuciones en el periodo | {k["executions"]} (anterior: {k["executions_previous"]}) |',
-              f'| Flujos sanos | {k["suites_healthy"]} de {k["suites_total"]} |',
-              f'| Casos: pasan / fallan / error / sin ejecutar | {k["cases"]["passed"]} / {k["cases"]["failed"]} / {k["cases"]["error"]} / {k["cases"]["never"]} (de {k["cases"]["total"]}) |',
-              f'| Tiempo medio de respuesta | {k["avg_response_ms"] if k["avg_response_ms"] is not None else "—"} ms |', '']
+        blocks += [rd.heading('Comentarios'), rd.text(report['notes'])]
+    c = k['cases']
+    blocks.append(rd.cards([
+        {'value': f'{k["success_rate"]}%' if k['success_rate'] is not None else '—', 'label': 'Tasa de éxito'},
+        {'value': _arrow(k['delta']), 'label': 'vs. periodo anterior'},
+        {'value': f'{k["suites_healthy"]}/{k["suites_total"]}', 'label': 'Flujos sanos'},
+        {'value': c['failed'] + c['error'], 'label': 'Casos fallando'},
+        {'value': c['never'], 'label': 'Casos sin ejecutar'},
+        {'value': k['executions'], 'label': 'Ejecuciones'},
+        {'value': f'{k["avg_response_ms"]} ms' if k['avg_response_ms'] is not None else '—', 'label': 'Respuesta media'}]))
+    blocks += [rd.heading('Ejecuciones por día'), rd.svg(trend_svg(report['trend'])), rd.text('Verde: pasaron · Rojo: fallaron')]
     if report['suites']:
-        lines += ['## Flujos', '', '| Flujo | Último estado | Última ejecución | Ejecuciones | Éxito | Cambio |', '|---|---|---|---|---|---|']
-        for s in report['suites']:
-            lines.append(f'| {s["name"]} | {STATUS_ES.get(s["status"], "Sin ejecutar")} | {_fmt(s["last_run"])} | {s["runs"]} | '
-                         f'{s["success_rate"] if s["success_rate"] is not None else "—"}% | {_arrow(s["delta"])} |')
-        lines.append('')
+        blocks.append(rd.heading('Flujos'))
+        blocks.append(rd.table(['Flujo', 'Último estado', 'Última ejecución', 'Ejec.', 'Éxito', 'Cambio', 'Recientes'],
+            [[s['name'], STATUS_ES.get(s['status'], 'Sin ejecutar'), _fmt(s['last_run']), s['runs'],
+              f'{s["success_rate"]}%' if s['success_rate'] is not None else '—', _arrow(s['delta']), _spark_text(s['spark'])]
+             for s in report['suites']]))
+    if report['suite_groups']:
+        blocks.append(rd.heading('Suites'))
+        blocks.append(rd.table(['Suite', 'Último estado', 'Última ejecución', 'Ejec.', 'Éxito', 'Cambio', 'Miembros', 'Recientes'],
+            [[g['name'], STATUS_ES.get(g['status'], 'Sin ejecutar'), _fmt(g['last_run']), g['runs'],
+              f'{g["success_rate"]}%' if g['success_rate'] is not None else '—', _arrow(g['delta']), g['members'], _spark_text(g['spark'])]
+             for g in report['suite_groups']]))
     if report['failing']:
-        lines += ['## Qué está fallando', '', '| Caso | Desde | Seguidas | Detalle |', '|---|---|---|---|']
-        for f in report['failing']:
-            lines.append(f'| {f["name"]} ({f["target"]}) | {_fmt(f["since"])} | {f["consecutive_failures"]} | {f["detail"][:140].replace("|", "/")} |')
-        lines.append('')
+        blocks.append(rd.heading('Qué está fallando'))
+        blocks.append(rd.table(['Caso', 'Falla desde', 'Seguidas', 'Detalle'],
+            [[f'{f["name"]} ({f["target"]})', _fmt(f['since']), f['consecutive_failures'], f['detail'][:200]] for f in report['failing']]))
     if report['unstable']:
-        lines += ['## Casos inestables (pasan y fallan sin cambios)', '', '| Caso | Ejecuciones | Cambios de estado | Éxito |', '|---|---|---|---|']
-        lines += [f'| {u["name"]} | {u["runs"]} | {u["flips"]} | {u["pass_rate"]}% |' for u in report['unstable']] + ['']
+        blocks.append(rd.heading('Casos inestables'))
+        blocks.append(rd.text('Pasan y fallan sin que nadie haya cambiado la prueba: candidatos a revisar.'))
+        blocks.append(rd.table(['Caso', 'Ejec.', 'Cambios de estado', 'Éxito'],
+            [[u['name'], u['runs'], u['flips'], f'{u["pass_rate"]}%'] for u in report['unstable']]))
     if report['slow']:
-        lines += ['## Más lentos', '', '| Caso | Promedio | Máximo | Ejecuciones |', '|---|---|---|---|']
-        lines += [f'| {s["name"]} | {s["avg_ms"]} ms | {s["max_ms"]} ms | {s["runs"]} |' for s in report['slow']] + ['']
-    o = report['observer']
-    lines += ['## Cambios en interfaces observadas', '']
-    lines += ([f'- **{c["module"]}**: {c["pending"]} cambio(s) pendiente(s)' + (f' · responsable: {c["owner"]}' if c['owner'] else '') + (f' ({c["company"]})' if c['company'] else '') for c in o['changes']]
-              or [f'Sin cambios pendientes en {o["modules"]} componente(s) observados.'])
-    s = report['schedules']
-    lines += ['', '## Programaciones', '', f'{s["enabled"]} activa(s) de {s["total"]}; vencidas sin ejecutar: {s["overdue"]}; scheduler {"en marcha" if s["scheduler_running"] else "detenido"}.', '',
-              f'_Criterio del semáforo: verde con éxito ≥ {report["thresholds"]["green_at_least"]:.0f}% y sin fallos pendientes; rojo si algún flujo falla o el éxito baja de {report["thresholds"]["red_below"]:.0f}%; ámbar en el resto._']
-    return '\n'.join(lines) + '\n'
+        blocks.append(rd.heading('Más lentos'))
+        blocks.append(rd.table(['Caso', 'Promedio', 'Máximo', 'Ejec.'],
+            [[s['name'], f'{s["avg_ms"]} ms', f'{s["max_ms"]} ms', s['runs']] for s in report['slow']]))
+    o, s = report['observer'], report['schedules']
+    blocks.append(rd.heading('Cambios en interfaces observadas'))
+    if o['changes']:
+        blocks.append(rd.bullet_list([f'{c["module"]}: {c["pending"]} cambio(s) pendiente(s)' +
+                                      (f' · responsable: {c["owner"]}' if c['owner'] else '') + (f' ({c["company"]})' if c['company'] else '')
+                                      for c in o['changes']]))
+    else:
+        blocks.append(rd.text(f'Sin cambios pendientes en {o["modules"]} componente(s) observados.'))
+    blocks.append(rd.heading('Programaciones'))
+    blocks.append(rd.text(f'{s["enabled"]} activa(s) de {s["total"]}; vencidas sin ejecutar: {s["overdue"]}; '
+                          f'scheduler {"en marcha" if s["scheduler_running"] else "detenido"}.'))
+    blocks.append(rd.text(f'Criterio del semáforo: verde con éxito ≥ {report["thresholds"]["green_at_least"]:.0f}% y sin fallos pendientes; '
+                          f'rojo si algún flujo falla o el éxito baja de {report["thresholds"]["red_below"]:.0f}%; ámbar en el resto. '
+                          f'Generado por Local Test Workspace · {FORMAT}.'))
+    meta = f'Proyecto {report["project"]["name"]} · últimos {report["period"]["days"]} días · generado {_fmt(report["generated_at"])}'
+    return rd.doc(report['title'], blocks, meta=meta)
 
 
-HTML_CSS = '''
-:root{color-scheme:light}*{box-sizing:border-box}body{font-family:Segoe UI,Calibri,Arial,sans-serif;color:#111827;margin:0;background:#f3f4f6}
-main{max-width:980px;margin:0 auto;padding:24px 20px 48px}h1{font-size:24px;margin:0 0 2px}h2{font-size:16px;margin:26px 0 8px;border-bottom:1px solid #e5e7eb;padding-bottom:4px}
-.meta{color:#6b7280;font-size:13px}.banner{border-radius:10px;padding:16px 20px;color:#fff;margin:16px 0}.banner b{font-size:22px;letter-spacing:.5px}
-.banner ul{margin:8px 0 0 18px;padding:0}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.card{background:#fff;border-radius:8px;padding:12px 14px;border:1px solid #e5e7eb}
-.card .v{font-size:26px;font-weight:700}.card .l{font-size:12px;color:#6b7280}table{width:100%;border-collapse:collapse;background:#fff;font-size:13px}
-th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #e5e7eb;vertical-align:top}th{background:#f9fafb;color:#374151}.pill{display:inline-block;padding:1px 8px;border-radius:10px;color:#fff;font-size:12px}
-.up{color:#16a34a}.down{color:#dc2626}.notes{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;white-space:pre-wrap}.foot{color:#6b7280;font-size:12px;margin-top:24px}
-@media print{body{background:#fff}main{padding:0}.card,table{break-inside:avoid}h2{break-after:avoid}}
-'''
+def render_markdown(report):
+    return report_render.render_markdown(_status_doc(report))
 
 
 def render_html(report):
-    e = html.escape
-    k = report['kpis']
-
-    def pill(status):
-        return f'<span class="pill" style="background:{STATUS_COLOR.get(status, "#6b7280")}">{e(STATUS_ES.get(status, "Sin ejecutar"))}</span>'
-
-    def delta(value):
-        return f'<span class="{"up" if value and value > 0 else "down" if value and value < 0 else ""}">{e(_arrow(value))}</span>'
-    card = lambda value, label: f'<div class="card"><div class="v">{value}</div><div class="l">{e(label)}</div></div>'     # noqa: E731
-    body = [f'<h1>{e(report["title"])}</h1><div class="meta">Proyecto <b>{e(report["project"]["name"])}</b> · últimos {report["period"]["days"]} días · generado {e(_fmt(report["generated_at"]))}</div>',
-            f'<div class="banner" style="background:{RAG_COLOR[report["rag"]["level"]]}"><b>{e(report["rag"]["label"])}</b><div>{e(report["headline"])}</div>'
-            f'<ul>{"".join(f"<li>{e(r)}</li>" for r in report["rag"]["reasons"])}</ul></div>']
-    if report.get('notes'):
-        body.append(f'<h2>Comentarios</h2><div class="notes">{e(report["notes"])}</div>')
-    c = k['cases']
-    body.append('<div class="cards">' + card(f'{k["success_rate"] if k["success_rate"] is not None else "—"}%', 'Tasa de éxito') +
-                card(delta(k['delta']), 'vs. periodo anterior') + card(f'{k["suites_healthy"]}/{k["suites_total"]}', 'Flujos sanos') +
-                card(c['failed'] + c['error'], 'Casos fallando') + card(c['never'], 'Casos sin ejecutar') + card(k['executions'], 'Ejecuciones') +
-                card(f'{k["avg_response_ms"]} ms' if k['avg_response_ms'] is not None else '—', 'Respuesta media') + '</div>')
-    body.append(f'<h2>Ejecuciones por día</h2>{trend_svg(report["trend"])}<div class="meta">Verde: pasaron · Rojo: fallaron</div>')
-    if report['suites']:
-        rows = ''.join(f'<tr><td>{e(s["name"])}</td><td>{pill(s["status"])}</td><td>{e(_fmt(s["last_run"]))}</td><td>{s["runs"]}</td>'
-                       f'<td>{"—" if s["success_rate"] is None else str(s["success_rate"]) + "%"}</td><td>{delta(s["delta"])}</td><td>{spark_svg(s["spark"])}</td></tr>' for s in report['suites'])
-        body.append(f'<h2>Flujos</h2><table><tr><th>Flujo</th><th>Último estado</th><th>Última ejecución</th><th>Ejec.</th><th>Éxito</th><th>Cambio</th><th>Recientes</th></tr>{rows}</table>')
-    if report['failing']:
-        rows = ''.join(f'<tr><td>{e(f["name"])}<div class="meta">{e(f["target"])}</div></td><td>{e(_fmt(f["since"]))}</td><td>{f["consecutive_failures"]}</td>'
-                       f'<td>{e(f["detail"][:200])}</td></tr>' for f in report['failing'])
-        body.append(f'<h2>Qué está fallando</h2><table><tr><th>Caso</th><th>Falla desde</th><th>Seguidas</th><th>Detalle</th></tr>{rows}</table>')
-    if report['unstable']:
-        rows = ''.join(f'<tr><td>{e(u["name"])}</td><td>{u["runs"]}</td><td>{u["flips"]}</td><td>{u["pass_rate"]}%</td></tr>' for u in report['unstable'])
-        body.append(f'<h2>Casos inestables</h2><div class="meta">Pasan y fallan sin que nadie haya cambiado la prueba: candidatos a revisar.</div><table><tr><th>Caso</th><th>Ejec.</th><th>Cambios de estado</th><th>Éxito</th></tr>{rows}</table>')
-    if report['slow']:
-        rows = ''.join(f'<tr><td>{e(s["name"])}</td><td>{s["avg_ms"]} ms</td><td>{s["max_ms"]} ms</td><td>{s["runs"]}</td></tr>' for s in report['slow'])
-        body.append(f'<h2>Más lentos</h2><table><tr><th>Caso</th><th>Promedio</th><th>Máximo</th><th>Ejec.</th></tr>{rows}</table>')
-    o, s = report['observer'], report['schedules']
-    changes = ''.join(f'<li><b>{e(m["module"])}</b>: {m["pending"]} cambio(s) pendiente(s)' + (f' · responsable: {e(m["owner"])}' if m['owner'] else '') +
-                      (f' ({e(m["company"])})' if m['company'] else '') + '</li>' for m in o['changes'])
-    body.append(f'<h2>Cambios en interfaces observadas</h2>' + (f'<ul>{changes}</ul>' if changes else f'<div>Sin cambios pendientes en {o["modules"]} componente(s) observados.</div>'))
-    body.append(f'<h2>Programaciones</h2><div>{s["enabled"]} activa(s) de {s["total"]}; vencidas sin ejecutar: {s["overdue"]}; scheduler {"en marcha" if s["scheduler_running"] else "detenido"}.</div>')
-    body.append(f'<div class="foot">Criterio del semáforo: verde con éxito ≥ {report["thresholds"]["green_at_least"]:.0f}% y sin fallos pendientes; rojo si algún flujo falla o el éxito baja de '
-                f'{report["thresholds"]["red_below"]:.0f}%; ámbar en el resto. Generado por Local Test Workspace · {e(FORMAT)}.</div>')
-    return (f'<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{e(report["title"])}</title>'
-            f'<style>{HTML_CSS}</style></head><body><main>{"".join(body)}</main></body></html>')
+    return report_render.render_html(_status_doc(report))
 
 
 def render_pdf(html_text, destination):

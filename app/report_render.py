@@ -120,8 +120,8 @@ def _block_markdown(block, level=2):
     if kind == 'cards':
         return [f'- **{i["value"]}** {i["label"]}' for i in block['items']] + ['']
     if kind == 'banner':
-        lines = [f'> **{block["title"]}**']
-        lines += [f'> - {l}' for l in block['lines']]
+        lines = [f'## {block["title"]}', '']
+        lines += [f'- {l}' for l in block['lines']]
         return lines + ['']
     if kind == 'svg':
         return []   # sin equivalente textual, se omite (el PDF/HTML sí lo muestran)
