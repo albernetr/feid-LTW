@@ -80,6 +80,27 @@ def test_build_suite_group_report_data_tracks_members_last_run_within_this_suite
         reporting.build_suite_group_report_data('no-existe')
 
 
+def test_build_suite_group_report_data_honors_a_custom_template(world):
+    """Suite ahora viene de plantilla (core.KNOWN_REPORT_FIELDS: suite_status/kpis/trend/members) — una
+    plantilla con un solo campo deja fuera el resto, igual que ya pasaba con HU/TC."""
+    project, cases, suite = world
+    group = core.save_suite_group('regresión', project['id'], [{'type': 'flow', 'id': suite['id']}])
+    suite_group_run(project, group, 'passed', ago(1))
+    template = {'name': 'Solo miembros', 'body': [{'field': 'suite_members', 'label': 'Miembros'}]}
+    data = reporting.build_suite_group_report_data(group['id'], days=14, now=NOW, template=template)
+    assert data['template_name'] == 'Solo miembros'
+    html = reporting.render_suite_group_html(data)
+    assert 'Miembros' in html and 'Tasa de éxito' not in html
+
+
+def test_build_suite_group_report_data_without_a_template_uses_the_default_body(world):
+    project, cases, suite = world
+    group = core.save_suite_group('regresión', project['id'], [{'type': 'flow', 'id': suite['id']}])
+    data = reporting.build_suite_group_report_data(group['id'], days=14, now=NOW)
+    assert data['template_name'] == 'Suite (por defecto)'
+    assert 'Tasa de éxito' in reporting.render_suite_group_html(data)
+
+
 def test_build_case_report_data_tracks_its_own_run_history(world):
     project, cases, _ = world
     case_run(project, cases['login'], 'passed', ago(3), ms=50)
@@ -95,6 +116,26 @@ def test_build_case_report_data_tracks_its_own_run_history(world):
 
     with pytest.raises(ValueError):
         reporting.build_case_report_data('no-existe')
+
+
+def test_build_case_report_data_honors_a_custom_template(world):
+    """Caso ejecutable ahora viene de plantilla (core.KNOWN_REPORT_FIELDS: case_status/target/kpis/trend/
+    recent_runs) — una plantilla con un solo campo deja fuera el resto, igual que ya pasaba con HU/TC."""
+    project, cases, _ = world
+    case_run(project, cases['login'], 'passed', ago(1))
+    template = {'name': 'Solo estado', 'body': [{'field': 'case_status', 'label': 'Estado'}]}
+    data = reporting.build_case_report_data(cases['login']['id'], days=14, now=NOW, template=template)
+    assert data['template_name'] == 'Solo estado'
+    html = reporting.render_case_html(data)
+    assert 'Pasó' in html and 'Tasa de éxito' not in html
+
+
+def test_build_case_report_data_without_a_template_uses_the_default_body(world):
+    project, cases, _ = world
+    case_run(project, cases['login'], 'passed', ago(1))
+    data = reporting.build_case_report_data(cases['login']['id'], days=14, now=NOW)
+    assert data['template_name'] == 'Caso ejecutable (por defecto)'
+    assert 'Tasa de éxito' in reporting.render_case_html(data)
 
 
 def test_all_green(world):

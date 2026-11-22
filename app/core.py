@@ -1033,7 +1033,13 @@ KNOWN_TEST_CASE_FIELDS = ('title', 'story_id', 'feature_id', 'linked_case_id', '
 KNOWN_REPORT_FIELDS = ('story', 'as_a', 'i_want', 'so_that', 'content', 'criteria', 'definition_of_ready', 'definition_of_done',
                        'business_rules', 'assumptions', 'business_risks', 'out_of_scope', 'dependencies', 'test_cases',
                        'traceability', 'matrix', 'summary', 'coverage', 'risks', 'story_points', 'assigned_to',
-                       'preconditions', 'steps', 'expected', 'priority', 'type')
+                       'preconditions', 'steps', 'expected', 'priority', 'type',
+                       # Suite (reporting.build_suite_group_report_data), Caso ejecutable API/UI (reporting.
+                       # build_case_report_data) y Evidencia de una corrida (evidence_report.build_report_data) —
+                       # mismo pool compartido 'report' que HU/TC/Matriz, no uno nuevo por tipo (ver report_tree.py).
+                       'suite_status', 'suite_kpis', 'suite_trend', 'suite_members',
+                       'case_status', 'case_target', 'case_kpis', 'case_trend', 'case_recent_runs',
+                       'evidence_status', 'evidence_summary', 'evidence_verdict', 'evidence_steps')
 KNOWN_FIELDS_BY_APPLIES_TO = {'user_story': KNOWN_STORY_FIELDS, 'test_case': KNOWN_TEST_CASE_FIELDS, 'report': KNOWN_REPORT_FIELDS}
 
 # Las 7 plantillas globales por defecto viven en default_spec_templates.json (al lado de este archivo, NO en

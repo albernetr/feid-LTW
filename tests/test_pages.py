@@ -8,7 +8,8 @@ from app.pages.common import NAV, NAV_GROUPS
 
 ROUTES = ['/', '/resumen', '/projects', '/projects/edit', '/workspace', '/lab', '/observer', '/observer/interface', '/modules', '/modules/edit', '/environments', '/environments/edit', '/cases', '/cases/edit', '/ui-cases',
           '/suites', '/schedules', '/runs', '/portable', '/stories', '/stories/edit', '/stories/view', '/test-specs', '/test-specs/edit', '/test-specs/view',
-          '/spec-templates', '/spec-templates/edit', '/integrations', '/integrations/edit']
+          '/spec-templates', '/spec-templates/edit', '/integrations', '/integrations/edit',
+          '/reports/user-story', '/reports/test-case', '/reports/case', '/reports/suite-group', '/reports/evidence', '/reports/matrix']
 
 
 async def test_every_page_renders_without_a_project(user: User):

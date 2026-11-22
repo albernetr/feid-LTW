@@ -9,7 +9,7 @@ import html
 import io
 import json
 import re
-from . import core, reporting, evidence_report, report_doc as rd, report_render
+from . import core, reporting, evidence_report, report_doc as rd, report_render, report_tree as rt
 
 FORMAT = 'ltw.spec_report/1'
 _TYPE_ES = {'functional': 'Funcional', 'regression': 'Regresión', 'smoke': 'Smoke', 'exploratory': 'Exploratorio'}
@@ -136,66 +136,6 @@ def _resolve_test_case_field(field, record):
     return None
 
 
-def _validate_custom_value(value, field_type):
-    """Un campo custom (field_type declarado por la plantilla) se resuelve desde `custom_fields[field_key]` —
-    el tipo con el que se guardó viaja implícito en la FORMA del valor, nunca se re-infiere de ninguna
-    plantilla: si el valor no matchea la forma que este field_type espera (p. ej. quedó guardado por una
-    plantilla distinta que declaraba otro tipo para la misma clave), se trata como vacío — nunca revienta."""
-    if field_type in ('text', 'textarea'):
-        return value if isinstance(value, str) and value else None
-    if field_type == 'list':
-        return value if isinstance(value, list) and value else None
-    if field_type == 'table':
-        return value if isinstance(value, dict) and isinstance(value.get('headers'), list) and value['headers'] else None
-    if field_type in ('image', 'attachment'):
-        return value if isinstance(value, dict) and value.get('id') and value.get('filename') else None
-    return None
-
-
-def _is_empty_content(content):
-    """Sin nada que mostrar: None, texto vacío o lista vacía — un dict (story-card, coverage) nunca cuenta
-    como vacío, trae sus claves siempre (hasta en 0, sigue siendo un dato real, no un placeholder)."""
-    return content is None or content == '' or content == []
-
-
-def _build_tree_sections(body, resolve_known, custom_fields):
-    """Construye, recursivamente, el árbol de SECCIONES de un reporte a partir del árbol `body` de una
-    plantilla (ver core.py) — un nodo 'field' con field_type=None resuelve contra un campo FIJO conocido
-    (resolve_known, el mismo resolvedor de siempre); con field_type declarado, resuelve contra `custom_fields`
-    (el dict guardado en el registro). Un nodo 'group' solo agrupa: label + as_tab + sus children recursivos.
-    Una sección sin nada que mostrar (ver _is_empty_content) se omite por defecto — "Ninguno."/"No aplica a
-    este documento." repetido en cada campo vacío de un registro real no aporta, solo ocupa espacio; un grupo
-    que se queda sin ningún hijo visible se omite entero (no deja un título sin nada debajo). Esto también
-    afecta la vista EN VIVO del visor (spec_viewer.py), que reusa este mismo árbol — en el previsualizador de
-    una plantilla con datos de EJEMPLO esto rara vez se nota (el placeholder trae casi todos los campos
-    llenos), pero un campo custom recién agregado a la plantilla (sin valor todavía) puede desaparecer de esa
-    vista previa hasta que se le ponga un valor — aceptado, prioriza el documento real sobre la comodidad de
-    armar la plantilla."""
-    sections = []
-    for node in (body or []):
-        if not isinstance(node, dict):
-            continue
-        if node.get('kind') == 'group':
-            children = _build_tree_sections(node.get('children') or [], resolve_known, custom_fields)
-            if not children:
-                continue
-            sections.append({'kind': 'group', 'label': node.get('label') or '', 'width': node.get('width', 'full'),
-                             'as_tab': bool(node.get('as_tab')), 'children': children})
-            continue
-        # `node` puede venir del editor EN VIVO (vista previa mientras se edita una plantilla, ver
-        # spec_templates.py::live_preview), todavía sin pasar por core._clean_template_body — un campo recién
-        # agregado y sin nombrar aún puede tener field_key/label vacíos; `or ''` evita que lleguen a None
-        # (html.escape(None) revienta) en vez de exigir que el nodo ya esté "limpio".
-        field_key = node.get('field_key') or node.get('field') or ''
-        field_type = node.get('field_type')
-        content = resolve_known(field_key) if field_type is None else _validate_custom_value((custom_fields or {}).get(field_key), field_type)
-        if _is_empty_content(content):
-            continue
-        sections.append({'kind': 'field', 'field': field_key, 'label': node.get('label') or field_key or '',
-                         'width': node.get('width', 'full'), 'field_type': field_type, 'content': content})
-    return sections
-
-
 # --------------------------------------------------------------------------- construcción del reporte
 
 def build_story_report_data(story, template=None, sample=False):
@@ -208,7 +148,7 @@ def build_story_report_data(story, template=None, sample=False):
     ctx = {'story': source, 'stories': [source], 'rows': rows}
     resolve_known = lambda f: _resolve_field(f, ctx)   # noqa: E731
     body = (template or {}).get('body') or DEFAULT_STORY_TEMPLATE_BODY
-    sections = _build_tree_sections(body, resolve_known, source.get('custom_fields'))
+    sections = rt._build_tree_sections(body, resolve_known, source.get('custom_fields'))
     return {'format': FORMAT, 'kind': 'story', 'title': source['title'], 'generated_at': core.now(), 'sample': sample,
             'template_name': (template or {}).get('name') or 'Especificación detallada (por defecto)', 'sections': sections}
 
@@ -223,7 +163,7 @@ def build_test_matrix_report_data(project_id, template=None):
     ctx = {'story': None, 'stories': stories, 'rows': rows}
     resolve_known = lambda f: _resolve_field(f, ctx)   # noqa: E731
     body = (template or {}).get('body') or DEFAULT_MATRIX_TEMPLATE_BODY
-    sections = _build_tree_sections(body, resolve_known, None)
+    sections = rt._build_tree_sections(body, resolve_known, None)
     return {'format': FORMAT, 'kind': 'matrix', 'title': 'Matriz de trazabilidad', 'generated_at': core.now(), 'sample': False,
             'template_name': (template or {}).get('name') or 'Matriz de trazabilidad (por defecto)', 'sections': sections}
 
@@ -250,7 +190,7 @@ def build_test_case_report_data(spec, template=None, sample=False):
     source = PLACEHOLDER_CASES[0] if sample else spec
     resolve_known = lambda f: _resolve_test_case_report_field(f, source)   # noqa: E731
     body = (template or {}).get('body') or [{'field': 'preconditions', 'label': 'Precondición'}, {'field': 'steps', 'label': 'Pasos de ejecución'}]
-    sections = _build_tree_sections(body, resolve_known, source.get('custom_fields'))
+    sections = rt._build_tree_sections(body, resolve_known, source.get('custom_fields'))
     return {'format': FORMAT, 'kind': 'test_case', 'title': source['title'], 'generated_at': core.now(), 'sample': sample,
             'template_name': (template or {}).get('name') or 'Caso de prueba', 'sections': sections}
 
@@ -272,7 +212,7 @@ def build_template_preview(template, story=None, spec=None):
         title, custom = record['title'], record.get('custom_fields')
     else:
         return build_story_report_data(story, template, sample=story is None)
-    sections = _build_tree_sections(template.get('body') or [], resolve_known, custom)
+    sections = rt._build_tree_sections(template.get('body') or [], resolve_known, custom)
     return {'format': FORMAT, 'kind': applies_to, 'title': title, 'generated_at': core.now(), 'sample': sample,
             'template_name': template.get('name', ''), 'sections': sections}
 
@@ -291,75 +231,15 @@ _pair_rows = core.pair_rows   # alias local: ver core.pair_rows (compartido con 
 # _render_sections_html/_write_sections_docx) se exporta secuencial, igual que ya hacía render_spec_markdown —
 # el layout de dos columnas queda solo para la vista en vivo en pantalla.
 
-def _content_to_blocks(content, field_type=None):
-    if content is None:
-        return [rd.text('No aplica a este documento.')]
-    if field_type in ('text', 'textarea'):
-        return [rd.text(content if content else '—')]
-    if field_type == 'list':
-        return [rd.checks([{'label': (it.get('text') or '(vacío)') if isinstance(it, dict) else str(it),
-                            'ok': bool(it.get('done')) if isinstance(it, dict) else False} for it in content])]
-    if field_type == 'table':
-        return [rd.table(content.get('headers') or [], content.get('rows') or [])]
-    if field_type == 'image':
-        return [rd.file(_file_url(content), content.get('filename', ''), image=True,
-                        path=str(core.ARTIFACTS / f'{content["id"]}-{content["filename"]}'))]
-    if field_type == 'attachment':
-        return [rd.file(_file_url(content), content.get('filename', ''), note=f'({content.get("size", 0)} bytes)')]
-    if field_type:
-        return [rd.text('(sin datos)')]
-    # campos FIJOS conocidos (field_type=None): mismas 8 formas que _render_content_html/_render_content_markdown
-    if isinstance(content, str):
-        return [rd.text(content or '—')]
-    if isinstance(content, dict) and 'as_a' in content:
-        return [rd.text(content['title']),
-                rd.kv([('Como', content['as_a']), ('Quiero', content['i_want']), ('Para', content['so_that']),
-                      ('Prioridad', content['priority']), ('Estado', content['status'])])]
-    if isinstance(content, dict) and 'total' in content:
-        return [rd.cards([{'value': content['total'], 'label': 'Casos de prueba'}, {'value': content['automated'], 'label': 'Automatizados'},
-                          {'value': content['passing'], 'label': 'Pasan'}])]
-    if isinstance(content, list) and not content:
-        return [rd.text('Ninguno.')]
-    if isinstance(content, list) and 'steps' in content[0]:
-        blocks = []
-        for tc in content:
-            blocks.append(rd.text(f'{tc["title"]} — {_TYPE_ES.get(tc.get("type"), "")}/{core.PRIORITY_LABELS.get(tc.get("priority"), "")}/{_SPEC_STATUS_ES.get(tc.get("status"), "")}'))
-            if tc.get('preconditions'):
-                blocks.append(rd.text(f'Precondición: {tc["preconditions"]}'))
-            steps = tc.get('steps') or []
-            blocks.append(rd.bullet_list([f'{s.get("action", "")} → {s.get("expected", "")}' for s in steps], ordered=True) if steps
-                          else rd.text('Sin pasos.'))
-        return blocks
-    if isinstance(content, list) and 'status' in content[0] and 'text' in content[0]:
-        note = lambda c: f'Dado {c.get("given", "")}, cuando {c.get("when", "")}, entonces {c.get("then", "")}' if (c.get('given') or c.get('when') or c.get('then')) else None   # noqa: E731
-        return [rd.checks([{'label': c.get('text') or '(sin resumen)', 'ok': c.get('status') == 'met', 'note': note(c)} for c in content])]
-    if isinstance(content, list) and isinstance(content[0], str):
-        return [rd.bullet_list(content)]
-    if isinstance(content, list) and 'case' in content[0]:
-        return [rd.table(['Historia', 'Caso de prueba', 'Tipo', 'Prioridad', 'Estado'],
-                         [[r['story'], r['case'], r['type'], r['priority'], r['status']] for r in content])]
-    return [rd.code(json.dumps(content, ensure_ascii=False, indent=2), 'json')]
-
-
-def _sections_to_blocks(sections, level=2):
-    blocks = []
-    for section in sections:
-        if section['kind'] == 'group':
-            if section['label']:
-                blocks.append(rd.heading(section['label'], level=level))
-            blocks += _sections_to_blocks(section['children'], level + 1)
-            continue
-        blocks.append(rd.heading(section['label'], level=level))
-        blocks += _content_to_blocks(section['content'], section['field_type'])
-    return blocks
-
+# _content_to_blocks/_sections_to_blocks/_build_tree_sections/_is_empty_content/_validate_custom_value viven
+# en report_tree.py (motor genérico, compartido con reporting.py/evidence_report.py — ver ese módulo).
 
 def _spec_doc(data):
     meta = f'Plantilla: {data["template_name"]} · generado {data["generated_at"]}'
     blocks = []
     if data.get('sample'):
         blocks.append(rd.text('Vista previa con datos de ejemplo — no corresponde a un registro real.'))
-    blocks += _sections_to_blocks(data['sections'])
+    blocks += rt._sections_to_blocks(data['sections'])
     return rd.doc(data['title'], blocks, meta=meta)
 
 

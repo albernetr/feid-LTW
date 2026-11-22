@@ -21,6 +21,9 @@ NAV = [
     ('Modelos de IA', '/models', 'smart_toy'), ('Variables y secuencias', '/sequences', 'numbers'), ('Conjuntos de datos', '/datasets', 'dataset'),
     ('Integraciones', '/integrations', 'extension'),
     ('Historial', '/runs', 'history'), ('Importar / Exportar', '/portable', 'swap_vert'),
+    ('Reporte: Historias de usuario', '/reports/user-story', 'auto_stories'), ('Reporte: Casos de prueba', '/reports/test-case', 'checklist'),
+    ('Reporte: Casos ejecutables', '/reports/case', 'science'), ('Reporte: Suites', '/reports/suite-group', 'folder_special'),
+    ('Reporte: Evidencias', '/reports/evidence', 'history'), ('Reporte: Matriz de trazabilidad', '/reports/matrix', 'alt_route'),
     ('Base de datos', '/storage', 'storage'),
 ]
 # Agrupa el menú (ya son ~20 opciones) en secciones desplegables/replegables — NAV sigue siendo la lista plana
@@ -31,6 +34,7 @@ NAV_GROUPS = [
     ('Pruebas', 'science', ('/cases', '/ui-cases', '/features', '/suites', '/suite-groups', '/chat')),
     ('Automatización', 'smart_toy', ('/observer', '/schedules', '/sequences', '/datasets', '/integrations')),
     ('Resultados', 'history', ('/runs', '/portable')),
+    ('Reportes', 'summarize', ('/reports/user-story', '/reports/test-case', '/reports/case', '/reports/suite-group', '/reports/evidence', '/reports/matrix')),
     ('Configuraciones', 'settings', ('/models', '/storage')),
 ]
 STATUS_COLOR = {'passed': 'positive', 'failed': 'negative', 'error': 'warning', 'cancelled': 'grey', 'skipped': 'grey'}

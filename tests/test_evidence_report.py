@@ -28,6 +28,26 @@ def test_build_report_data_for_a_single_api_run(world):
     assert step['assertions'][0]['passed'] is True
 
 
+def test_build_report_data_honors_a_custom_template(world):
+    """Evidencias ahora viene de plantilla (core.KNOWN_REPORT_FIELDS: evidence_status/summary/verdict/steps) —
+    una plantilla con un solo campo deja fuera el resto, igual que ya pasaba con HU/TC."""
+    case = world['api_case']('health', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    run = core.execute_api(case, world['env'])
+    template = {'name': 'Solo estado', 'body': [{'field': 'evidence_status', 'label': 'Estado'}]}
+    data = evidence_report.build_report_data(run, template=template)
+    assert data['template_name'] == 'Solo estado'
+    doc = evidence_report._to_doc(data)
+    assert [b['kind'] for b in doc['blocks']] == ['heading', 'badge']   # sin evidence_steps, nada del paso entra
+
+
+def test_build_report_data_without_a_template_uses_the_default_body(world):
+    case = world['api_case']('health', 'GET', '/health', [{'type': 'status', 'expected': 200}])
+    run = core.execute_api(case, world['env'])
+    data = evidence_report.build_report_data(run)
+    assert data['template_name'] == 'Evidencia (por defecto)'
+    assert 'health' in evidence_report.render_evidence_html(data)
+
+
 def test_build_report_data_for_a_flow_marks_skipped_steps_without_hiding_them(world):
     """Un paso omitido en un retest parcial no debe ocultarse del reporte ni contarse como fallo."""
     login = world['api_case']('login', 'POST', '/api/login', [{'type': 'status', 'expected': 200}],

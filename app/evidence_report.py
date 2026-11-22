@@ -2,7 +2,7 @@
 HTML, PDF (reusa reporting.render_pdf) y Word. Ninguno de los tres intenta igualar el diseño del Resumen ejecutivo
 — esto es evidencia de QUÉ pasó en una corrida puntual, no un tablero de salud del proyecto."""
 import json
-from . import core, automation, reporting, report_doc as rd, report_render
+from . import core, automation, reporting, report_doc as rd, report_render, report_tree as rt
 
 FORMAT = 'ltw.evidence/1'
 STATUS_ES = {'passed': 'Pasó', 'failed': 'Falló', 'error': 'Error', 'cancelled': 'Cancelada', 'skipped': 'Omitido'}
@@ -56,7 +56,35 @@ def _step_from_item_entry(entry):
     return step
 
 
-def build_report_data(run, llm_verdict=None):
+# Reproduce exactamente el orden del antiguo _to_doc fijo — quien exporta sin elegir plantilla (los botones
+# de evidencia en common.py/chat_page.py) no ve ningún cambio.
+DEFAULT_EVIDENCE_TEMPLATE_BODY = [{'field': 'evidence_verdict', 'label': 'Veredicto del modelo'}, {'field': 'evidence_status', 'label': 'Estado'},
+                                  {'field': 'evidence_summary', 'label': 'Resumen'}, {'field': 'evidence_steps', 'label': 'Pasos'}]
+
+
+def _resolve_evidence_report_field(field, data):
+    if field == 'evidence_verdict':
+        verdict = data.get('llm_verdict')
+        return {'kind': 'blocks', 'items': [_verdict_block(verdict)]} if verdict else None
+    if field == 'evidence_status':
+        return {'kind': 'badge', 'label': STATUS_ES.get(data['status'], data['status'] or ''), 'color': STATUS_COLOR.get(data['status'], '#6b7280')}
+    if field == 'evidence_summary':
+        s = data['summary']
+        return {'kind': 'cards', 'items': [{'value': s['total'], 'label': 'Pasos'}, {'value': s['passed'], 'label': 'Pasaron'},
+                                           {'value': s['failed'], 'label': 'Fallaron'}, {'value': s['skipped'], 'label': 'Omitidos'}]}
+    if field == 'evidence_steps':
+        return {'kind': 'blocks', 'items': [_step_to_block(step) for step in data['steps']]} if data['steps'] else None
+    return None
+
+
+def _with_evidence_sections(data, template):
+    body = (template or {}).get('body') or DEFAULT_EVIDENCE_TEMPLATE_BODY
+    data['template_name'] = (template or {}).get('name') or 'Evidencia (por defecto)'
+    data['sections'] = rt._build_tree_sections(body, lambda f: _resolve_evidence_report_field(f, data), None)
+    return data
+
+
+def build_report_data(run, llm_verdict=None, template=None):
     """Normaliza un doc de `runs` (api/ui/suite/suite_group) a una estructura uniforme para los tres formatos.
     `llm_verdict` ({'pass': bool, 'reasoning': str}, ver llm.judge_conversation) es opcional y, si se da, los
     renderers lo muestran arriba de todo — nadie lo calcula acá, es responsabilidad del caller pedirlo antes."""
@@ -71,13 +99,14 @@ def build_report_data(run, llm_verdict=None):
     failed = sum(1 for s in steps if s['status'] in ('failed', 'error'))
     skipped = sum(1 for s in steps if s['status'] in ('skipped', 'cancelled'))
     title = run.get('case_name') or run.get('suite_name') or run.get('group_name') or 'Ejecución'
-    return {'format': FORMAT, 'title': title, 'run_id': run.get('id'), 'run_type': kind, 'status': run.get('status'),
+    data = {'format': FORMAT, 'title': title, 'run_id': run.get('id'), 'run_type': kind, 'status': run.get('status'),
             'started_at': run.get('started_at'), 'finished_at': run.get('finished_at'), 'generated_at': core.now(),
             'summary': {'total': len(steps), 'passed': passed, 'failed': failed, 'skipped': skipped}, 'steps': steps,
             'llm_verdict': llm_verdict}
+    return _with_evidence_sections(data, template)
 
 
-def build_multi_report_data(title, runs, llm_verdict=None):
+def build_multi_report_data(title, runs, llm_verdict=None, template=None):
     """Misma estructura que build_report_data, para una lista de corridas sueltas elegidas a mano (p. ej. los
     turnos de una conversación de Chat que el agente nunca persiste en Historial: persist=False). A diferencia de
     una Suite, acá no hay un doc de `runs` que las agrupe — cada una ya es un run_doc completo (petición,
@@ -86,11 +115,12 @@ def build_multi_report_data(title, runs, llm_verdict=None):
     passed = sum(1 for s in steps if s['status'] == 'passed')
     failed = sum(1 for s in steps if s['status'] in ('failed', 'error'))
     skipped = sum(1 for s in steps if s['status'] in ('skipped', 'cancelled'))
-    return {'format': FORMAT, 'title': title, 'run_id': None, 'run_type': 'conversation',
+    data = {'format': FORMAT, 'title': title, 'run_id': None, 'run_type': 'conversation',
             'status': 'passed' if failed == 0 else 'failed',
             'started_at': runs[0].get('started_at') if runs else None, 'finished_at': runs[-1].get('finished_at') if runs else None,
             'generated_at': core.now(), 'summary': {'total': len(steps), 'passed': passed, 'failed': failed, 'skipped': skipped}, 'steps': steps,
             'llm_verdict': llm_verdict}
+    return _with_evidence_sections(data, template)
 
 
 # --------------------------------------------------------------------------- doc (ver report_doc.py / report_render.py)
@@ -129,16 +159,8 @@ def _verdict_block(verdict):
 
 
 def _to_doc(data):
-    s = data['summary']
-    blocks = []
-    if data.get('llm_verdict'):
-        blocks.append(_verdict_block(data['llm_verdict']))
-    blocks.append(rd.badge(STATUS_ES.get(data['status'], data['status'] or ''), STATUS_COLOR.get(data['status'], '#6b7280')))
-    blocks.append(rd.cards([{'value': s['total'], 'label': 'Pasos'}, {'value': s['passed'], 'label': 'Pasaron'},
-                            {'value': s['failed'], 'label': 'Fallaron'}, {'value': s['skipped'], 'label': 'Omitidos'}]))
-    blocks += [_step_to_block(step) for step in data['steps']]
     meta = f'Corrida {data.get("run_id") or ""} · generada {data["generated_at"]}' + (f' · inicio {data["started_at"]}' if data.get('started_at') else '')
-    return rd.doc(data['title'], blocks, meta=meta)
+    return rd.doc(data['title'], rt._sections_to_blocks(data['sections']), meta=meta)
 
 
 def render_evidence_html(data):

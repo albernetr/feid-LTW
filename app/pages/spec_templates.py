@@ -25,7 +25,14 @@ KNOWN_FIELD_LABELS = {
               'test_cases': 'Casos de prueba', 'traceability': 'Trazabilidad', 'matrix': 'Matriz HU → Casos → Estado',
               'summary': 'Resumen', 'coverage': 'Cobertura', 'risks': 'Riesgos (calculados)', 'story_points': 'Story points',
               'assigned_to': 'Asignado a', 'preconditions': 'Precondición', 'steps': 'Pasos de ejecución', 'expected': 'Resultado esperado',
-              'priority': 'Prioridad', 'type': 'Tipo'},
+              'priority': 'Prioridad', 'type': 'Tipo',
+              'suite_status': 'Suite: estado', 'suite_kpis': 'Suite: indicadores (tasa/variación/ejecuciones)',
+              'suite_trend': 'Suite: tendencia', 'suite_members': 'Suite: miembros',
+              'case_status': 'Caso ejecutable: estado', 'case_target': 'Caso ejecutable: método y ruta',
+              'case_kpis': 'Caso ejecutable: indicadores (tasa/variación/ejecuciones/respuesta media)',
+              'case_trend': 'Caso ejecutable: tendencia', 'case_recent_runs': 'Caso ejecutable: corridas recientes',
+              'evidence_status': 'Evidencia: estado', 'evidence_summary': 'Evidencia: resumen de pasos',
+              'evidence_verdict': 'Evidencia: veredicto del modelo (si se pidió)', 'evidence_steps': 'Evidencia: pasos de la corrida'},
 }
 CUSTOM_SENTINEL = '__custom__'
 SUGGEST_PREFIX = '__suggest__'

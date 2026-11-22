@@ -6,7 +6,7 @@ import json
 import statistics
 import sys
 from pathlib import Path
-from . import core, observer, report_doc as rd, report_render
+from . import core, observer, report_doc as rd, report_render, report_tree as rt
 
 FORMAT = 'ltw.status/1'
 RANGES = (7, 14, 30, 90)
@@ -403,8 +403,30 @@ def render(report, kind):
 
 FORMAT_SUITE_GROUP = 'ltw.suite_group_report/1'
 
+# Reproduce exactamente el orden/contenido del antiguo _suite_group_doc fijo — quien exporta sin elegir
+# plantilla (los botones por fila de suite_groups.py) no ve ningún cambio.
+DEFAULT_SUITE_GROUP_TEMPLATE_BODY = [{'field': 'suite_status', 'label': 'Estado'}, {'field': 'suite_kpis', 'label': 'Indicadores'},
+                                     {'field': 'suite_trend', 'label': 'Ejecuciones por día'}, {'field': 'suite_members', 'label': 'Miembros'}]
 
-def build_suite_group_report_data(group_id, days=14, now=None):
+
+def _resolve_suite_group_report_field(field, data):
+    if field == 'suite_status':
+        return {'kind': 'badge', 'label': STATUS_ES.get(data['status'], 'Sin ejecutar'), 'color': STATUS_COLOR.get(data['status'], '#6b7280')}
+    if field == 'suite_kpis':
+        return {'kind': 'cards', 'items': [{'value': f'{data["success_rate"]}%' if data['success_rate'] is not None else '—', 'label': 'Tasa de éxito'},
+                                           {'value': _arrow(data['delta']), 'label': 'vs. periodo anterior'},
+                                           {'value': data['runs'], 'label': 'Ejecuciones'}]}
+    if field == 'suite_trend':
+        return {'kind': 'trend_svg', 'markup': trend_svg(data['trend']), 'caption': 'Verde: pasaron · Rojo: fallaron'}
+    if field == 'suite_members':
+        if not data['members']:
+            return None
+        return {'kind': 'table', 'columns': ['Miembro', 'Tipo', 'Estado'],
+                'rows': [[m['name'], 'Flujo' if m['type'] == 'flow' else 'Caso', STATUS_ES.get(m['status'], 'Sin ejecutar')] for m in data['members']]}
+    return None
+
+
+def build_suite_group_report_data(group_id, days=14, now=None, template=None):
     """Agregado histórico de UNA Suite (suite_groups) — mismo espíritu que collect(), acotado a un grupo en
     vez de todo el proyecto. El estado de cada miembro es el de la ÚLTIMA corrida de ESTA Suite (sus propios
     item_runs), no el último run suelto de ese Flujo/Caso en cualquier otro lado — responde "¿qué pasó la
@@ -440,24 +462,20 @@ def build_suite_group_report_data(group_id, days=14, now=None):
         ok = sum(r['status'] == 'passed' for r in todays)
         trend.append({'day': day.isoformat(), 'runs': len(todays), 'passed': ok, 'failed': len(todays) - ok, 'success_rate': _pct(_rate(ok, len(todays)))})
 
-    return {'format': FORMAT_SUITE_GROUP, 'title': group.get('name', ''), 'group_id': group_id, 'generated_at': now.isoformat(),
+    data = {'format': FORMAT_SUITE_GROUP, 'title': group.get('name', ''), 'group_id': group_id, 'generated_at': now.isoformat(),
             'period': {'days': days}, 'status': last['status'] if last else 'never', 'last_run': last['started_at'] if last else None,
             'runs': len(period), 'success_rate': _pct(rate), 'success_rate_previous': _pct(rate_prev),
             'delta': None if rate is None or rate_prev is None else round((rate - rate_prev) * 100, 1),
             'members': members, 'trend': trend}
+    body = (template or {}).get('body') or DEFAULT_SUITE_GROUP_TEMPLATE_BODY
+    data['template_name'] = (template or {}).get('name') or 'Suite (por defecto)'
+    data['sections'] = rt._build_tree_sections(body, lambda f: _resolve_suite_group_report_field(f, data), None)
+    return data
 
 
 def _suite_group_doc(data):
-    blocks = [rd.badge(STATUS_ES.get(data['status'], 'Sin ejecutar'), STATUS_COLOR.get(data['status'], '#6b7280')),
-              rd.cards([{'value': f'{data["success_rate"]}%' if data['success_rate'] is not None else '—', 'label': 'Tasa de éxito'},
-                       {'value': _arrow(data['delta']), 'label': 'vs. periodo anterior'},
-                       {'value': data['runs'], 'label': 'Ejecuciones'}]),
-              rd.heading('Ejecuciones por día'), rd.svg(trend_svg(data['trend'])), rd.text('Verde: pasaron · Rojo: fallaron'),
-              rd.heading('Miembros'),
-              rd.table(['Miembro', 'Tipo', 'Estado'],
-                      [[m['name'], 'Flujo' if m['type'] == 'flow' else 'Caso', STATUS_ES.get(m['status'], 'Sin ejecutar')] for m in data['members']])]
     meta = f'Últimos {data["period"]["days"]} días · generado {_fmt(data["generated_at"])}'
-    return rd.doc(data['title'], blocks, meta=meta)
+    return rd.doc(data['title'], rt._sections_to_blocks(data['sections']), meta=meta)
 
 
 def render_suite_group_html(data):
@@ -476,8 +494,35 @@ def render_suite_group_docx(data):
 
 FORMAT_CASE = 'ltw.case_report/1'
 
+# Reproduce exactamente el orden/contenido del antiguo _case_doc fijo — quien exporta sin elegir plantilla
+# (los botones por fila de cases.py) no ve ningún cambio.
+DEFAULT_CASE_TEMPLATE_BODY = [{'field': 'case_status', 'label': 'Estado'}, {'field': 'case_target', 'label': 'Método y ruta'},
+                              {'field': 'case_kpis', 'label': 'Indicadores'}, {'field': 'case_trend', 'label': 'Ejecuciones por día'},
+                              {'field': 'case_recent_runs', 'label': 'Corridas recientes'}]
 
-def build_case_report_data(case_id, days=14, now=None):
+
+def _resolve_case_report_field(field, data):
+    if field == 'case_status':
+        return {'kind': 'badge', 'label': STATUS_ES.get(data['status'], 'Sin ejecutar'), 'color': STATUS_COLOR.get(data['status'], '#6b7280')}
+    if field == 'case_target':
+        return data['target'] or None
+    if field == 'case_kpis':
+        return {'kind': 'cards', 'items': [{'value': f'{data["success_rate"]}%' if data['success_rate'] is not None else '—', 'label': 'Tasa de éxito'},
+                                           {'value': _arrow(data['delta']), 'label': 'vs. periodo anterior'},
+                                           {'value': data['runs'], 'label': 'Ejecuciones'},
+                                           {'value': f'{data["avg_duration_ms"]} ms' if data['avg_duration_ms'] is not None else '—', 'label': 'Respuesta media'}]}
+    if field == 'case_trend':
+        return {'kind': 'trend_svg', 'markup': trend_svg(data['trend']), 'caption': 'Verde: pasaron · Rojo: fallaron'}
+    if field == 'case_recent_runs':
+        if not data['recent']:
+            return None
+        return {'kind': 'table', 'columns': ['Inicio', 'Estado', 'Duración', 'Detalle'],
+                'rows': [[_fmt(r['started_at']), STATUS_ES.get(r['status'], r['status']), f'{r["duration_ms"]} ms' if r['duration_ms'] is not None else '—', r['detail'][:160]]
+                         for r in data['recent']]}
+    return None
+
+
+def build_case_report_data(case_id, days=14, now=None, template=None):
     """Agregado histórico de UN Caso (API o UI) — su historial de corridas propio, no una ejecución puntual
     (eso ya lo cubre evidence_report.py). Responde "¿cómo le ha ido a este Caso en el tiempo?"."""
     case = core.get('cases', case_id)
@@ -507,31 +552,22 @@ def build_case_report_data(case_id, days=14, now=None):
         ok = sum(r['status'] == 'passed' for r in todays)
         trend.append({'day': day.isoformat(), 'runs': len(todays), 'passed': ok, 'failed': len(todays) - ok, 'success_rate': _pct(_rate(ok, len(todays)))})
 
-    return {'format': FORMAT_CASE, 'title': case.get('name', ''), 'case_id': case_id, 'case_type': case.get('type', 'api'),
+    data = {'format': FORMAT_CASE, 'title': case.get('name', ''), 'case_id': case_id, 'case_type': case.get('type', 'api'),
             'target': f'{case.get("method", "")} {case.get("path", "")}'.strip() if case.get('type', 'api') == 'api' else '',
             'generated_at': now.isoformat(), 'period': {'days': days}, 'status': last['status'] if last else 'never',
             'last_run': last['started_at'] if last else None, 'runs': len(period),
             'success_rate': _pct(rate), 'success_rate_previous': _pct(rate_prev),
             'delta': None if rate is None or rate_prev is None else round((rate - rate_prev) * 100, 1),
             'avg_duration_ms': round(statistics.mean(durations)) if durations else None, 'recent': recent[::-1], 'trend': trend}
+    body = (template or {}).get('body') or DEFAULT_CASE_TEMPLATE_BODY
+    data['template_name'] = (template or {}).get('name') or 'Caso ejecutable (por defecto)'
+    data['sections'] = rt._build_tree_sections(body, lambda f: _resolve_case_report_field(f, data), None)
+    return data
 
 
 def _case_doc(data):
-    blocks = [rd.badge(STATUS_ES.get(data['status'], 'Sin ejecutar'), STATUS_COLOR.get(data['status'], '#6b7280'))]
-    if data['target']:
-        blocks.append(rd.text(data['target']))
-    blocks.append(rd.cards([{'value': f'{data["success_rate"]}%' if data['success_rate'] is not None else '—', 'label': 'Tasa de éxito'},
-                           {'value': _arrow(data['delta']), 'label': 'vs. periodo anterior'},
-                           {'value': data['runs'], 'label': 'Ejecuciones'},
-                           {'value': f'{data["avg_duration_ms"]} ms' if data['avg_duration_ms'] is not None else '—', 'label': 'Respuesta media'}]))
-    blocks += [rd.heading('Ejecuciones por día'), rd.svg(trend_svg(data['trend'])), rd.text('Verde: pasaron · Rojo: fallaron')]
-    if data['recent']:
-        blocks.append(rd.heading('Corridas recientes'))
-        blocks.append(rd.table(['Inicio', 'Estado', 'Duración', 'Detalle'],
-            [[_fmt(r['started_at']), STATUS_ES.get(r['status'], r['status']), f'{r["duration_ms"]} ms' if r['duration_ms'] is not None else '—', r['detail'][:160]]
-             for r in data['recent']]))
     meta = f'Últimos {data["period"]["days"]} días · generado {_fmt(data["generated_at"])}'
-    return rd.doc(data['title'], blocks, meta=meta)
+    return rd.doc(data['title'], rt._sections_to_blocks(data['sections']), meta=meta)
 
 
 def render_case_html(data):
