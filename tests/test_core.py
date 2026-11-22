@@ -1090,6 +1090,41 @@ def test_pair_rows_groups_consecutive_half_width_siblings_into_rows():
     assert [[n['id'] for n in row] for row in rows] == [['a'], ['b', 'c'], ['d']]
 
 
+def test_node_col_span_falls_back_to_width_when_not_declared():
+    assert core.node_col_span({'width': 'full'}) == 12
+    assert core.node_col_span({'width': 'half'}) == 6
+    assert core.node_col_span({}) == 12                  # sin width ni col_span: Completo
+    assert core.node_col_span({'col_span': 4}) == 4       # col_span declarado manda, aunque haya width
+    assert core.node_col_span({'col_span': 4, 'width': 'half'}) == 4
+
+
+def test_pack_grid_rows_fills_a_12_column_grid_not_just_pairs():
+    """A diferencia de pair_rows (solo pares de 'half'), pack_grid_rows acumula cualquier combinación de
+    col_span hasta llenar la grilla — 3 campos de un tercio (4) caben en una sola fila."""
+    nodes = [{'id': 'a', 'col_span': 12}, {'id': 'b', 'col_span': 4}, {'id': 'c', 'col_span': 4},
+             {'id': 'd', 'col_span': 4}, {'id': 'e', 'col_span': 6}, {'id': 'f', 'col_span': 6},
+             {'id': 'g', 'col_span': 8}]   # 'g' no entra tras e+f (12), empieza fila nueva
+    rows = core.pack_grid_rows(nodes)
+    assert [[n['id'] for n in row] for row in rows] == [['a'], ['b', 'c', 'd'], ['e', 'f'], ['g']]
+
+
+def test_pack_grid_rows_with_no_col_span_matches_pair_rows_for_half_width():
+    nodes = [{'id': 'a', 'width': 'full'}, {'id': 'b', 'width': 'half'}, {'id': 'c', 'width': 'half'}]
+    assert core.pack_grid_rows(nodes) == core.pair_rows(nodes)
+
+
+def test_col_span_survives_save_and_reload_of_a_template():
+    """Bug real encontrado en vivo: _clean_template_node reconstruye cada nodo con una lista fija de claves —
+    sin pasar 'col_span' por ahí, el ancho elegido en el lienzo (Fase 2) se perdía al guardar."""
+    project = core.create_project('Grilla')
+    tpl = core.create_spec_template('Con columnas', 'output', 'report', project_id=project['id'], body=[
+        {'kind': 'field', 'label': 'A', 'field_key': 'suite_members', 'col_span': 4},
+        {'kind': 'group', 'label': 'Sección', 'col_span': 3, 'children': [{'kind': 'field', 'label': 'B', 'field_key': 'suite_status'}]}])
+    assert tpl['body'][0]['col_span'] == 4 and tpl['body'][1]['col_span'] == 3
+    reloaded = core.get('spec_templates', tpl['id'])
+    assert reloaded['body'][0]['col_span'] == 4 and reloaded['body'][1]['col_span'] == 3
+
+
 def test_known_fields_include_registration_metadata_now_that_its_template_governed():
     """Título/Prioridad/Estado/... (HU) y Título/Historia/.../Caso ligado (Caso de prueba) dejaron de ser fijos
     fuera de toda plantilla — son campos conocidos más, que una plantilla ubica donde quiera (ver
@@ -1354,7 +1389,8 @@ def test_spec_template_crud_validates_kind_and_applies_to():
         {'kind': 'field', 'label': 'Como (rol)', 'field_key': 'as_a'},
         {'kind': 'group', 'label': 'Contexto adicional', 'as_tab': True, 'children': [
             {'kind': 'field', 'label': 'Presupuesto', 'field_key': 'presupuesto', 'field_type': 'text'}]}])
-    assert rich['body'][0] == {'id': rich['body'][0]['id'], 'kind': 'field', 'label': 'Como (rol)', 'field_key': 'as_a', 'field_type': None, 'width': 'full'}
+    assert rich['body'][0] == {'id': rich['body'][0]['id'], 'kind': 'field', 'label': 'Como (rol)', 'field_key': 'as_a',
+                              'field_type': None, 'width': 'full', 'col_span': None}
     group = rich['body'][1]
     assert group['kind'] == 'group' and group['as_tab'] is True and group['children'][0]['field_type'] == 'text'
 

@@ -1270,20 +1270,24 @@ def _clean_template_node(entry, known):
     label = (entry.get('label') or '').strip()
     kind = entry.get('kind')
     width = entry.get('width') if entry.get('width') in ('full', 'half') else 'full'
+    # col_span (1-12, Fase 2: diseñador visual): aditivo a `width` — ver core.node_col_span. Un valor fuera de
+    # rango o ausente se descarta acá (None), y node_col_span lo deriva de `width` al leerlo.
+    col_span = entry.get('col_span')
+    col_span = col_span if isinstance(col_span, int) and 1 <= col_span <= 12 else None
     if kind not in ('field', 'group'):
         field_key = (entry.get('field') or '').strip()
         if not field_key and not label:
             return None
         return {'id': entry.get('id') or uid(), 'kind': 'field', 'label': label or field_key,
-               'field_key': field_key or _slugify_field_key(label), 'field_type': None, 'width': width}
+               'field_key': field_key or _slugify_field_key(label), 'field_type': None, 'width': width, 'col_span': col_span}
     node_id = entry.get('id') or uid()
     if kind == 'group':
         children = [n for n in (_clean_template_node(c, known) for c in (entry.get('children') or [])) if n]
         if not label and not children:
             return None
         icon = (entry.get('icon') or '').strip() or None
-        return {'id': node_id, 'kind': 'group', 'label': label or 'Sección', 'width': width, 'icon': icon,
-               'as_tab': bool(entry.get('as_tab')), 'children': children}
+        return {'id': node_id, 'kind': 'group', 'label': label or 'Sección', 'width': width, 'col_span': col_span,
+               'icon': icon, 'as_tab': bool(entry.get('as_tab')), 'children': children}
     # kind == 'field'
     field_key = (entry.get('field_key') or entry.get('field') or '').strip()
     if not field_key and not label:
@@ -1304,7 +1308,8 @@ def _clean_template_node(entry, known):
             raise ValueError(f'El campo «{field_key}» declara un field_type inválido — debe ser uno de: {", ".join(CUSTOM_FIELD_TYPES)}')
         if field_key in known:
             raise ValueError(f'«{field_key}» ya es un campo fijo — no puede declarar un tipo propio (field_type)')
-    return {'id': node_id, 'kind': 'field', 'label': label or field_key, 'field_key': field_key, 'field_type': field_type, 'width': width}
+    return {'id': node_id, 'kind': 'field', 'label': label or field_key, 'field_key': field_key, 'field_type': field_type,
+           'width': width, 'col_span': col_span}
 
 
 def _clean_template_body(body, applies_to='report'):
@@ -1394,6 +1399,36 @@ def pair_rows(nodes):
         else:
             rows.append([node])
             i += 1
+    return rows
+
+
+_WIDTH_TO_COL_SPAN = {'full': 12, 'half': 6}
+
+
+def node_col_span(node):
+    """`col_span` (1-12, estilo Bootstrap) de un nodo — Fase 2 (diseñador visual), aditivo a `width`/
+    `pair_rows` (que no se tocan, siguen gobernando la vista en vivo existente). Si el nodo no declara
+    `col_span`, se deriva de `width` para que una plantilla vieja no cambie de forma: 'half' -> 6, cualquier
+    otra cosa (incluido 'full' o ausente) -> 12."""
+    return node.get('col_span') or _WIDTH_TO_COL_SPAN.get(node.get('width', 'full'), 12)
+
+
+def pack_grid_rows(nodes, columns=12):
+    """Empaqueta nodos HERMANOS en filas de una grilla de `columns` columnas, acumulando `node_col_span` hasta
+    llenarla (no solo pares de a 2, como `pair_rows`) — motor de la grilla real del documento EXPORTADO
+    (report_tree.py) y del lienzo visual (pages/spec_templates.py). Un nodo cuyo span no entra en lo que
+    queda de la fila actual empieza una fila nueva; uno que por sí solo ya ocupa toda la grilla siempre va
+    solo en su fila."""
+    rows, row, used = [], [], 0
+    for node in nodes:
+        span = min(node_col_span(node), columns)
+        if row and used + span > columns:
+            rows.append(row)
+            row, used = [], 0
+        row.append(node)
+        used += span
+    if row:
+        rows.append(row)
     return rows
 
 

@@ -74,3 +74,10 @@ def code(value, language=''):
 def group(children, indent=False):
     """Anidamiento: un step con sus sub-bloques, o una seccion con sub-secciones."""
     return {'kind': 'group', 'children': list(children), 'indent': indent}
+
+
+def row(cells):
+    """Fila de una grilla de 12 columnas (Fase 2: diseñador visual) -- `cells`: lista de
+    {'span': 1-12, 'children': [bloque, ...]}. HTML/DOCX honran las columnas reales; Markdown (sin noción de
+    columnas) concatena los bloques de cada celda en secuencia, igual que ya hace `group`."""
+    return {'kind': 'row', 'cells': [{'span': c['span'], 'children': list(c['children'])} for c in cells]}

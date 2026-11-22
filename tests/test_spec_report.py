@@ -224,6 +224,20 @@ def test_width_half_pairs_consecutive_siblings_into_a_two_column_row_in_html():
     assert [n['field'] for n in rows[0]] == ['a', 'b'] and rows[1][0]['field'] == 'c' and rows[2][0]['field'] == 'd'
 
 
+def test_width_half_fields_export_as_a_real_two_column_grid_not_sequential(world):
+    """Fase 2: cierra la limitación de Fase 1 (width='half' solo afectaba la vista EN VIVO, nunca el documento
+    exportado) — ahora dos campos 'half' consecutivos arman un bloque `row` real, visible como grilla CSS en
+    el HTML exportado."""
+    tpl = core.create_spec_template('Con dos columnas', 'output', 'report', project_id=world['pid'], body=[
+        {'kind': 'field', 'label': 'Como', 'field_key': 'as_a', 'width': 'half'},
+        {'kind': 'field', 'label': 'Quiero', 'field_key': 'i_want', 'width': 'half'}])
+    data = spec_report.build_story_report_data(world['story'], tpl)
+    doc = spec_report._spec_doc(data)
+    assert any(b['kind'] == 'row' and len(b['cells']) == 2 for b in doc['blocks'])
+    html_out = spec_report.render_spec_html(data)
+    assert 'display:grid' in html_out
+
+
 def test_as_tab_group_metadata_survives_into_the_built_report_tree(world):
     tpl = _output_template_with_custom_fields(world['pid'])
     s0 = world['story']

@@ -58,7 +58,7 @@ def _build_tree_sections(body, resolve_known, custom_fields):
             if not children:
                 continue
             sections.append({'kind': 'group', 'label': node.get('label') or '', 'width': node.get('width', 'full'),
-                             'as_tab': bool(node.get('as_tab')), 'children': children})
+                             'col_span': node.get('col_span'), 'as_tab': bool(node.get('as_tab')), 'children': children})
             continue
         # `node` puede venir del editor EN VIVO (vista previa mientras se edita una plantilla, ver
         # spec_templates.py::live_preview), todavía sin pasar por core._clean_template_body — un campo recién
@@ -69,7 +69,8 @@ def _build_tree_sections(body, resolve_known, custom_fields):
         if _is_empty_content(content):
             continue
         sections.append({'kind': 'field', 'field': field_key, 'label': node.get('label') or field_key or '',
-                         'width': node.get('width', 'full'), 'field_type': field_type, 'content': content})
+                         'width': node.get('width', 'full'), 'col_span': node.get('col_span'),
+                         'field_type': field_type, 'content': content})
     return sections
 
 
@@ -139,14 +140,24 @@ def _content_to_blocks(content, field_type=None):
     return [rd.code(json.dumps(content, ensure_ascii=False, indent=2), 'json')]
 
 
+def _section_to_blocks(section, level):
+    if section['kind'] == 'group':
+        blocks = []
+        if section['label']:
+            blocks.append(rd.heading(section['label'], level=level))
+        blocks += _sections_to_blocks(section['children'], level + 1)
+        return blocks
+    return [rd.heading(section['label'], level=level)] + _content_to_blocks(section['content'], section['field_type'])
+
+
 def _sections_to_blocks(sections, level=2):
+    """Empaqueta secciones HERMANAS en una grilla real de 12 columnas (core.pack_grid_rows, por `col_span`/
+    `width`) -- una fila con una sola sección se exporta igual que siempre; una fila con 2+ se envuelve en
+    `rd.row(...)` (Fase 2: HTML/PDF/Word honran las columnas reales; Markdown se degrada a secuencial)."""
     blocks = []
-    for section in sections:
-        if section['kind'] == 'group':
-            if section['label']:
-                blocks.append(rd.heading(section['label'], level=level))
-            blocks += _sections_to_blocks(section['children'], level + 1)
-            continue
-        blocks.append(rd.heading(section['label'], level=level))
-        blocks += _content_to_blocks(section['content'], section['field_type'])
+    for row in core.pack_grid_rows(sections):
+        if len(row) == 1:
+            blocks += _section_to_blocks(row[0], level)
+        else:
+            blocks.append(rd.row([{'span': core.node_col_span(s), 'children': _section_to_blocks(s, level)} for s in row]))
     return blocks

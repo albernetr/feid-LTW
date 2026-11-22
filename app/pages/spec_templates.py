@@ -205,11 +205,14 @@ def spec_template_detail(id: str = ''):
         # name/description/kind/applies_to/body_rows: se asignan recién dentro de render_general/render_sections
         # (nonlocal) — ambos corren durante la llamada a workspace_layout, antes de que el usuario pueda
         # disparar _refresh/preview/save, así que están siempre asignados para cuando de verdad se necesitan.
-        name = description = kind = applies_to = body_rows = linked_story_panel = None
+        name = description = kind = applies_to = body_rows = canvas_rows = linked_story_panel = None
+        view_mode = {'value': 'list'}   # 'list' | 'canvas' (Fase 2: diseñador visual) — mismo d['body'], 2 vistas
 
         def _refresh():
             if body_rows:
                 body_rows.refresh()
+            if canvas_rows:
+                canvas_rows.refresh()
             if linked_story_panel:
                 linked_story_panel.refresh()
             document_view.refresh()
@@ -266,19 +269,23 @@ def spec_template_detail(id: str = ''):
                     name.disable(); description.disable(); kind.disable(); applies_to.disable()
 
             def render_sections():
-                nonlocal body_rows
+                nonlocal body_rows, canvas_rows
                 with ui.row().classes('items-center justify-between w-full'):
                     ui.label('Secciones y campos').classes('font-semibold')
                     ui.icon('info', size='xs', color='grey').classes('cursor-help').tooltip(
                         'Un «campo existente» ya tiene su propio editor (Como/Quiero/Para, criterios, pasos, ...) y no '
                         'declara tipo. Un «campo nuevo» lo define esta plantilla: elegí qué tipo de dato es. Una '
-                        '«sección» agrupa campos (o subsecciones, anidables) bajo un nombre. Cualquier campo o sección '
-                        'puede ser Ancho completo o Mitad — dos nodos hermanos consecutivos en Mitad quedan lado a lado, '
-                        'tanto en el panel de Campos como en el documento; en una plantilla de salida, además puede '
-                        'mostrarse como pestaña propia en el visor interactivo.')
+                        '«sección» agrupa campos (o subsecciones, anidables) bajo un nombre. El Ancho ubica hermanos '
+                        'consecutivos lado a lado (Completo o Mitad acá; en la «Vista de lienzo» también Tercio y '
+                        'Cuarto), tanto en el panel de Campos como en el documento; en una plantilla de salida, '
+                        'además puede mostrarse como pestaña propia en el visor interactivo. La «Vista de lienzo» '
+                        'deja arrastrar campos y tarjetas en vez de usar los selectores — las dos vistas editan lo '
+                        'mismo.')
+                ui.toggle({'list': 'Vista de lista', 'canvas': 'Vista de lienzo'}, value=view_mode['value']) \
+                    .props('dense no-caps').mark('template-view-mode') \
+                    .on_value_change(lambda e: (view_mode.__setitem__('value', e.value), _refresh()))
 
-                @ui.refreshable
-                def _body_rows():
+                def _field_catalog():
                     is_output = kind.value == 'output'
                     known = core.KNOWN_FIELDS_BY_APPLIES_TO.get(applies_to.value, ())
                     labels = KNOWN_FIELD_LABELS.get(applies_to.value, {})
@@ -287,6 +294,13 @@ def spec_template_detail(id: str = ''):
                     # quien la edita tenga que escribir a mano un field_key y confiar en
                     # que coincida — ver core.custom_field_catalog.
                     suggestions = core.custom_field_catalog(pid) if is_output else []
+                    return is_output, known, labels, suggestions
+
+                @ui.refreshable
+                def _body_rows():
+                    if view_mode['value'] != 'list':
+                        return
+                    is_output, known, labels, suggestions = _field_catalog()
 
                     def render_node(node, siblings, index, depth):
                         def move(delta, siblings=siblings, index=index):
@@ -385,6 +399,122 @@ def spec_template_detail(id: str = ''):
                         render_node(node, d['body'], i, 0)
                 body_rows = _body_rows
                 body_rows()
+
+                # ------------------------------------------------------------------- Vista de lienzo (Fase 2)
+                # Arrastrar y soltar sobre una grilla de 12 columnas (core.pack_grid_rows/node_col_span) — misma
+                # app['body'] que la Vista de lista de arriba, solo otra forma de editarla. Patrón de arrastre
+                # (draggable=true + ondragstart crudo para iniciar, .on('dragstart',...) para que Python se
+                # entere) igual al ya probado en app/layouts/workspace.py (arrastrar una pestaña al centro).
+                drag_state = {'kind': None, 'siblings': None, 'index': None, 'field_key': None}
+                selected = {'node': None}
+                WIDTH_OPTIONS = {12: 'Completo (12/12)', 6: 'Mitad (6/12)', 4: 'Tercio (4/12)', 3: 'Cuarto (3/12)'}
+
+                def _drop(target_siblings, target_index):
+                    if disabled:
+                        return
+                    if drag_state['kind'] == 'move' and drag_state['siblings'] is not None:
+                        origin_siblings, origin_index = drag_state['siblings'], drag_state['index']
+                        node = origin_siblings.pop(origin_index)
+                        insert_at = target_index - 1 if origin_siblings is target_siblings and origin_index < target_index else target_index
+                        target_siblings.insert(max(0, insert_at), node)
+                        selected['node'] = node
+                    elif drag_state['kind'] == 'new':
+                        _, _, labels, _ = _field_catalog()
+                        node = _new_field_node()
+                        if drag_state['field_key'] != CUSTOM_SENTINEL:
+                            node['field_key'], node['field_type'] = drag_state['field_key'], None
+                            node['label'] = labels.get(drag_state['field_key'], drag_state['field_key'])
+                        target_siblings.insert(target_index, node)
+                        selected['node'] = node
+                    drag_state['kind'] = None
+                    _refresh()
+
+                def _inspector():
+                    node = selected['node']
+                    if not node:
+                        ui.label('Hacé clic en una tarjeta para editarla.').classes('text-sm text-gray-400')
+                        return
+                    with ui.row().classes('items-center gap-2 w-full no-wrap'):
+                        ui.input('Etiqueta', value=node.get('label', '')).props('outlined dense').classes('grow') \
+                            .on_value_change(lambda e, node=node: (node.__setitem__('label', e.value), _refresh()))
+                        ui.select(WIDTH_OPTIONS, value=core.node_col_span(node), label='Ancho').props('outlined dense').classes('w-36') \
+                            .on_value_change(lambda e, node=node: (node.__setitem__('col_span', e.value), _refresh()))
+                        if not disabled:
+                            def remove_selected(node=node):
+                                for siblings in _all_sibling_lists(d['body']):
+                                    if node in siblings:
+                                        siblings.remove(node)
+                                        break
+                                selected['node'] = None
+                                _refresh()
+                            ui.button(icon='delete', on_click=remove_selected).props('flat round dense color=negative')
+                    if node['kind'] == 'field':
+                        _, _, labels, _ = _field_catalog()
+                        bound = labels.get(node.get('field_key'), node.get('field_key')) if node.get('field_type') is None \
+                            else f'Campo propio ({core.CUSTOM_FIELD_TYPE_LABELS.get(node.get("field_type"), node.get("field_type"))})'
+                        ui.label(f'Campo: {bound} — para cambiarlo, usá la Vista de lista').classes('text-xs text-gray-400')
+
+                def _all_sibling_lists(nodes):
+                    yield nodes
+                    for n in nodes:
+                        if n.get('kind') == 'group':
+                            yield from _all_sibling_lists(n.get('children') or [])
+
+                def _card(node, siblings, index):
+                    span = core.node_col_span(node)
+                    with ui.element('div').style(f'grid-column:span {span};min-width:0') \
+                            .on('dragover.prevent', lambda: None).on('drop', lambda s=siblings, i=index: _drop(s, i)):
+                        with ui.card().classes('w-full p-2 gap-0').style('cursor:pointer') \
+                                .on('click', lambda node=node: (selected.__setitem__('node', node), canvas_rows.refresh())):
+                            with ui.row().classes('items-center gap-1 no-wrap w-full'):
+                                if not disabled:
+                                    handle = ui.icon('drag_indicator', size='xs', color='grey').classes('cursor-grab')
+                                    handle.props(f'draggable=true ondragstart="event.dataTransfer.setData(\'text/plain\',\'{node["id"]}\')"') \
+                                        .on('dragstart', lambda s=siblings, i=index: drag_state.update(kind='move', siblings=s, index=i, field_key=None))
+                                ui.icon('folder' if node['kind'] == 'group' else 'description', size='xs', color='grey')
+                                ui.label(node.get('label') or '(sin etiqueta)').classes('text-sm font-medium ellipsis')
+                            ui.label(f'{span}/12').classes('text-xs text-gray-400')
+                        if node['kind'] == 'group':
+                            with ui.column().classes('w-full').style('margin-left:12px;border-left:2px solid #e5e7eb;padding-left:10px'):
+                                _grid(node.setdefault('children', []))
+
+                def _grid(nodes):
+                    with ui.element('div').style('display:grid;grid-template-columns:repeat(12,1fr);gap:8px;width:100%'):
+                        for index, node in enumerate(nodes):
+                            _card(node, nodes, index)
+                        if not disabled:
+                            with ui.element('div').style('grid-column:span 12;min-height:30px;border:1px dashed #d1d5db;border-radius:6px;display:flex;align-items:center;justify-content:center') \
+                                    .on('dragover.prevent', lambda: None).on('drop', lambda s=nodes: _drop(s, len(s))):
+                                ui.label('Soltar acá para agregar al final').classes('text-xs text-gray-400')
+
+                def _palette():
+                    is_output, known, labels, suggestions = _field_catalog()
+                    with ui.column().classes('gap-1').style('width:220px;flex-shrink:0'):
+                        ui.label('Campos (arrastrá al lienzo)').classes('text-xs text-gray-500 font-semibold')
+                        for key in known:
+                            chip = ui.chip(labels.get(key, key), icon='drag_indicator').props('outline dense square')
+                            chip.props(f'draggable=true ondragstart="event.dataTransfer.setData(\'text/plain\',\'{key}\')"') \
+                                .on('dragstart', lambda key=key: drag_state.update(kind='new', field_key=key, siblings=None))
+                        chip = ui.chip('Campo nuevo (propio)', icon='add').props('outline dense square color=primary')
+                        chip.props(f'draggable=true ondragstart="event.dataTransfer.setData(\'text/plain\',\'{CUSTOM_SENTINEL}\')"') \
+                            .on('dragstart', lambda: drag_state.update(kind='new', field_key=CUSTOM_SENTINEL, siblings=None))
+
+                @ui.refreshable
+                def _canvas_rows():
+                    if view_mode['value'] != 'canvas':
+                        return
+                    with ui.row().classes('w-full gap-4 items-start no-wrap'):
+                        with ui.column().classes('grow gap-2').style('min-width:0'):
+                            if not d['body']:
+                                ui.label('Ninguno todavía — arrastrá un campo de la derecha.').classes('text-sm text-gray-400')
+                            _grid(d['body'])
+                        if not disabled:
+                            _palette()
+                    ui.separator()
+                    _inspector()
+                canvas_rows = _canvas_rows
+                canvas_rows()
+
                 kind.on_value_change(lambda e: _refresh())
                 applies_to.on_value_change(lambda e: _refresh())
 

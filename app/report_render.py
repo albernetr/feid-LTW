@@ -73,6 +73,9 @@ def _block_html(block, e=html.escape):
         inner = ''.join(_block_html(c, e) for c in block['children'])
         cls = 'group indent' if block.get('indent') else 'group'
         return f'<div class="{cls}">{inner}</div>'
+    if kind == 'row':
+        cells = ''.join(f'<div style="grid-column:span {c["span"]}">{"".join(_block_html(b, e) for b in c["children"])}</div>' for c in block['cells'])
+        return f'<div style="display:grid;grid-template-columns:repeat(12,1fr);gap:16px;align-items:start">{cells}</div>'
     raise ValueError(f'Bloque desconocido: {kind}')
 
 
@@ -136,6 +139,12 @@ def _block_markdown(block, level=2):
         for child in block['children']:
             lines += _block_markdown(child, level + 1)
         return lines
+    if kind == 'row':
+        lines = []
+        for cell in block['cells']:
+            for child in cell['children']:
+                lines += _block_markdown(child, level)
+        return lines
     raise ValueError(f'Bloque desconocido: {kind}')
 
 
@@ -150,8 +159,42 @@ def render_markdown(doc):
 
 # --------------------------------------------------------------------------- DOCX
 
+class _CellSink:
+    """Adaptador para que `_block_docx` escriba dentro de una celda de tabla (una columna de una fila de la
+    grilla) con la MISMA lógica que escribe sobre el `Document` -- una celda de python-docx no tiene
+    `add_heading`/`add_picture`, solo `add_paragraph`/`add_table`; acá se las da, degradando lo que no tiene
+    equivalente directo (imagen dentro de una celda) a una nota de texto, igual que `svg` ya se omite hoy."""
+
+    def __init__(self, cell):
+        self._cell = cell
+        self._used_first_paragraph = False
+
+    def _paragraph(self):
+        if not self._used_first_paragraph:
+            self._used_first_paragraph = True
+            return self._cell.paragraphs[0]
+        return self._cell.add_paragraph()
+
+    def add_heading(self, text, level=1):
+        p = self._paragraph()
+        p.add_run(text).bold = True
+        return p
+
+    def add_paragraph(self, text='', style=None):
+        p = self._paragraph()
+        if text:
+            p.add_run(text)
+        return p
+
+    def add_table(self, rows, cols):
+        return self._cell.add_table(rows=rows, cols=cols)
+
+    def add_picture(self, *_args, **_kwargs):
+        self.add_paragraph('[imagen no disponible dentro de una fila de la grilla — ver la versión HTML]')
+
+
 def _block_docx(doc, block, level=2):
-    from docx.shared import Pt
+    from docx.shared import Inches, Pt
     kind = block['kind']
     if kind == 'heading':
         doc.add_heading(block['text'], level=min(max(block.get('level', level), 1), 4))
@@ -209,6 +252,15 @@ def _block_docx(doc, block, level=2):
     elif kind == 'group':
         for child in block['children']:
             _block_docx(doc, child, level + 1)
+    elif kind == 'row':
+        total = sum(c['span'] for c in block['cells']) or 12
+        table = doc.add_table(rows=1, cols=len(block['cells']))
+        table.autofit = False
+        for table_cell, cell in zip(table.rows[0].cells, block['cells']):
+            table_cell.width = Inches(6.5 * cell['span'] / total)
+            sink = _CellSink(table_cell)
+            for child in cell['children']:
+                _block_docx(sink, child, level + 1)
     else:
         raise ValueError(f'Bloque desconocido: {kind}')
 
