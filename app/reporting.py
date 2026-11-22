@@ -380,22 +380,10 @@ def render_html(report):
 
 
 def render_pdf(html_text, destination):
-    """Chromium (already required by the UI cases) prints the HTML report."""
-    from playwright.sync_api import sync_playwright
-    destination = Path(destination)
-    source = destination.with_suffix('.tmp.html')
-    source.write_text(html_text, encoding='utf-8')
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto(source.as_uri(), wait_until='load')
-            page.emulate_media(media='print')
-            page.pdf(path=str(destination), format='A4', print_background=True, margin={'top': '14mm', 'bottom': '14mm', 'left': '12mm', 'right': '12mm'})
-            browser.close()
-    finally:
-        source.unlink(missing_ok=True)
-    return destination
+    """Alias de compatibilidad: la implementación real vive en report_render.render_pdf_from_html (motor de
+    render único de toda la reportería), para que nadie que ya llame `reporting.render_pdf` deba cambiar."""
+    from . import report_render
+    return report_render.render_pdf_from_html(html_text, destination)
 
 
 def render(report, kind):

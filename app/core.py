@@ -778,15 +778,33 @@ def delete_test_case_spec(spec_id):
     delete('test_case_specs', spec_id)
 
 
+def _last_run_for_test_case_spec(spec):
+    """Estado de la última corrida de un Caso de prueba de Especificación: si está ligado a mano a un Caso
+    API/UI (`linked_case_id`), el de ese caso; si no, el del Flujo que se haya materializado solo (steps API
+    probados con éxito, ver materialize_spec_steps_as_flow) — `suites.materialized_from == spec['code']`. Un
+    Caso de prueba puede llegar a tener los dos caminos; el enlace manual manda si existe."""
+    if spec.get('linked_case_id'):
+        return last_run_for_case(spec['linked_case_id']), True
+    code = spec.get('code')
+    if not code:
+        return None, False
+    flow = next((f for f in list_project_items('suites', spec['project_id']) if f.get('materialized_from') == code), None)
+    return (last_run_for_suite(flow['id']), True) if flow else (None, False)
+
+
 def story_coverage(story_id):
-    """Matriz de pruebas de una HU: sus Casos de prueba y, para los que ya están ligados a un Caso API/UI
-    automatizado, el estado de su última corrida — mismo espíritu que feature_health, a nivel de Historia."""
+    """Matriz de pruebas de una HU: sus Casos de prueba y, para los que ya están automatizados (ligados a mano
+    a un Caso API/UI, o con un Flujo materializado desde sus propios steps), el estado de su última corrida —
+    mismo espíritu que feature_health, a nivel de Historia."""
     story = get('user_stories', story_id)
     if story is None:
         raise ValueError('Historia de usuario inexistente')
     specs = [s for s in list_items('test_case_specs') if s.get('story_id') == story_id]
-    rows = [{'spec': s, 'last_run': last_run_for_case(s['linked_case_id']) if s.get('linked_case_id') else None} for s in specs]
-    automated = sum(1 for r in rows if r['spec'].get('linked_case_id'))
+    rows = []
+    for s in specs:
+        last_run, automated = _last_run_for_test_case_spec(s)
+        rows.append({'spec': s, 'last_run': last_run, 'automated': automated})
+    automated = sum(1 for r in rows if r['automated'])
     passing = sum(1 for r in rows if r['last_run'] and r['last_run']['status'] == 'passed')
     return {'story': story, 'rows': rows, 'total': len(rows), 'automated': automated, 'passing': passing}
 

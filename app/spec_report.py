@@ -9,7 +9,7 @@ import html
 import io
 import json
 import re
-from . import core, reporting, evidence_report
+from . import core, reporting, evidence_report, report_doc as rd, report_render
 
 FORMAT = 'ltw.spec_report/1'
 _TYPE_ES = {'functional': 'Funcional', 'regression': 'Regresión', 'smoke': 'Smoke', 'exploratory': 'Exploratorio'}
@@ -81,10 +81,10 @@ def _resolve_field(field, ctx):
     if field in ('traceability', 'matrix'):
         return _matrix_rows(ctx)
     if field == 'coverage':
-        return {'total': len(rows), 'automated': sum(1 for r in rows if r['spec'].get('linked_case_id')),
+        return {'total': len(rows), 'automated': sum(1 for r in rows if r.get('automated')),
                 'passing': sum(1 for r in rows if r.get('last_run') and r['last_run']['status'] == 'passed')}
     if field == 'summary':
-        automated = sum(1 for r in rows if r['spec'].get('linked_case_id'))
+        automated = sum(1 for r in rows if r.get('automated'))
         passing = sum(1 for r in rows if r.get('last_run') and r['last_run']['status'] == 'passed')
         met = sum(1 for c in all_criteria if c.get('status') == 'met')
         quien = f'«{story["title"]}»' if story else f'{len(stories)} historia(s)'
@@ -93,7 +93,7 @@ def _resolve_field(field, ctx):
         risks = [f'Criterio pendiente: {c["text"] or (c.get("then") or "")}' for c in all_criteria if c.get('status') != 'met']
         for r in rows:
             spec, last_run = r['spec'], r.get('last_run')
-            if spec.get('linked_case_id') and (not last_run or last_run['status'] != 'passed'):
+            if r.get('automated') and (not last_run or last_run['status'] != 'passed'):
                 risks.append(f'Caso automatizado «{spec["title"]}» en estado {last_run["status"] if last_run else "nunca ejecutado"}.')
         return risks
     if field in ('business_rules', 'assumptions', 'out_of_scope'):
@@ -200,7 +200,7 @@ def build_test_matrix_report_data(project_id, template=None):
     en la plantilla no tiene una sola Historia de la que resolverse, así que siempre queda vacío acá (se trata
     igual que cualquier otro valor ausente, nunca revienta)."""
     stories = core.list_project_items('user_stories', project_id)
-    rows = [{'story': s, 'spec': r['spec'], 'last_run': r['last_run']} for s in stories for r in core.story_coverage(s['id'])['rows']]
+    rows = [{'story': s, 'spec': r['spec'], 'last_run': r['last_run'], 'automated': r['automated']} for s in stories for r in core.story_coverage(s['id'])['rows']]
     ctx = {'story': None, 'stories': stories, 'rows': rows}
     resolve_known = lambda f: _resolve_field(f, ctx)   # noqa: E731
     body = (template or {}).get('body') or DEFAULT_MATRIX_TEMPLATE_BODY
@@ -261,21 +261,92 @@ def build_template_preview(template, story=None, spec=None):
 _pair_rows = core.pair_rows   # alias local: ver core.pair_rows (compartido con pages/common.render_template_tree)
 
 
-# --------------------------------------------------------------------------- HTML / PDF
+# --------------------------------------------------------------------------- doc (ver report_doc.py / report_render.py)
+# Construye el árbol de bloques genérico para EXPORTAR (HTML/PDF/Markdown/DOCX, vía report_render) — separado a
+# propósito de _render_content_html/_render_section_html de más abajo, que son para la vista EN VIVO embebida
+# en la propia pantalla (pages/spec_viewer.py, test_case_specs.py), con estilos en línea atados a esa pantalla
+# y que nunca se exporta. Ambos caminos resuelven el mismo `content`/`field_type` (nunca se desalinean sobre
+# QUÉ datos mostrar), pero cada uno los redacta para su propio destino.
+#
+# Limitación conocida y aceptada: una sección `width='half'` (pensada para ir en dos columnas, como hace hoy
+# _render_sections_html/_write_sections_docx) se exporta secuencial, igual que ya hacía render_spec_markdown —
+# el layout de dos columnas queda solo para la vista en vivo en pantalla.
 
-HTML_CSS = '''
-:root{color-scheme:light}*{box-sizing:border-box}body{font-family:Segoe UI,Calibri,Arial,sans-serif;color:#111827;margin:0;background:#f3f4f6}
-main{max-width:900px;margin:0 auto;padding:24px 20px 48px}h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:22px 0 8px;border-bottom:1px solid #e5e7eb;padding-bottom:4px}
-.meta{color:#6b7280;font-size:13px;margin-bottom:12px}.muted{color:#9ca3af;font-size:13px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:10px 0}
-.card{background:#fff;border-radius:8px;padding:10px 14px;border:1px solid #e5e7eb}.card .v{font-size:22px;font-weight:700}.card .l{font-size:12px;color:#6b7280}
-.story-card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px}
-table{width:100%;border-collapse:collapse;background:#fff;font-size:13px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #e5e7eb;vertical-align:top}th{background:#f9fafb;color:#374151}
-.tc{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;margin:8px 0}
-.criteria{list-style:none;padding-left:0;margin:0}.criteria li{margin:6px 0}.criteria input{margin-right:6px;vertical-align:middle}
-.sample{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;font-size:13px;margin-bottom:12px}
-@media print{body{background:#fff}main{padding:0}.tc,table{break-inside:avoid}}
-'''
+def _content_to_blocks(content, field_type=None):
+    if content is None:
+        return [rd.text('No aplica a este documento.')]
+    if field_type in ('text', 'textarea'):
+        return [rd.text(content if content else '—')]
+    if field_type == 'list':
+        return [rd.checks([{'label': (it.get('text') or '(vacío)') if isinstance(it, dict) else str(it),
+                            'ok': bool(it.get('done')) if isinstance(it, dict) else False} for it in content])]
+    if field_type == 'table':
+        return [rd.table(content.get('headers') or [], content.get('rows') or [])]
+    if field_type == 'image':
+        return [rd.file(_file_url(content), content.get('filename', ''), image=True,
+                        path=str(core.ARTIFACTS / f'{content["id"]}-{content["filename"]}'))]
+    if field_type == 'attachment':
+        return [rd.file(_file_url(content), content.get('filename', ''), note=f'({content.get("size", 0)} bytes)')]
+    if field_type:
+        return [rd.text('(sin datos)')]
+    # campos FIJOS conocidos (field_type=None): mismas 8 formas que _render_content_html/_render_content_markdown
+    if isinstance(content, str):
+        return [rd.text(content or '—')]
+    if isinstance(content, dict) and 'as_a' in content:
+        return [rd.text(content['title']),
+                rd.kv([('Como', content['as_a']), ('Quiero', content['i_want']), ('Para', content['so_that']),
+                      ('Prioridad', content['priority']), ('Estado', content['status'])])]
+    if isinstance(content, dict) and 'total' in content:
+        return [rd.cards([{'value': content['total'], 'label': 'Casos de prueba'}, {'value': content['automated'], 'label': 'Automatizados'},
+                          {'value': content['passing'], 'label': 'Pasan'}])]
+    if isinstance(content, list) and not content:
+        return [rd.text('Ninguno.')]
+    if isinstance(content, list) and 'steps' in content[0]:
+        blocks = []
+        for tc in content:
+            blocks.append(rd.text(f'{tc["title"]} — {_TYPE_ES.get(tc.get("type"), "")}/{core.PRIORITY_LABELS.get(tc.get("priority"), "")}/{_SPEC_STATUS_ES.get(tc.get("status"), "")}'))
+            if tc.get('preconditions'):
+                blocks.append(rd.text(f'Precondición: {tc["preconditions"]}'))
+            steps = tc.get('steps') or []
+            blocks.append(rd.bullet_list([f'{s.get("action", "")} → {s.get("expected", "")}' for s in steps], ordered=True) if steps
+                          else rd.text('Sin pasos.'))
+        return blocks
+    if isinstance(content, list) and 'status' in content[0] and 'text' in content[0]:
+        note = lambda c: f'Dado {c.get("given", "")}, cuando {c.get("when", "")}, entonces {c.get("then", "")}' if (c.get('given') or c.get('when') or c.get('then')) else None   # noqa: E731
+        return [rd.checks([{'label': c.get('text') or '(sin resumen)', 'ok': c.get('status') == 'met', 'note': note(c)} for c in content])]
+    if isinstance(content, list) and isinstance(content[0], str):
+        return [rd.bullet_list(content)]
+    if isinstance(content, list) and 'case' in content[0]:
+        return [rd.table(['Historia', 'Caso de prueba', 'Tipo', 'Prioridad', 'Estado'],
+                         [[r['story'], r['case'], r['type'], r['priority'], r['status']] for r in content])]
+    return [rd.code(json.dumps(content, ensure_ascii=False, indent=2), 'json')]
+
+
+def _sections_to_blocks(sections, level=2):
+    blocks = []
+    for section in sections:
+        if section['kind'] == 'group':
+            if section['label']:
+                blocks.append(rd.heading(section['label'], level=level))
+            blocks += _sections_to_blocks(section['children'], level + 1)
+            continue
+        blocks.append(rd.heading(section['label'], level=level))
+        blocks += _content_to_blocks(section['content'], section['field_type'])
+    return blocks
+
+
+def _spec_doc(data):
+    meta = f'Plantilla: {data["template_name"]} · generado {data["generated_at"]}'
+    blocks = []
+    if data.get('sample'):
+        blocks.append(rd.text('Vista previa con datos de ejemplo — no corresponde a un registro real.'))
+    blocks += _sections_to_blocks(data['sections'])
+    return rd.doc(data['title'], blocks, meta=meta)
+
+
+# --------------------------------------------------------------------------- vista EN VIVO (no exportación, ver
+# arriba) -- _render_content_html y el resto de esta sección quedan igual, los sigue usando pages/spec_viewer.py
+# y pages/test_case_specs.py.
 
 
 def _render_content_html(content):
@@ -531,13 +602,7 @@ def render_test_case_view_html(spec, fields, custom_fields=None, linked_story_ti
 
 
 def render_spec_html(data):
-    e = html.escape
-    parts = [f'<h1>{e(data["title"])}</h1>', f'<div class="meta">Plantilla: {e(data["template_name"])} · generado {e(data["generated_at"])}</div>']
-    if data.get('sample'):
-        parts.append('<div class="sample">Vista previa con datos de ejemplo — no corresponde a un registro real.</div>')
-    parts.append(_render_sections_html(data['sections']))
-    return (f'<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>{e(data["title"])}</title><style>{HTML_CSS}</style></head><body><main>{"".join(parts)}</main></body></html>')
+    return report_render.render_html(_spec_doc(data))
 
 
 def render_spec_pdf(html_text, destination):
@@ -551,237 +616,9 @@ def render_sections_html(sections):
     return _render_sections_html(sections)
 
 
-# --------------------------------------------------------------------------- Markdown
-
-def _render_content_markdown(content):
-    if content is None:
-        return ['_No aplica a este documento._', '']
-    if isinstance(content, str):
-        return [content or '—', '']
-    if isinstance(content, dict) and 'as_a' in content:
-        return [f'**{content["title"]}**', '', f'- Como {content["as_a"]}', f'- Quiero {content["i_want"]}', f'- Para {content["so_that"]}',
-               f'- Prioridad: {content["priority"]} · Estado: {content["status"]}', '']
-    if isinstance(content, dict) and 'total' in content:
-        return [f'{content["total"]} caso(s) de prueba · {content["automated"]} automatizado(s) · {content["passing"]} pasa(n).', '']
-    if isinstance(content, list) and not content:
-        return ['_Ninguno._', '']
-    if isinstance(content, list) and 'steps' in content[0]:
-        lines = []
-        for tc in content:
-            lines.append(f'**{tc["title"]}** — {_TYPE_ES.get(tc.get("type"), "")}/{core.PRIORITY_LABELS.get(tc.get("priority"), "")}/{_SPEC_STATUS_ES.get(tc.get("status"), "")}')
-            if tc.get('preconditions'):
-                lines.append(f'Precondición: {tc["preconditions"]}')
-            lines += [f'{i}. {s.get("action", "")} → {s.get("expected", "")}' for i, s in enumerate(tc.get('steps') or [], 1)]
-            lines.append('')
-        return lines
-    if isinstance(content, list) and 'status' in content[0] and 'text' in content[0]:
-        lines = []
-        for c in content:
-            lines.append(('- [x] ' if c.get('status') == 'met' else '- [ ] ') + (c.get('text') or '(sin resumen)'))
-            if c.get('given') or c.get('when') or c.get('then'):
-                lines.append(f'  Dado {c.get("given", "")}, cuando {c.get("when", "")}, entonces {c.get("then", "")}')
-        return lines + ['']
-    if isinstance(content, list) and isinstance(content[0], str):
-        return [f'- {c}' for c in content] + ['']
-    if isinstance(content, list) and 'case' in content[0]:
-        return _markdown_table(['Historia', 'Caso de prueba', 'Tipo', 'Prioridad', 'Estado'],
-                               [[r['story'], r['case'], r['type'], r['priority'], r['status']] for r in content])
-    return ['```json', json.dumps(content, indent=2, ensure_ascii=False), '```', '']
-
-
-def _markdown_table(headers, rows):
-    if not headers:
-        return ['_Tabla vacía._', '']
-    lines = ['| ' + ' | '.join(str(h) for h in headers) + ' |', '|' + '---|' * len(headers)]
-    lines += ['| ' + ' | '.join(str(c) for c in row) + ' |' for row in rows]
-    return lines + ['']
-
-
-def _render_typed_content_markdown(content, field_type):
-    """Mismo espíritu que _render_content_markdown, para los 5 tipos custom. `width` (una/dos columnas) se
-    ignora en Markdown — no tiene columnas nativas, cae a secuencial siempre (limitación documentada, no bug)."""
-    if content is None:
-        return ['_No aplica a este documento._', '']
-    if field_type in ('text', 'textarea'):
-        return [content, '']
-    if field_type == 'list':
-        lines = []
-        for it in content:
-            it = it if isinstance(it, dict) else {'text': str(it), 'done': False}
-            lines.append(('- [x] ' if it.get('done') else '- [ ] ') + (it.get('text') or '(vacío)'))
-        return lines + ['']
-    if field_type == 'table':
-        return _markdown_table(content.get('headers') or [], content.get('rows') or [])
-    if field_type == 'image':
-        return [f'![{content["filename"]}]({_file_url(content)})', '']
-    if field_type == 'attachment':
-        return [f'[{content["filename"]}]({_file_url(content)}) ({content.get("size", 0)} bytes)', '']
-    return ['_(sin datos)_', '']
-
-
-def _render_section_markdown(section, level=2):
-    if section['kind'] == 'group':
-        lines = [f'{"#" * min(level, 6)} {section["label"]}', ''] if section['label'] else []
-        return lines + _render_sections_markdown(section['children'], level + 1)
-    lines = [f'{"#" * min(level, 6)} {section["label"]}', '']
-    return lines + (_render_typed_content_markdown(section['content'], section['field_type']) if section['field_type']
-                    else _render_content_markdown(section['content']))
-
-
-def _render_sections_markdown(sections, level=2):
-    lines = []
-    for section in sections:   # width se ignora acá (ver _render_typed_content_markdown) — siempre secuencial
-        lines += _render_section_markdown(section, level)
-    return lines
-
-
 def render_spec_markdown(data):
-    lines = [f'# {data["title"]}', '', f'Plantilla: {data["template_name"]} · Generado: {data["generated_at"]}', '']
-    if data.get('sample'):
-        lines += ['> Vista previa con datos de ejemplo — no corresponde a un registro real.', '']
-    lines += _render_sections_markdown(data['sections'])
-    return '\n'.join(lines) + '\n'
-
-
-# --------------------------------------------------------------------------- Word
-
-def _write_content_docx(doc, content):
-    if content is None:
-        doc.add_paragraph('No aplica a este documento.')
-        return
-    if isinstance(content, str):
-        doc.add_paragraph(content or '—')
-        return
-    if isinstance(content, dict) and 'as_a' in content:
-        doc.add_paragraph(content['title'])
-        doc.add_paragraph(f'Como {content["as_a"]}')
-        doc.add_paragraph(f'Quiero {content["i_want"]}')
-        doc.add_paragraph(f'Para {content["so_that"]}')
-        doc.add_paragraph(f'Prioridad: {content["priority"]} · Estado: {content["status"]}')
-        return
-    if isinstance(content, dict) and 'total' in content:
-        doc.add_paragraph(f'{content["total"]} caso(s) de prueba · {content["automated"]} automatizado(s) · {content["passing"]} pasa(n).')
-        return
-    if isinstance(content, list) and not content:
-        doc.add_paragraph('Ninguno.')
-        return
-    if isinstance(content, list) and 'steps' in content[0]:
-        for tc in content:
-            doc.add_paragraph(f'{tc["title"]} — {_TYPE_ES.get(tc.get("type"), "")}/{core.PRIORITY_LABELS.get(tc.get("priority"), "")}/{_SPEC_STATUS_ES.get(tc.get("status"), "")}')
-            if tc.get('preconditions'):
-                doc.add_paragraph(f'Precondición: {tc["preconditions"]}')
-            for i, s in enumerate(tc.get('steps') or [], 1):
-                doc.add_paragraph(f'{i}. {s.get("action", "")} → {s.get("expected", "")}')
-        return
-    if isinstance(content, list) and 'status' in content[0] and 'text' in content[0]:
-        # "[x]"/"[ ]" en vez de un glifo de círculo: inequívoco sin depender de que la fuente lo soporte.
-        for c in content:
-            doc.add_paragraph(('[x] ' if c.get('status') == 'met' else '[ ] ') + (c.get('text') or '(sin resumen)'))
-            if c.get('given') or c.get('when') or c.get('then'):
-                doc.add_paragraph(f'    Dado {c.get("given", "")}, cuando {c.get("when", "")}, entonces {c.get("then", "")}')
-        return
-    if isinstance(content, list) and isinstance(content[0], str):
-        for c in content:
-            doc.add_paragraph(f'• {c}')
-        return
-    if isinstance(content, list) and 'case' in content[0]:
-        table = doc.add_table(rows=1, cols=5)
-        for cell, text in zip(table.rows[0].cells, ('Historia', 'Caso de prueba', 'Tipo', 'Prioridad', 'Estado')):
-            cell.text = text
-        for r in content:
-            cells = table.add_row().cells
-            for cell, key in zip(cells, ('story', 'case', 'type', 'priority', 'status')):
-                cell.text = str(r[key])
-        return
-    doc.add_paragraph(json.dumps(content, ensure_ascii=False, indent=2))
-
-
-def _write_typed_content_docx(sink, content, field_type):
-    """Mismo espíritu que _write_content_docx, para los 5 tipos custom. `sink` es un Document (sección normal,
-    a ancho completo) o una celda de tabla (la mitad emparejada de una fila `width='half'`, ver
-    _write_sections_docx) — ambos soportan add_paragraph/add_table igual; solo Document tiene add_picture
-    (hasattr lo distingue), así que una imagen dentro de una celda emparejada cae a una referencia de texto."""
-    if content is None:
-        sink.add_paragraph('No aplica a este documento.')
-        return
-    if field_type in ('text', 'textarea'):
-        sink.add_paragraph(content)
-        return
-    if field_type == 'list':
-        for it in content:
-            it = it if isinstance(it, dict) else {'text': str(it), 'done': False}
-            sink.add_paragraph(('[x] ' if it.get('done') else '[ ] ') + (it.get('text') or '(vacío)'))
-        return
-    if field_type == 'table':
-        headers, rows = content.get('headers') or [], content.get('rows') or []
-        table = sink.add_table(rows=1, cols=len(headers))
-        for cell, text in zip(table.rows[0].cells, headers):
-            cell.text = str(text)
-        for row in rows:
-            cells = table.add_row().cells
-            for cell, value in zip(cells, row):
-                cell.text = str(value)
-        return
-    if field_type == 'image':
-        if hasattr(sink, 'add_picture'):
-            from docx.shared import Inches
-            path = core.ARTIFACTS / f'{content["id"]}-{content["filename"]}'
-            if path.is_file():
-                try:
-                    sink.add_picture(str(path), width=Inches(4))
-                    return
-                except Exception:
-                    pass
-            sink.add_paragraph(f'[imagen no disponible: {content.get("filename", "")}]')
-        else:
-            sink.add_paragraph(f'[imagen: {content.get("filename", "")} — ver la versión HTML]')
-        return
-    if field_type == 'attachment':
-        sink.add_paragraph(f'Adjunto: {content.get("filename", "")} (descargar desde el registro)')
-        return
-    sink.add_paragraph('(sin datos)')
-
-
-def _write_section_docx(doc, section, level=2):
-    if section['kind'] == 'group':
-        if section['label']:
-            doc.add_heading(section['label'], level=min(level, 9))
-        _write_sections_docx(doc, section['children'], level + 1)
-        return
-    doc.add_heading(section['label'], level=min(level, 9))
-    if section['field_type']:
-        _write_typed_content_docx(doc, section['content'], section['field_type'])
-    else:
-        _write_content_docx(doc, section['content'])
-
-
-def _write_sections_docx(doc, sections, level=2):
-    """`doc` es un Document (ancho completo) o una celda de tabla (recursión dentro de una mitad ya
-    emparejada) — una fila `width='half'` se escribe como una tabla de 1 fila/2 celdas, cada celda con su
-    encabezado en negrita (las celdas no tienen add_heading) seguido del contenido normal."""
-    for row in _pair_rows(sections):
-        if len(row) == 2:
-            table = doc.add_table(rows=1, cols=2)
-            for cell, node in zip(table.rows[0].cells, row):
-                cell.paragraphs[0].add_run(node['label']).bold = True
-                if node['kind'] == 'group':
-                    _write_sections_docx(cell, node['children'], level + 1)
-                elif node['field_type']:
-                    _write_typed_content_docx(cell, node['content'], node['field_type'])
-                else:
-                    _write_content_docx(cell, node['content'])
-        else:
-            _write_section_docx(doc, row[0], level)
+    return report_render.render_markdown(_spec_doc(data))
 
 
 def render_spec_docx(data):
-    from docx import Document
-    doc = Document()
-    doc.add_heading(data['title'], level=1)
-    doc.add_paragraph(f'Plantilla: {data["template_name"]} · Generado: {data["generated_at"]}')
-    if data.get('sample'):
-        doc.add_paragraph('Vista previa con datos de ejemplo — no corresponde a un registro real.')
-    _write_sections_docx(doc, data['sections'])
-    buffer = io.BytesIO()
-    doc.save(buffer)
-    return buffer.getvalue()
+    return report_render.render_docx(_spec_doc(data))

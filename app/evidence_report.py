@@ -1,10 +1,8 @@
 """Evidencia descargable de una corrida (api/ui/suite/suite_group), paso a paso: misma estructura normalizada para
 HTML, PDF (reusa reporting.render_pdf) y Word. Ninguno de los tres intenta igualar el diseño del Resumen ejecutivo
 — esto es evidencia de QUÉ pasó en una corrida puntual, no un tablero de salud del proyecto."""
-import html
-import io
 import json
-from . import core, automation, reporting
+from . import core, automation, reporting, report_doc as rd, report_render
 
 FORMAT = 'ltw.evidence/1'
 STATUS_ES = {'passed': 'Pasó', 'failed': 'Falló', 'error': 'Error', 'cancelled': 'Cancelada', 'skipped': 'Omitido'}
@@ -95,173 +93,66 @@ def build_multi_report_data(title, runs, llm_verdict=None):
             'llm_verdict': llm_verdict}
 
 
-# --------------------------------------------------------------------------- HTML / PDF
+# --------------------------------------------------------------------------- doc (ver report_doc.py / report_render.py)
 
-HTML_CSS = '''
-:root{color-scheme:light}*{box-sizing:border-box}body{font-family:Segoe UI,Calibri,Arial,sans-serif;color:#111827;margin:0;background:#f3f4f6}
-main{max-width:900px;margin:0 auto;padding:24px 20px 48px}h1{font-size:22px;margin:0 0 4px}.meta{color:#6b7280;font-size:13px;margin-bottom:12px}
-.pill{display:inline-block;padding:2px 10px;border-radius:10px;color:#fff;font-size:12px;font-weight:600}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:14px 0}
-.card{background:#fff;border-radius:8px;padding:10px 14px;border:1px solid #e5e7eb}.card .v{font-size:22px;font-weight:700}.card .l{font-size:12px;color:#6b7280}
-.step{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;margin:10px 0}
-.step .head{display:flex;align-items:center;gap:8px;font-weight:600}.sub{margin-left:18px;border-left:2px solid #e5e7eb;padding-left:14px}
-pre{background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:8px 10px;font-size:12px;overflow:auto;white-space:pre-wrap;word-break:break-word}
-.assert{display:flex;gap:6px;align-items:flex-start;font-size:13px;margin:2px 0}.ok{color:#16a34a}.bad{color:#dc2626}
-.err{color:#991b1b;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:6px 10px;font-size:13px;white-space:pre-wrap}
-.verdict{border-radius:8px;padding:10px 14px;margin:14px 0;font-size:14px}.verdict.ok{background:#f0fdf4;border:1px solid #bbf7d0;color:#166534}
-.verdict.bad{background:#fef2f2;border:1px solid #fecaca;color:#991b1b}.verdict .t{font-weight:700;margin-bottom:4px}
-@media print{body{background:#fff}main{padding:0}.step{break-inside:avoid}}
-'''
-
-
-def _render_step_html(step, depth=0):
-    e = html.escape
-    pill = f'<span class="pill" style="background:{STATUS_COLOR.get(step["status"], "#6b7280")}">{e(STATUS_ES.get(step["status"], step["status"]))}</span>'
-    extra = f' · {step["duration_ms"]} ms' if step.get('duration_ms') is not None else ''
-    parts = [f'<div class="head">{pill}<span>{e(step.get("name", ""))}</span><span class="meta">{extra}</span></div>']
+def _step_to_block(step, depth=0):
+    children = [rd.heading(step.get('name') or 'Paso', level=2 + depth),
+                rd.badge(STATUS_ES.get(step['status'], step['status']), STATUS_COLOR.get(step['status'], '#6b7280'))]
+    if step.get('duration_ms') is not None:
+        children.append(rd.text(f'{step["duration_ms"]} ms'))
     if step.get('error'):
-        parts.append(f'<div class="err">{e(step["error"])}</div>')
+        children.append(rd.text(f'Error: {step["error"]}'))
     if 'request' in step:
         req = step['request']
-        parts.append(f'<div class="meta">{e(req.get("method") or "")} {e(req.get("url") or "")}' + (f' · HTTP {step["http_status"]}' if step.get('http_status') else '') + '</div>')
+        children.append(rd.text(f'{req.get("method") or ""} {req.get("url") or ""}' + (f' · HTTP {step["http_status"]}' if step.get('http_status') else '')))
         if req.get('query'):
-            parts.append(f'<div class="meta">Query:</div><pre>{e(json.dumps(req["query"], indent=2, ensure_ascii=False))}</pre>')
+            children += [rd.text('Query:'), rd.code(json.dumps(req['query'], indent=2, ensure_ascii=False), 'json')]
         if req.get('body') is not None:
             body_text = req['body'] if isinstance(req['body'], str) else json.dumps(req['body'], indent=2, ensure_ascii=False)
-            parts.append(f'<div class="meta">Body enviado:</div><pre>{e(body_text)}</pre>')
+            children += [rd.text('Body enviado:'), rd.code(body_text, 'json')]
         if step.get('response', {}).get('body'):
-            parts.append(f'<div class="meta">Respuesta:</div><pre>{e(step["response"]["body"][:4000])}</pre>')
-        for a in step.get('assertions', []):
-            icon = '✓' if a['passed'] else '✗'
-            parts.append(f'<div class="assert {"ok" if a["passed"] else "bad"}">{icon} {e(a["label"])}' + ('' if a['passed'] else f' → {e(str(a.get("actual"))[:300])}') + '</div>')
+            children += [rd.text('Respuesta:'), rd.code(step['response']['body'][:4000], 'json')]
+        if step.get('assertions'):
+            children.append(rd.checks([{'label': a['label'], 'ok': a['passed'], 'detail': a.get('actual')} for a in step['assertions']]))
     if step.get('ui_steps'):
-        for u in step['ui_steps']:
-            parts.append(f'<div class="assert {"ok" if u["passed"] else "bad"}">{"✓" if u["passed"] else "✗"} {e(u["label"])}</div>')
+        children.append(rd.checks([{'label': u['label'], 'ok': u['passed']} for u in step['ui_steps']]))
     if step.get('screenshot'):
-        parts.append(f'<div class="meta">Captura: {e(step["screenshot"])}</div>')
-    body = f'<div class="step">{"".join(parts)}</div>'
+        children.append(rd.text(f'Captura: {step["screenshot"]}'))
     if step.get('substeps'):
-        body += '<div class="sub">' + ''.join(_render_step_html(s, depth + 1) for s in step['substeps']) + '</div>'
-    return body
+        children.append(rd.group([_step_to_block(s, depth + 1) for s in step['substeps']], indent=True))
+    return rd.group(children)
 
 
-def _verdict_html(verdict):
-    e = html.escape
-    cls = 'ok' if verdict['pass'] else 'bad'
+def _verdict_block(verdict):
     title = '✅ El modelo considera que pasa' if verdict['pass'] else '❌ El modelo considera que no pasa'
-    return f'<div class="verdict {cls}"><div class="t">{title}</div><div>{e(verdict["reasoning"])}</div></div>'
+    return rd.banner('#16a34a' if verdict['pass'] else '#dc2626', title, [verdict['reasoning']])
+
+
+def _to_doc(data):
+    s = data['summary']
+    blocks = []
+    if data.get('llm_verdict'):
+        blocks.append(_verdict_block(data['llm_verdict']))
+    blocks.append(rd.badge(STATUS_ES.get(data['status'], data['status'] or ''), STATUS_COLOR.get(data['status'], '#6b7280')))
+    blocks.append(rd.cards([{'value': s['total'], 'label': 'Pasos'}, {'value': s['passed'], 'label': 'Pasaron'},
+                            {'value': s['failed'], 'label': 'Fallaron'}, {'value': s['skipped'], 'label': 'Omitidos'}]))
+    blocks += [_step_to_block(step) for step in data['steps']]
+    meta = f'Corrida {data.get("run_id") or ""} · generada {data["generated_at"]}' + (f' · inicio {data["started_at"]}' if data.get('started_at') else '')
+    return rd.doc(data['title'], blocks, meta=meta)
 
 
 def render_evidence_html(data):
-    e = html.escape
-    s = data['summary']
-    card = lambda value, label: f'<div class="card"><div class="v">{value}</div><div class="l">{e(label)}</div></div>'   # noqa: E731
-    body = [f'<h1>{e(data["title"])}</h1>',
-            f'<div class="meta">Corrida {e(data.get("run_id") or "")} · generada {e(data["generated_at"])}'
-            + (f' · inicio {e(data["started_at"])}' if data.get('started_at') else '') + '</div>',
-            f'<span class="pill" style="background:{STATUS_COLOR.get(data["status"], "#6b7280")}">{e(STATUS_ES.get(data["status"], data["status"] or ""))}</span>',
-            f'<div class="cards">{card(s["total"], "Pasos")}{card(s["passed"], "Pasaron")}{card(s["failed"], "Fallaron")}{card(s["skipped"], "Omitidos")}</div>']
-    if data.get('llm_verdict'):
-        body.append(_verdict_html(data['llm_verdict']))
-    body += [_render_step_html(step) for step in data['steps']]
-    return (f'<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>{e(data["title"])}</title><style>{HTML_CSS}</style></head><body><main>{"".join(body)}</main></body></html>')
+    return report_render.render_html(_to_doc(data))
 
 
 def render_evidence_pdf(html_text, destination):
     return reporting.render_pdf(html_text, destination)
 
 
-# --------------------------------------------------------------------------- Markdown
-
-def _step_markdown(step, level=2):
-    status = STATUS_ES.get(step['status'], step['status'] or '')
-    lines = [f'{"#" * min(level, 6)} {step.get("name", "")} — {status}', '']
-    if step.get('duration_ms') is not None:
-        lines.append(f'*{step["duration_ms"]} ms*')
-    if step.get('error'):
-        lines.append(f'> Error: {step["error"]}')
-    if 'request' in step:
-        req = step['request']
-        line = f'`{req.get("method") or ""} {req.get("url") or ""}`' + (f' · HTTP {step["http_status"]}' if step.get('http_status') else '')
-        lines.append(line)
-        if req.get('body') is not None:
-            body_text = req['body'] if isinstance(req['body'], str) else json.dumps(req['body'], indent=2, ensure_ascii=False)
-            lines += ['', 'Body enviado:', '```json', body_text, '```']
-        if step.get('response', {}).get('body'):
-            lines += ['', 'Respuesta:', '```json', step['response']['body'][:4000], '```']
-        lines.append('')
-        for a in step.get('assertions', []):
-            lines.append(('- ✓ ' if a['passed'] else '- ✗ ') + a['label'] + ('' if a['passed'] else f' → {str(a.get("actual"))[:300]}'))
-    for u in step.get('ui_steps', []):
-        lines.append(('- ✓ ' if u['passed'] else '- ✗ ') + u['label'])
-    lines.append('')
-    for sub in step.get('substeps', []):
-        lines += _step_markdown(sub, level + 1)
-    return lines
-
-
 def render_evidence_markdown(data):
-    status = STATUS_ES.get(data['status'], data['status'] or '')
-    s = data['summary']
-    lines = [f'# {data["title"]}', '', f'Estado: **{status}** · Generado: {data["generated_at"]}', '',
-             f'{s["passed"]} de {s["total"]} pasos pasaron ({s["failed"]} fallaron, {s["skipped"]} omitidos)', '']
-    verdict = data.get('llm_verdict')
-    if verdict:
-        title = '✅ El modelo considera que pasa' if verdict['pass'] else '❌ El modelo considera que no pasa'
-        lines += [f'> **{title}**', f'> {verdict["reasoning"]}', '']
-    for step in data['steps']:
-        lines += _step_markdown(step)
-    return '\n'.join(lines) + '\n'
-
-
-# --------------------------------------------------------------------------- Word
-
-def _write_step_docx(doc, step, level=2):
-    from docx.shared import Pt
-    doc.add_heading(f'{step.get("name", "")} — {STATUS_ES.get(step["status"], step["status"])}', level=min(level, 4))
-    if step.get('duration_ms') is not None:
-        doc.add_paragraph(f'{step["duration_ms"]} ms')
-    if step.get('error'):
-        doc.add_paragraph(f'Error: {step["error"]}')
-    if 'request' in step:
-        req = step['request']
-        line = f'{req.get("method") or ""} {req.get("url") or ""}' + (f' · HTTP {step["http_status"]}' if step.get('http_status') else '')
-        doc.add_paragraph(line)
-        if req.get('body') is not None:
-            body_text = req['body'] if isinstance(req['body'], str) else json.dumps(req['body'], indent=2, ensure_ascii=False)
-            p = doc.add_paragraph(body_text)
-            for run_ in p.runs:
-                run_.font.name = 'Consolas'
-                run_.font.size = Pt(9)
-        if step.get('response', {}).get('body'):
-            p = doc.add_paragraph(step['response']['body'][:4000])
-            for run_ in p.runs:
-                run_.font.name = 'Consolas'
-                run_.font.size = Pt(9)
-        for a in step.get('assertions', []):
-            doc.add_paragraph(('✓ ' if a['passed'] else '✗ ') + a['label'])
-    for u in step.get('ui_steps', []):
-        doc.add_paragraph(('✓ ' if u['passed'] else '✗ ') + u['label'])
-    for sub in step.get('substeps', []):
-        _write_step_docx(doc, sub, level=level + 1)
+    return report_render.render_markdown(_to_doc(data))
 
 
 def render_evidence_docx(data):
     """Mismo contenido que el HTML/PDF, en formato simple (sin buscar igualar el diseño del PDF)."""
-    from docx import Document
-    doc = Document()
-    doc.add_heading(data['title'], level=1)
-    doc.add_paragraph(f'Estado: {STATUS_ES.get(data["status"], data["status"] or "")} · Generado: {data["generated_at"]}')
-    s = data['summary']
-    doc.add_paragraph(f'{s["passed"]} de {s["total"]} pasos pasaron ({s["failed"]} fallaron, {s["skipped"]} omitidos)')
-    verdict = data.get('llm_verdict')
-    if verdict:
-        title = '✅ El modelo considera que pasa' if verdict['pass'] else '❌ El modelo considera que no pasa'
-        doc.add_heading(title, level=2)
-        doc.add_paragraph(verdict['reasoning'])
-    for step in data['steps']:
-        _write_step_docx(doc, step)
-    buffer = io.BytesIO()
-    doc.save(buffer)
-    return buffer.getvalue()
+    return report_render.render_docx(_to_doc(data))

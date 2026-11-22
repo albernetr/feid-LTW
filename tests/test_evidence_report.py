@@ -103,7 +103,7 @@ def test_render_evidence_markdown_contains_steps_and_status(world):
     run = core.execute_api(case, world['env'])
     data = evidence_report.build_report_data(run)
     md_out = evidence_report.render_evidence_markdown(data)
-    assert md_out.startswith('# crear') and '## crear — Pasó' in md_out and '```json' in md_out
+    assert md_out.startswith('# crear') and '## crear' in md_out and '**Pasó**' in md_out and '```json' in md_out
 
 
 def test_render_evidence_markdown_nests_substeps_as_deeper_headings(world):
@@ -129,7 +129,7 @@ def test_render_evidence_docx_is_a_valid_document(world):
     doc = Document(io.BytesIO(content))
     headings = [p.text for p in doc.paragraphs if p.style.name.startswith('Heading')]
     assert any('crear' in h for h in headings)   # título del reporte
-    assert any('Pasó' in h for h in headings)    # encabezado del paso, con su estado
+    assert any('Pasó' in p.text for p in doc.paragraphs)    # estado del paso (badge, como párrafo aparte)
 
 
 def test_build_report_data_without_a_verdict_leaves_it_as_none(world):
@@ -146,7 +146,7 @@ def test_render_evidence_html_shows_the_verdict_at_the_top_when_given(world):
     data = evidence_report.build_report_data(run, llm_verdict=verdict)
     html_out = evidence_report.render_evidence_html(data)
     assert 'El flujo hizo exactamente lo que pedía la HU.' in html_out
-    assert html_out.index('verdict') < html_out.index('class="step"')   # arriba de los pasos, no mezclado
+    assert html_out.index('banner') < html_out.index('class="group"')   # arriba de los pasos, no mezclado
 
 
 def test_render_evidence_html_marks_a_failing_verdict_differently(world):
@@ -155,7 +155,7 @@ def test_render_evidence_html_marks_a_failing_verdict_differently(world):
     verdict = {'pass': False, 'reasoning': 'No pidió el dato que exigía la HU.'}
     data = evidence_report.build_report_data(run, llm_verdict=verdict)
     html_out = evidence_report.render_evidence_html(data)
-    assert 'verdict bad' in html_out and 'No pidió el dato' in html_out
+    assert 'background:#dc2626' in html_out and 'No pidió el dato' in html_out   # banner rojo: color real, no una clase CSS fija
 
 
 def test_render_evidence_markdown_includes_the_verdict(world):
