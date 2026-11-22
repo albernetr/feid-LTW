@@ -152,18 +152,35 @@ def _validate_custom_value(value, field_type):
     return None
 
 
+def _is_empty_content(content):
+    """Sin nada que mostrar: None, texto vacío o lista vacía — un dict (story-card, coverage) nunca cuenta
+    como vacío, trae sus claves siempre (hasta en 0, sigue siendo un dato real, no un placeholder)."""
+    return content is None or content == '' or content == []
+
+
 def _build_tree_sections(body, resolve_known, custom_fields):
     """Construye, recursivamente, el árbol de SECCIONES de un reporte a partir del árbol `body` de una
     plantilla (ver core.py) — un nodo 'field' con field_type=None resuelve contra un campo FIJO conocido
     (resolve_known, el mismo resolvedor de siempre); con field_type declarado, resuelve contra `custom_fields`
-    (el dict guardado en el registro). Un nodo 'group' solo agrupa: label + as_tab + sus children recursivos."""
+    (el dict guardado en el registro). Un nodo 'group' solo agrupa: label + as_tab + sus children recursivos.
+    Una sección sin nada que mostrar (ver _is_empty_content) se omite por defecto — "Ninguno."/"No aplica a
+    este documento." repetido en cada campo vacío de un registro real no aporta, solo ocupa espacio; un grupo
+    que se queda sin ningún hijo visible se omite entero (no deja un título sin nada debajo). Esto también
+    afecta la vista EN VIVO del visor (spec_viewer.py), que reusa este mismo árbol — en el previsualizador de
+    una plantilla con datos de EJEMPLO esto rara vez se nota (el placeholder trae casi todos los campos
+    llenos), pero un campo custom recién agregado a la plantilla (sin valor todavía) puede desaparecer de esa
+    vista previa hasta que se le ponga un valor — aceptado, prioriza el documento real sobre la comodidad de
+    armar la plantilla."""
     sections = []
     for node in (body or []):
         if not isinstance(node, dict):
             continue
         if node.get('kind') == 'group':
+            children = _build_tree_sections(node.get('children') or [], resolve_known, custom_fields)
+            if not children:
+                continue
             sections.append({'kind': 'group', 'label': node.get('label') or '', 'width': node.get('width', 'full'),
-                             'as_tab': bool(node.get('as_tab')), 'children': _build_tree_sections(node.get('children') or [], resolve_known, custom_fields)})
+                             'as_tab': bool(node.get('as_tab')), 'children': children})
             continue
         # `node` puede venir del editor EN VIVO (vista previa mientras se edita una plantilla, ver
         # spec_templates.py::live_preview), todavía sin pasar por core._clean_template_body — un campo recién
@@ -172,6 +189,8 @@ def _build_tree_sections(body, resolve_known, custom_fields):
         field_key = node.get('field_key') or node.get('field') or ''
         field_type = node.get('field_type')
         content = resolve_known(field_key) if field_type is None else _validate_custom_value((custom_fields or {}).get(field_key), field_type)
+        if _is_empty_content(content):
+            continue
         sections.append({'kind': 'field', 'field': field_key, 'label': node.get('label') or field_key or '',
                          'width': node.get('width', 'full'), 'field_type': field_type, 'content': content})
     return sections

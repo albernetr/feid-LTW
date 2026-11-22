@@ -82,7 +82,7 @@ def test_build_test_matrix_report_data_aggregates_every_story_in_the_project(wor
 def test_build_test_matrix_report_data_with_no_stories_is_not_an_error():
     project = core.create_project('Sin historias')
     data = spec_report.build_test_matrix_report_data(project['id'])
-    assert data['sections'][0]['content'] == []
+    assert data['sections'] == []   # sin historias, la matriz queda vacía — se omite, no deja un título sin nada debajo
 
 
 def test_build_template_preview_for_a_test_case_template_uses_placeholder_steps():
@@ -103,12 +103,12 @@ def test_build_template_preview_for_a_user_story_template(world):
     assert sections['as_a'] == 'usuario' and [c['text'] for c in sections['criteria']] == ['Se envía un email', 'El link expira']
 
 
-def test_build_template_preview_for_a_free_format_template_shows_not_applicable():
+def test_build_template_preview_for_a_free_format_template_hides_the_empty_content_field():
     tpl = _template('Formato libre')
     data = spec_report.build_template_preview(tpl)
-    # 'Formato libre' ahora empieza con el grupo 'general' de metadatos (ver core.DEFAULT_SPEC_TEMPLATES) — el
-    # campo 'content' ya no es la primera sección, hay que aplanar para encontrarlo.
-    assert _flatten(data['sections'])['content'] is None
+    # El placeholder de ejemplo no define 'content' (es el campo propio de "Formato libre") — queda vacío, y
+    # una sección vacía se omite por defecto (ver _is_empty_content), no aparece como "No aplica…".
+    assert 'content' not in _flatten(data['sections'])
 
 
 def test_build_template_preview_for_an_output_template_delegates_to_the_story_report():
@@ -208,10 +208,10 @@ def test_custom_field_value_shape_mismatch_is_treated_as_empty_not_a_crash(world
     story = core.update_user_story(s0['id'], s0['title'], s0['as_a'], s0['i_want'], s0['so_that'], criteria=s0['criteria'],
                                    custom_fields={'presupuesto': {'headers': [], 'rows': []}, 'matriz_propia': 'no es una tabla'})
     data = spec_report.build_story_report_data(story, tpl)
-    group = next(s for s in data['sections'] if s['kind'] == 'group')
-    by_field = {c['field']: c for c in group['children']}
-    assert by_field['presupuesto']['content'] is None   # un dict donde se esperaba un string: vacío, no error
-    assert by_field['matriz_propia']['content'] is None   # un string donde se esperaba {headers, rows}: vacío
+    # Los dos campos custom con forma incorrecta (dict donde se esperaba texto, string donde se esperaba
+    # tabla) quedan vacíos — y como son los únicos hijos del grupo, el grupo entero se omite (sin título sin
+    # nada debajo), en vez de reventar.
+    assert not any(s['kind'] == 'group' for s in data['sections'])
     for render in (spec_report.render_spec_html, spec_report.render_spec_markdown):
         render(data)   # no debe reventar
     assert spec_report.render_spec_docx(data)[:2] == b'PK'
@@ -226,7 +226,10 @@ def test_width_half_pairs_consecutive_siblings_into_a_two_column_row_in_html():
 
 def test_as_tab_group_metadata_survives_into_the_built_report_tree(world):
     tpl = _output_template_with_custom_fields(world['pid'])
-    data = spec_report.build_story_report_data(world['story'], tpl)
+    s0 = world['story']
+    story = core.update_user_story(s0['id'], s0['title'], s0['as_a'], s0['i_want'], s0['so_that'], criteria=s0['criteria'],
+                                   custom_fields=_custom_fields_sample())   # con contenido real: el grupo no se omite
+    data = spec_report.build_story_report_data(story, tpl)
     group = next(s for s in data['sections'] if s['kind'] == 'group')
     assert group['as_tab'] is True
     assert {c['field'] for c in group['children']} == {'presupuesto', 'riesgo_extra', 'checklist', 'matriz_propia', 'captura', 'anexo'}
