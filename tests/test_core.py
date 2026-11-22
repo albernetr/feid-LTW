@@ -1214,7 +1214,7 @@ def test_materialize_spec_steps_as_flow_requires_a_proven_step_and_a_project_cod
     assert core.materialize_spec_steps_as_flow(unproven) is None   # unproven no tiene code: dict viejo, sin recargar
 
     flow = core.materialize_spec_steps_as_flow(spec)
-    assert flow is not None and flow['name'] == spec['code']
+    assert flow is not None and flow['name'] == f'{spec["code"]} · TC sin probar'
     [case] = [c for c in core.list_items('cases') if c['project_id'] == project['id']]
     assert case['name'] == f'{spec["code"]} · Paso 1 · a' and case['method'] == 'GET' and case['path'] == '/health'
     assert case['materialized_from'] == f'{spec["code"]}#1'
@@ -1283,11 +1283,25 @@ def test_materialize_spec_steps_as_flow_names_include_hu_and_criterion_codes_and
         steps=[{'action': long_action, 'expected': 'e', 'type': 'api', 'technical': _proven_technical(env['id'])}])
 
     flow = core.materialize_spec_steps_as_flow(spec)
-    assert flow['name'] == f'{story["code"]} · {spec["code"]}'
+    assert flow['name'] == f'{story["code"]} · {spec["code"]} · TC con HU'
     [case] = [c for c in core.list_items('cases') if c['project_id'] == project['id']]
     assert case['name'].startswith(f'{story["code"]} · {crit2["code"]} · {spec["code"]} · Paso 1 · ')
     label = case['name'].split(' · ')[-1]
     assert len(label) <= 30 and label.endswith('…')   # truncado, no el texto completo del step
+
+
+def test_materialize_spec_steps_as_flow_name_includes_the_tc_title_truncated():
+    project = core.create_project('Materializar titulo de flujo')
+    core.set_id_prefix(project['id'], 'test_case', 'TC')
+    env = core.save('environments', {'name': 'e', 'project_id': project['id'], 'base_url': 'http://x', 'auth': {'type': 'none'}, 'variables': {}})
+    long_title = 'Un título de Caso de prueba bastante largo que supera los treinta caracteres'
+    spec = core.create_test_case_spec(long_title, project['id'], steps=[
+        {'action': 'a', 'expected': 'e', 'type': 'api', 'technical': _proven_technical(env['id'])}])
+
+    flow = core.materialize_spec_steps_as_flow(spec)
+    title_part = flow['name'].split(' · ')[-1]
+    assert flow['name'].startswith(f'{spec["code"]} · ')
+    assert len(title_part) <= 30 and title_part.endswith('…')   # el título del Flujo también se trunca
 
 
 def test_materialize_spec_steps_as_flow_renaming_a_step_updates_instead_of_duplicating():

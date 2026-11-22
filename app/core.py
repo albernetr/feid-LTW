@@ -892,11 +892,15 @@ def _upsert_by_field(table, project_id, field, value, fields):
     return merged
 
 
+def _truncate_label(text, limit=30):
+    """Trunca un texto a ~`limit` caracteres (con '…') para que un nombre compuesto siga siendo corto."""
+    text = (text or '').strip()
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + '…'
+
+
 def _step_short_label(step):
-    """Resumen corto y legible del step (su `action`) para usar en el nombre del Caso materializado —
-    truncado a ~30 caracteres para que el nombre completo siga siendo corto."""
-    text = (step.get('action') or '').strip()
-    return text if len(text) <= 30 else text[:29].rstrip() + '…'
+    """Resumen corto y legible del step (su `action`) para usar en el nombre del Caso materializado."""
+    return _truncate_label(step.get('action'))
 
 
 def _materialized_step_name(tc, story, index, step):
@@ -957,7 +961,12 @@ def materialize_spec_steps_as_flow(tc):
         return None
     flow_steps = [{'case_id': cid, 'alias': f'paso-{n}', 'environment_id': None, 'enrich': []}
                  for n, cid in enumerate(case_ids, start=1)]
-    flow_name = f'{story["code"]} · {code}' if story and story.get('code') else code
+    flow_parts = [story['code']] if story and story.get('code') else []
+    flow_parts.append(code)
+    title_label = _truncate_label(tc.get('title'))
+    if title_label:
+        flow_parts.append(title_label)
+    flow_name = ' · '.join(flow_parts)
     existing_suite = next((s for s in list_project_items('suites', project_id) if s.get('materialized_from') == code), None)
     suite = save_suite(flow_name, first_environment_id, [], project_id, id=(existing_suite or {}).get('id'), steps=flow_steps,
                        on_failure='continue', retries=0, retry_delay_s=0, variables={}, feature_id=None, draws=[])
