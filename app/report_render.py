@@ -330,6 +330,70 @@ def render_docx(doc):
     return buffer.getvalue()
 
 
+class _SectionSink:
+    """Adaptador para que `_block_docx` escriba dentro del Encabezado/Pie NATIVO de sección de python-docx
+    (`section.header`/`.footer`) con la misma lógica que escribe sobre el `Document` -- un `_Header`/`_Footer`
+    no tiene `add_heading`, se la damos igual que `_CellSink` ya hace para una celda de tabla. Esto es lo que
+    de verdad repite el Encabezado/Pie en CADA página impresa de Word, no solo una vez arriba/abajo."""
+
+    def __init__(self, part):
+        self._part = part
+        self._used_first_paragraph = False
+
+    def _paragraph(self):
+        if not self._used_first_paragraph:
+            self._used_first_paragraph = True
+            p = self._part.paragraphs[0]
+            p.text = ''
+            return p
+        return self._part.add_paragraph()
+
+    def add_heading(self, text, level=1):
+        p = self._paragraph()
+        p.add_run(text).bold = True
+        return p
+
+    def add_paragraph(self, text='', style=None):
+        p = self._paragraph()
+        if text:
+            p.add_run(text)
+        return p
+
+    def add_table(self, rows, cols):
+        return self._part.add_table(rows=rows, cols=cols)
+
+    def add_picture(self, *args, **kwargs):
+        return self._part.add_picture(*args, **kwargs)
+
+
+def render_layout_docx(header_blocks, body_doc, footer_blocks):
+    """DOCX del diseñador visual (Reportería) con Encabezado/Pie en el header/footer NATIVO de sección de
+    python-docx -- se repiten de verdad en cada página impresa, igual que `render_layout_pdf` ya hace con los
+    templates de Playwright. El Cuerpo degrada a bloques secuenciales (mismo criterio aceptado desde Fase 2
+    para contenido sin posición real: no hay "página" en un documento que fluye)."""
+    from docx import Document
+    document = Document()
+    section = document.sections[0]
+    if header_blocks:
+        section.header.is_linked_to_previous = False
+        sink = _SectionSink(section.header)
+        for block in header_blocks:
+            _block_docx(sink, block)
+    if footer_blocks:
+        section.footer.is_linked_to_previous = False
+        sink = _SectionSink(section.footer)
+        for block in footer_blocks:
+            _block_docx(sink, block)
+    document.add_heading(body_doc['title'], level=1)
+    if body_doc.get('meta'):
+        document.add_paragraph(body_doc['meta'])
+    for block in body_doc['blocks']:
+        _block_docx(document, block)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
 # --------------------------------------------------------------------------- PDF (Chromium/Playwright) y despacho
 
 def render_pdf_from_html(html_text, destination):

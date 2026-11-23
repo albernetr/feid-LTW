@@ -1,5 +1,5 @@
 """Diseñador visual de reportes (Reportería, Fase 1 — contenedores tipo Dreamweaver/Webflow): core.py
-(report_layouts, CRUD + limpieza del árbol) y app/pages/report_designer.py (_layout_to_blocks, la traducción
+(report_layouts, CRUD + limpieza del árbol) y app/pages/report_designer.py (layout_to_blocks, la traducción
 a los bloques de report_doc.py que ya existen)."""
 import pytest
 from app import core, report_doc as rd, report_render
@@ -25,10 +25,34 @@ def test_create_report_layout_cleans_the_container_tree(project):
     assert row_node['children'][0]['rows'] == [['1', '2']]
 
 
-def test_create_report_layout_discards_a_node_kind_not_supported_yet(project):
-    """'field'/'image'/'repeat' se suman en fases siguientes -- hoy un nodo de ese kind se descarta en
-    silencio (mismo criterio que _clean_template_node con un nodo irreconocible), no rompe el guardado."""
-    layout = core.create_report_layout('x', 'report', project['id'], body=[{'kind': 'field', 'field_key': 'as_a'}])
+def test_create_report_layout_discards_an_unrecognized_node_kind(project):
+    """Un kind que core.LAYOUT_NODE_KINDS no reconoce se descarta en silencio (mismo criterio que
+    _clean_template_node con un nodo irreconocible), no rompe el guardado."""
+    layout = core.create_report_layout('x', 'report', project['id'], body=[{'kind': 'bogus', 'children': []}])
+    assert layout['body'] == []
+
+
+def test_create_report_layout_discards_a_repeat_node_without_field_key(project):
+    layout = core.create_report_layout('x', 'report', project['id'], body=[{'kind': 'repeat', 'children': []}])
+    assert layout['body'] == []
+
+
+def test_create_report_layout_keeps_a_repeat_node_and_cleans_its_children(project):
+    body = [{'kind': 'repeat', 'field_key': 'pasos', 'children': [
+        {'kind': 'field', 'source': 'row', 'column_index': 1},
+        {'kind': 'field'},  # sin field_key y sin column_index -- se descarta
+    ]}]
+    layout = core.create_report_layout('x', 'report', project['id'], body=body)
+    node = layout['body'][0]
+    assert node['kind'] == 'repeat' and node['field_key'] == 'pasos'
+    assert len(node['children']) == 1
+    assert node['children'][0] == {'id': node['children'][0]['id'], 'kind': 'field', 'col_span': 12,
+                                   'source': 'row', 'column_index': 1, 'label': 'Columna 2'}
+
+
+def test_create_report_layout_discards_a_row_field_with_a_negative_column_index(project):
+    body = [{'kind': 'field', 'source': 'row', 'column_index': -1}]
+    layout = core.create_report_layout('x', 'report', project['id'], body=body)
     assert layout['body'] == []
 
 
@@ -63,8 +87,8 @@ def _nested_tree():
     ]
 
 
-def test_layout_to_blocks_builds_row_group_table_and_divider():
-    blocks = design._layout_to_blocks(_nested_tree())
+def testlayout_to_blocks_builds_row_group_table_and_divider():
+    blocks = design.layout_to_blocks(_nested_tree())
     assert len(blocks) == 1 and blocks[0]['kind'] == 'row'
     row_block = blocks[0]
     assert row_block['background'] == '#eee' and row_block['border'] is True
@@ -74,14 +98,14 @@ def test_layout_to_blocks_builds_row_group_table_and_divider():
 
 
 def test_layout_export_html_renders_the_grid_background_and_the_divider():
-    doc = rd.doc('Diseño', design._layout_to_blocks(_nested_tree()))
+    doc = rd.doc('Diseño', design.layout_to_blocks(_nested_tree()))
     html = report_render.render_html(doc)
     assert 'display:grid' in html and 'background:#eee' in html and '<hr' in html
 
 
 def test_layout_export_markdown_degrades_sequentially():
     """Markdown no distingue fila/columna ni fondo/borde -- todo secuencial, la línea se degrada a `---`."""
-    doc = rd.doc('Diseño', design._layout_to_blocks(_nested_tree()))
+    doc = rd.doc('Diseño', design.layout_to_blocks(_nested_tree()))
     md = report_render.render_markdown(doc)
     assert '---' in md
 
@@ -137,8 +161,8 @@ def _text_image_list_checklist_tree():
     ]
 
 
-def test_layout_to_blocks_builds_heading_text_file_list_and_checks():
-    blocks = design._layout_to_blocks(_text_image_list_checklist_tree())
+def testlayout_to_blocks_builds_heading_text_file_list_and_checks():
+    blocks = design.layout_to_blocks(_text_image_list_checklist_tree())
     assert blocks[0] == {'kind': 'heading', 'text': 'Encabezado', 'level': 2}
     assert blocks[1] == {'kind': 'text', 'text': 'Parrafo libre'}
     assert blocks[2]['kind'] == 'text' and 'sin subir' in blocks[2]['text']   # placeholder: imagen sin subir
@@ -149,8 +173,197 @@ def test_layout_to_blocks_builds_heading_text_file_list_and_checks():
 
 
 def test_layout_export_html_and_markdown_render_text_list_and_checks():
-    doc = rd.doc('Diseño', design._layout_to_blocks(_text_image_list_checklist_tree()))
+    doc = rd.doc('Diseño', design.layout_to_blocks(_text_image_list_checklist_tree()))
     html = report_render.render_html(doc)
     assert '<h3>Encabezado</h3>' in html and 'Parrafo libre' in html and 'Opcion A' in html
     md = report_render.render_markdown(doc)
     assert '- uno' in md and '✓ Opcion A' in md and '✗ Opcion B' in md
+
+
+# --------------------------------------------------------------------------- Fase 3: 'field' dinámico
+# (catálogo fijo + campos propios de la Plantilla de entrada asociada al diseño) y `table` en modo 'field'.
+
+@pytest.fixture
+def input_template(project):
+    return core.create_spec_template('HU con presupuesto', 'input', 'user_story', project_id=project['id'], body=[
+        {'kind': 'field', 'label': 'Presupuesto', 'field_key': 'presupuesto', 'field_type': 'text'},
+        {'kind': 'field', 'label': 'Matriz de riesgos', 'field_key': 'matriz_riesgos', 'field_type': 'table'},
+    ])
+
+
+@pytest.fixture
+def story(project):
+    return core.create_user_story('Mi historia', project['id'], 'Como tester', 'quiero probar', 'para validar',
+                                  custom_fields={'presupuesto': '5000 USD',
+                                                 'matriz_riesgos': {'headers': ['Riesgo', 'Impacto'], 'rows': [['Caida del server', 'Alto']]}})
+
+
+def test_create_report_layout_cleans_a_field_node_and_discards_one_without_field_key(project):
+    layout = core.create_report_layout('x', 'user_story', project['id'], body=[
+        {'kind': 'field', 'source': 'fixed', 'field_key': 'as_a', 'label': 'Como (rol)'},
+        {'kind': 'field', 'source': 'template', 'field_key': ''},
+    ])
+    assert len(layout['body']) == 1
+    node = layout['body'][0]
+    assert node == {'id': node['id'], 'kind': 'field', 'col_span': 12, 'source': 'fixed', 'field_key': 'as_a', 'label': 'Como (rol)'}
+
+
+def test_create_report_layout_cleans_a_table_in_field_mode_and_discards_one_without_field_key(project):
+    layout = core.create_report_layout('x', 'user_story', project['id'], body=[
+        {'kind': 'table', 'mode': 'field', 'field_key': 'matriz_riesgos', 'label': 'Matriz de riesgos'},
+        {'kind': 'table', 'mode': 'field', 'field_key': ''},
+    ])
+    assert len(layout['body']) == 1
+    assert layout['body'][0] == {'id': layout['body'][0]['id'], 'kind': 'table', 'col_span': 12, 'mode': 'field',
+                                'field_key': 'matriz_riesgos', 'label': 'Matriz de riesgos'}
+
+
+def test_create_report_layout_keeps_a_literal_table_mode(project):
+    layout = core.create_report_layout('x', 'report', project['id'], body=[
+        {'kind': 'table', 'headers': ['A', 'B'], 'rows': [['1', '2']]},
+    ])
+    assert layout['body'][0]['mode'] == 'literal' and layout['body'][0]['headers'] == ['A', 'B']
+
+
+def test_input_template_id_is_cleaned_when_invalid_or_mismatched(project, input_template):
+    other_project = core.create_project('Otro proyecto')
+    # applies_to no coincide con el de la plantilla (user_story) -- se descarta
+    layout = core.create_report_layout('x', 'test_case', project['id'], input_template_id=input_template['id'])
+    assert layout['input_template_id'] is None
+    # la plantilla no es de este proyecto -- se descarta
+    layout2 = core.create_report_layout('y', 'user_story', other_project['id'], input_template_id=input_template['id'])
+    assert layout2['input_template_id'] is None
+    # coincide applies_to y proyecto -- se conserva
+    layout3 = core.create_report_layout('z', 'user_story', project['id'], input_template_id=input_template['id'])
+    assert layout3['input_template_id'] == input_template['id']
+
+
+def test_field_catalog_adds_the_associated_template_custom_fields(input_template):
+    catalog = design._field_catalog('user_story', input_template)
+    assert 'as_a' in catalog and catalog['presupuesto'] == 'Presupuesto'
+    # sin plantilla asociada, solo quedan los fijos
+    assert 'presupuesto' not in design._field_catalog('user_story', None)
+
+
+def test_table_field_catalog_only_lists_table_type_custom_fields(input_template):
+    assert design._table_field_catalog(input_template) == {'matriz_riesgos': 'Matriz de riesgos'}
+    assert design._table_field_catalog(None) == {}
+
+
+def testlayout_to_blocks_field_uses_lorem_ipsum_without_a_preview_record():
+    body = [{'kind': 'field', 'source': 'fixed', 'field_key': 'as_a', 'label': 'Como (rol)'}]
+    blocks = design.layout_to_blocks(body, record=None)
+    assert blocks == [{'kind': 'text', 'text': design._LOREM}]
+
+
+def testlayout_to_blocks_field_uses_the_real_value_when_a_record_is_selected(story):
+    fixed = [{'kind': 'field', 'source': 'fixed', 'field_key': 'as_a', 'label': 'Como (rol)'}]
+    assert design.layout_to_blocks(fixed, record=story) == [{'kind': 'text', 'text': 'Como tester'}]
+    template_field = [{'kind': 'field', 'source': 'template', 'field_key': 'presupuesto', 'label': 'Presupuesto'}]
+    assert design.layout_to_blocks(template_field, record=story) == [{'kind': 'text', 'text': '5000 USD'}]
+
+
+def testlayout_to_blocks_table_field_mode_falls_back_to_a_labeled_placeholder(story):
+    body = [{'kind': 'table', 'mode': 'field', 'field_key': 'matriz_riesgos', 'label': 'Matriz de riesgos'}]
+    assert design.layout_to_blocks(body, record=None) == [{'kind': 'table', 'columns': ['Matriz de riesgos', 'Matriz de riesgos'], 'rows': []}]
+    assert design.layout_to_blocks(body, record=story) == [{'kind': 'table', 'columns': ['Riesgo', 'Impacto'], 'rows': [['Caida del server', 'Alto']]}]
+
+
+def _repeat_body():
+    return [{'kind': 'repeat', 'field_key': 'matriz_riesgos', 'children': [
+        {'kind': 'field', 'source': 'row', 'column_index': 0, 'label': 'Columna 1'},
+        {'kind': 'field', 'source': 'row', 'column_index': 1, 'label': 'Columna 2'},
+    ]}]
+
+
+def test_layout_to_blocks_repeat_clones_children_once_per_real_row(story):
+    blocks = design.layout_to_blocks(_repeat_body(), record=story)
+    assert blocks == [{'kind': 'group', 'children': [
+        {'kind': 'text', 'text': 'Caida del server'},
+        {'kind': 'text', 'text': 'Alto'},
+    ], 'indent': False, 'background': None, 'border': False}]
+
+
+def test_layout_to_blocks_repeat_renders_one_placeholder_pass_without_real_rows():
+    """Sin registro (o sin filas reales todavía) nunca queda vacío: una sola pasada de los hijos, cada
+    'field' source='row' cae a su lorem ipsum, igual que cualquier otro 'field' sin dato."""
+    blocks = design.layout_to_blocks(_repeat_body(), record=None)
+    assert blocks == [{'kind': 'group', 'children': [
+        {'kind': 'text', 'text': design._LOREM},
+        {'kind': 'text', 'text': design._LOREM},
+    ], 'indent': False, 'background': None, 'border': False}]
+
+
+def test_layout_to_blocks_repeat_with_several_rows_separates_them_with_a_divider(project):
+    story_with_two_rows = core.create_user_story('Otra', project['id'], 'Como x', 'quiero y', 'para z', custom_fields={
+        'matriz_riesgos': {'headers': ['Riesgo', 'Impacto'], 'rows': [['A', 'B'], ['C', 'D']]}})
+    blocks = design.layout_to_blocks(_repeat_body(), record=story_with_two_rows)
+    assert len(blocks) == 1 and blocks[0]['kind'] == 'group'
+    children = blocks[0]['children']
+    assert children[0] == {'kind': 'text', 'text': 'A'}
+    assert children[1] == {'kind': 'text', 'text': 'B'}
+    assert children[2]['kind'] == 'divider'
+    assert children[3] == {'kind': 'text', 'text': 'C'}
+    assert children[4] == {'kind': 'text', 'text': 'D'}
+
+
+def test_layout_to_blocks_row_field_falls_back_to_lorem_outside_a_repeat():
+    """Un 'field' source='row' fuera de cualquier 'repeat' (row=None siempre) también degrada a lorem ipsum,
+    nunca revienta -- el mismo criterio de respaldo del resto de 'field'."""
+    body = [{'kind': 'field', 'source': 'row', 'column_index': 0, 'label': 'Columna 1'}]
+    assert design.layout_to_blocks(body, record=None) == [{'kind': 'text', 'text': design._LOREM}]
+
+
+# --------------------------------------------------------------------------- Fase 4: DOCX con encabezado/pie
+# nativo de sección (se repite en cada página impresa de verdad, igual que ya hace render_layout_pdf).
+
+def test_layout_docx_produces_a_valid_document_with_header_and_footer():
+    header_blocks = [rd.text('Encabezado de prueba')]
+    footer_blocks = [rd.text('Pie de página de prueba')]
+    body_doc = rd.doc('Diseño', [rd.heading('Cuerpo', level=2), rd.text('Contenido del cuerpo')])
+    content = report_render.render_layout_docx(header_blocks, body_doc, footer_blocks)
+    assert content[:2] == b'PK'   # un .docx es un zip (python-docx no firma con %PDF)
+
+    from docx import Document
+    document = Document(__import__('io').BytesIO(content))
+    section = document.sections[0]
+    assert 'Encabezado de prueba' in section.header.paragraphs[0].text
+    assert 'Pie de página de prueba' in section.footer.paragraphs[0].text
+    assert any('Contenido del cuerpo' in p.text for p in document.paragraphs)
+
+
+def test_layout_docx_works_without_header_or_footer():
+    body_doc = rd.doc('Diseño corto', [rd.text('Sin encabezado ni pie')])
+    content = report_render.render_layout_docx([], body_doc, [])
+    assert content[:2] == b'PK'
+
+
+# --------------------------------------------------------------------------- Fase 4: `table` en modo
+# 'listing' (una fila por cada registro REAL del proyecto -- reporte simple tipo "listado de HUs").
+
+def test_create_report_layout_cleans_a_listing_table_and_discards_one_without_columns(project):
+    layout = core.create_report_layout('x', 'user_story', project['id'], body=[
+        {'kind': 'table', 'mode': 'listing', 'columns': [
+            {'field_key': 'title', 'source': 'fixed', 'label': 'Título'},
+            {'field_key': ''},  # sin field_key -- se descarta esta columna puntual
+        ]},
+        {'kind': 'table', 'mode': 'listing', 'columns': []},  # sin ninguna columna -- se descarta el nodo
+    ])
+    assert len(layout['body']) == 1
+    node = layout['body'][0]
+    assert node['mode'] == 'listing'
+    assert node['columns'] == [{'field_key': 'title', 'source': 'fixed', 'label': 'Título'}]
+
+
+def test_layout_to_blocks_listing_table_lists_every_real_project_record(project):
+    core.create_user_story('Primera', project['id'], 'Como a', 'quiero b', 'para c')
+    core.create_user_story('Segunda', project['id'], 'Como x', 'quiero y', 'para z')
+    body = [{'kind': 'table', 'mode': 'listing', 'columns': [{'field_key': 'title', 'source': 'fixed', 'label': 'Título'}]}]
+    blocks = design.layout_to_blocks(body, applies_to='user_story', project_id=project['id'])
+    assert len(blocks) == 1 and blocks[0]['kind'] == 'table' and blocks[0]['columns'] == ['Título']
+    assert sorted(blocks[0]['rows']) == [['Primera'], ['Segunda']]
+
+
+def test_layout_to_blocks_listing_table_is_empty_without_a_project_id():
+    body = [{'kind': 'table', 'mode': 'listing', 'columns': [{'field_key': 'title', 'source': 'fixed', 'label': 'Título'}]}]
+    assert design.layout_to_blocks(body, applies_to='user_story', project_id=None) == [{'kind': 'table', 'columns': ['Título'], 'rows': []}]

@@ -1438,8 +1438,12 @@ def pack_grid_rows(nodes, columns=12):
 # dentro de tres regiones fijas Encabezado/Cuerpo/Pie. Cada diseño es propio de un proyecto (sin biblioteca
 # global todavía). Fase 1: 'container'/'line'/'table' (literal). Fase 2: 'text'/'image' (fijos) y 'list'/
 # 'checklist' (adelantados desde fase 3 al revisar plantillas de referencia reales -- ver el plan de la
-# sesión). 'field'/'repeat' (dinámicos, atados a un registro) quedan para fases siguientes.
-LAYOUT_NODE_KINDS = ('container', 'line', 'table', 'text', 'image', 'list', 'checklist')
+# sesión). Fase 3: 'field' (dinámico: catálogo fijo de core.KNOWN_FIELDS_BY_APPLIES_TO + los campos propios
+# de la Plantilla de entrada asociada al diseño, `input_template_id`) y `table` en modo 'field' (vinculada a
+# un campo propio tipo tabla de esa misma plantilla). Fase 4: 'repeat' -- clona sus `children` una vez por
+# fila real de un campo propio tipo Tabla, para darle a cada fila más libertad visual que una celda de tabla
+# (un 'field' hijo con source='row' saca su valor de esa fila en vez de resolverse contra todo el registro).
+LAYOUT_NODE_KINDS = ('container', 'line', 'table', 'text', 'image', 'list', 'checklist', 'field', 'repeat')
 LAYOUT_CONTAINER_DIRECTIONS = ('row', 'column')
 LAYOUT_REGIONS = ('header', 'body', 'footer')
 
@@ -1468,10 +1472,32 @@ def _clean_layout_node(entry):
         color = (entry.get('color') or '').strip() or '#d1d5db'
         return {'id': node_id, 'kind': 'line', 'col_span': col_span, 'orientation': orientation, 'thickness': thickness, 'color': color}
     if entry['kind'] == 'table':
-        # modo literal -- el único de esta fase; un modo 'field' vinculado a un campo-tabla se suma después
+        if entry.get('mode') == 'field':
+            field_key = (entry.get('field_key') or '').strip()
+            if not field_key:
+                return None
+            return {'id': node_id, 'kind': 'table', 'col_span': col_span, 'mode': 'field', 'field_key': field_key,
+                   'label': str(entry.get('label') or field_key)}
+        if entry.get('mode') == 'listing':
+            # Listado: una fila por cada registro REAL del proyecto (Historia de usuario/Caso de prueba) --
+            # a diferencia de 'field' (una tabla de UN registro), acá cada columna es un campo (fijo o propio
+            # de la Plantilla de entrada asociada) resuelto por registro al momento de renderizar, no al
+            # guardar el diseño -- ver report_designer._listing_table_block.
+            columns = []
+            for col in (entry.get('columns') or []):
+                if not isinstance(col, dict):
+                    continue
+                field_key = (col.get('field_key') or '').strip()
+                if not field_key:
+                    continue
+                source = col.get('source') if col.get('source') in ('fixed', 'template') else 'fixed'
+                columns.append({'field_key': field_key, 'source': source, 'label': str(col.get('label') or field_key)})
+            if not columns:
+                return None
+            return {'id': node_id, 'kind': 'table', 'col_span': col_span, 'mode': 'listing', 'columns': columns}
         headers = [str(h) for h in (entry.get('headers') or []) if isinstance(h, (str, int, float))] or ['Columna 1', 'Columna 2']
         rows = [[str(c) for c in r] for r in (entry.get('rows') or []) if isinstance(r, list)]
-        return {'id': node_id, 'kind': 'table', 'col_span': col_span, 'headers': headers, 'rows': rows}
+        return {'id': node_id, 'kind': 'table', 'col_span': col_span, 'mode': 'literal', 'headers': headers, 'rows': rows}
     if entry['kind'] == 'text':
         level = entry.get('level')
         level = level if isinstance(level, int) and 1 <= level <= 4 else 2
@@ -1484,20 +1510,62 @@ def _clean_layout_node(entry):
     if entry['kind'] == 'list':
         items = [str(i) for i in (entry.get('items') or []) if isinstance(i, (str, int, float)) and str(i).strip()]
         return {'id': node_id, 'kind': 'list', 'col_span': col_span, 'items': items, 'ordered': bool(entry.get('ordered'))}
-    # 'checklist': cada item {'label', 'checked'} -- una grilla de opciones fijas (ver plantillas de
-    # referencia: "Calibration / Equipment malfunction / ..."), no un campo que dependa de un registro.
-    items = []
-    for item in (entry.get('items') or []):
-        if isinstance(item, dict) and str(item.get('label') or '').strip():
-            items.append({'label': str(item['label']), 'checked': bool(item.get('checked'))})
-    return {'id': node_id, 'kind': 'checklist', 'col_span': col_span, 'items': items}
+    if entry['kind'] == 'checklist':
+        # cada item {'label', 'checked'} -- una grilla de opciones fijas (ver plantillas de referencia:
+        # "Calibration / Equipment malfunction / ..."), no un campo que dependa de un registro.
+        items = []
+        for item in (entry.get('items') or []):
+            if isinstance(item, dict) and str(item.get('label') or '').strip():
+                items.append({'label': str(item['label']), 'checked': bool(item.get('checked'))})
+        return {'id': node_id, 'kind': 'checklist', 'col_span': col_span, 'items': items}
+    if entry['kind'] == 'repeat':
+        # Bloque que vive DENTRO de un 'repeat': sus 'field' hijos con source='row' no se resuelven contra el
+        # registro completo sino contra la fila actual (ver report_designer.layout_to_blocks/_node_to_block).
+        field_key = (entry.get('field_key') or '').strip()
+        if not field_key:
+            return None
+        children = [n for n in (_clean_layout_node(c) for c in (entry.get('children') or [])) if n]
+        return {'id': node_id, 'kind': 'repeat', 'col_span': col_span, 'field_key': field_key, 'children': children}
+    # 'field': dinámico -- 'source'='fixed' referencia core.KNOWN_FIELDS_BY_APPLIES_TO[layout.applies_to];
+    # 'source'='template' referencia un campo propio (field_type declarado) de la Plantilla de entrada
+    # asociada al diseño (`report_layouts.input_template_id`); 'source'='row' solo tiene sentido como hijo de
+    # un 'repeat' -- saca su valor de una columna (por posición, `column_index`) de la fila que ese 'repeat'
+    # está clonando en este momento, ver report_designer.py. Sin field_key (o sin column_index válido en modo
+    # 'row') el nodo no sirve de nada todavía (el usuario lo soltó pero no eligió qué mostrar) -- se descarta,
+    # mismo criterio que un 'table' en modo 'field' sin field_key.
+    source = entry.get('source') if entry.get('source') in ('fixed', 'template', 'row') else 'fixed'
+    if source == 'row':
+        column_index = entry.get('column_index')
+        if not isinstance(column_index, int) or column_index < 0:
+            return None
+        return {'id': node_id, 'kind': 'field', 'col_span': col_span, 'source': 'row', 'column_index': column_index,
+               'label': str(entry.get('label') or f'Columna {column_index + 1}')}
+    field_key = (entry.get('field_key') or '').strip()
+    if not field_key:
+        return None
+    return {'id': node_id, 'kind': 'field', 'col_span': col_span, 'source': source, 'field_key': field_key,
+           'label': str(entry.get('label') or field_key)}
 
 
 def _clean_layout_region(children):
     return [n for n in (_clean_layout_node(c) for c in (children or [])) if n]
 
 
-def create_report_layout(name, applies_to, project_id, header=None, body=None, footer=None, description=''):
+def _clean_layout_input_template_id(input_template_id, applies_to, project_id):
+    """La Plantilla de ENTRADA (spec_templates, kind='input') asociada al diseño -- amplía el catálogo de
+    'field' con sus campos propios (ver _clean_layout_node). None si no aplica (la plantilla ya no existe,
+    es de otro `applies_to`, o no visible para este proyecto) -- nunca deja un puntero colgado."""
+    if not input_template_id:
+        return None
+    template = get('spec_templates', input_template_id)
+    if template is None or template.get('kind') != 'input' or template.get('applies_to') != applies_to:
+        return None
+    if not any(t['id'] == input_template_id for t in visible_templates('input', applies_to, project_id)):
+        return None
+    return input_template_id
+
+
+def create_report_layout(name, applies_to, project_id, header=None, body=None, footer=None, description='', input_template_id=None):
     name = (name or '').strip()
     if not name:
         raise ValueError('El nombre del diseño es obligatorio')
@@ -1506,11 +1574,12 @@ def create_report_layout(name, applies_to, project_id, header=None, body=None, f
     if project_id is None:
         raise ValueError('Un diseño visual es siempre propio de un proyecto')
     item = {'name': name, 'description': (description or '').strip(), 'applies_to': applies_to, 'project_id': project_id,
+           'input_template_id': _clean_layout_input_template_id(input_template_id, applies_to, project_id),
            'header': _clean_layout_region(header), 'body': _clean_layout_region(body), 'footer': _clean_layout_region(footer)}
     return save('report_layouts', item)
 
 
-def update_report_layout(layout_id, name, applies_to, header=None, body=None, footer=None, description=''):
+def update_report_layout(layout_id, name, applies_to, header=None, body=None, footer=None, description='', input_template_id=None):
     layout = get('report_layouts', layout_id)
     if layout is None:
         raise ValueError('Diseño inexistente')
@@ -1520,6 +1589,7 @@ def update_report_layout(layout_id, name, applies_to, header=None, body=None, fo
     if applies_to not in TEMPLATE_APPLIES_TO:
         raise ValueError('«Aplica a» inválido')
     layout.update({'name': name, 'description': (description or '').strip(), 'applies_to': applies_to,
+                   'input_template_id': _clean_layout_input_template_id(input_template_id, applies_to, layout['project_id']),
                    'header': _clean_layout_region(header), 'body': _clean_layout_region(body), 'footer': _clean_layout_region(footer)})
     return save('report_layouts', layout)
 
