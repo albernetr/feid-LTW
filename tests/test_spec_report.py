@@ -293,6 +293,16 @@ def test_render_story_view_html_shows_a_custom_field_only_when_it_has_a_value():
     assert 'Canal de contacto' in html and 'WhatsApp' in html
 
 
+def test_render_story_view_html_degrades_gracefully_when_a_field_s_stored_value_no_longer_matches_its_type():
+    """El campo pudo cambiar de tipo en la Plantilla DESPUÉS de guardado este valor (ver core._field_impact
+    -- el dato existente nunca se migra solo), así que puede tener una forma vieja que ya no corresponde al
+    tipo ACTUAL. Nunca debe reventar (antes sí: AttributeError 'list' object has no attribute 'strip' al
+    tratar de previsualizar un campo reescrito de Lista a Texto con un valor-lista todavía guardado)."""
+    fields = [{'field_key': 'clasificacion', 'field_type': 'text', 'label': 'Clasificación de riesgo'}]
+    html = spec_report.render_story_view_html({}, fields, {'clasificacion': ['Alto']})
+    assert 'Clasificación de riesgo' in html and 'Alto' in html
+
+
 def test_render_test_case_view_html_shows_priority_and_type_only_when_the_template_includes_them():
     fields = [{'field_key': 'preconditions', 'field_type': None}]
     spec = {'preconditions': 'cuenta activa', 'priority': 'high', 'type': 'regression'}

@@ -310,6 +310,13 @@ def _render_typed_content_html(content, field_type):
     e = html.escape
     if content is None:
         return '<p class="muted">No aplica a este documento.</p>'
+    # El campo pudo cambiar de tipo en la Plantilla DESPUÉS de haberse guardado este valor (ver
+    # core._field_impact: el dato existente nunca se migra solo) — si la forma real ya no coincide con lo
+    # que el tipo ACTUAL espera, nunca intentar el render típico (revienta): mostrar el valor crudo, igual
+    # criterio que _render_content_html ya usa para una forma que no reconoce.
+    expected_shape = {'text': str, 'textarea': str, 'list': list, 'table': dict, 'image': dict, 'attachment': dict}
+    if not isinstance(content, expected_shape.get(field_type, object)):
+        return f'<pre>{e(json.dumps(content, ensure_ascii=False, indent=2))}</pre>'
     if field_type in ('text', 'textarea'):
         style = ' style="white-space:pre-wrap"' if field_type == 'textarea' else ''
         if re.fullmatch(r'https?://\S+', content.strip()):

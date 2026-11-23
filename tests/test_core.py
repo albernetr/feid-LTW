@@ -1395,6 +1395,41 @@ def test_spec_template_crud_validates_kind_and_applies_to():
     assert group['kind'] == 'group' and group['as_tab'] is True and group['children'][0]['field_type'] == 'text'
 
 
+def test_update_spec_template_logs_field_impact_for_removed_and_retyped_fields_with_real_data():
+    project = core.create_project('Impacto')
+    template = core.create_spec_template('HU con presupuesto', 'input', 'user_story', project_id=project['id'], body=[
+        {'kind': 'field', 'label': 'Presupuesto', 'field_key': 'presupuesto', 'field_type': 'text'},
+        {'kind': 'field', 'label': 'Riesgos', 'field_key': 'riesgos', 'field_type': 'list'},
+        {'kind': 'field', 'label': 'Sin datos', 'field_key': 'sin_datos', 'field_type': 'text'},
+    ])
+    story = core.create_user_story('Mi historia', project['id'], input_template_id=template['id'],
+                                   custom_fields={'presupuesto': '5000 USD', 'riesgos': ['uno', 'dos']})
+    # sin cambios reales en los campos -- no hay impacto que avisar
+    unchanged = core.update_spec_template(template['id'], template['name'], body=template['body'])
+    assert 'field_impact_log' not in unchanged
+
+    # elimina 'presupuesto' (tenía dato real) y reescribe 'riesgos' de lista a texto (también tenía dato
+    # real) -- 'sin_datos' se elimina también pero NINGÚN registro tiene valor ahí, no genera aviso
+    updated = core.update_spec_template(template['id'], template['name'], body=[
+        {'kind': 'field', 'label': 'Riesgos', 'field_key': 'riesgos', 'field_type': 'text'},
+    ])
+    assert len(updated['field_impact_log']) == 1
+    entry = updated['field_impact_log'][0]
+    assert entry['removed'] == [{'field_key': 'presupuesto', 'field_type': 'text',
+                                 'affected': [{'table': 'user_stories', 'id': story['id'], 'title': 'Mi historia'}]}]
+    assert entry['retyped'] == [{'field_key': 'riesgos', 'old_type': 'list', 'new_type': 'text',
+                                 'affected': [{'table': 'user_stories', 'id': story['id'], 'title': 'Mi historia'}]}]
+
+
+def test_update_spec_template_field_impact_is_only_tracked_for_input_templates():
+    project = core.create_project('ImpactoSalida')
+    template = core.create_spec_template('Reporte', 'output', 'report', project_id=project['id'], body=[
+        {'kind': 'field', 'label': 'Resumen', 'field_key': 'summary'},
+    ])
+    updated = core.update_spec_template(template['id'], template['name'], body=[])
+    assert 'field_impact_log' not in updated
+
+
 def test_global_templates_are_read_only_and_only_local_ones_can_be_deleted():
     project = core.create_project('PT2')
     builtin = next(t for t in core.list_items('spec_templates') if t.get('project_id') is None)

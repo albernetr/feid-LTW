@@ -562,9 +562,22 @@ def spec_template_detail(id: str = ''):
                 else:
                     def save():
                         if current:
-                            core.update_spec_template(current['id'], name.value, description.value or '', d['body'],
-                                                      linked_story_fields=d['linked_story_fields'])
-                            ui.notify('Plantilla actualizada', type='positive')
+                            prev_log_len = len((current or {}).get('field_impact_log') or [])
+                            updated = core.update_spec_template(current['id'], name.value, description.value or '', d['body'],
+                                                                linked_story_fields=d['linked_story_fields'])
+                            new_entries = (updated.get('field_impact_log') or [])[prev_log_len:]
+                            removed_n = sum(len(e.get('removed') or []) for e in new_entries)
+                            retyped_n = sum(len(e.get('retyped') or []) for e in new_entries)
+                            if removed_n or retyped_n:
+                                parts = []
+                                if removed_n:
+                                    parts.append(f'{removed_n} campo(s) eliminado(s)')
+                                if retyped_n:
+                                    parts.append(f'{retyped_n} campo(s) reescrito(s)')
+                                ui.notify(f'Plantilla actualizada — {" y ".join(parts)} afectan registros ya guardados '
+                                         '(ver pestaña «Impacto»). Esos registros no se tocaron.', type='warning', multi_line=True)
+                            else:
+                                ui.notify('Plantilla actualizada', type='positive')
                             ui.navigate.to(f'/spec-templates/edit?id={current["id"]}')
                         else:
                             template = core.create_spec_template(name.value, kind.value, applies_to.value, d['body'], pid, description.value or '',
@@ -598,6 +611,36 @@ def spec_template_detail(id: str = ''):
                                      on_click=lambda: confirm(message, remove, confirm_label='Desvincular' if is_inherited else 'Eliminar')) \
                                 .props('flat dense color=negative').mark('template-delete')
 
+            def _impact_affected_list(affected):
+                route_by_table = {'user_stories': '/stories/edit', 'test_case_specs': '/test-specs/edit'}
+                ui.label(f'{len(affected)} registro(s) con datos ahí:').classes('text-xs text-gray-500 mt-1')
+                for a in affected:
+                    ui.link(a['title'] or a['id'][:8], f"{route_by_table[a['table']]}?id={a['id']}") \
+                        .classes('text-xs block').props('target=_blank')
+
+            def render_impact():
+                # Solo tiene sentido para una Plantilla de ENTRADA ya guardada -- nunca modifica los
+                # registros afectados, solo los lista para que se puedan revisar/corregir a mano (ver
+                # core._field_impact: la decisión fue dejarlos tal cual, no migrarlos solos).
+                log = list(reversed((current or {}).get('field_impact_log') or []))
+                if not log:
+                    empty_state('Sin avisos todavía: acá quedan registrados los campos propios ELIMINADOS o '
+                                'REESCRITOS (mismo nombre, tipo distinto) que todavía tienen datos en Historias/'
+                                'Casos de prueba ya guardados -- nunca se tocan solos, esto es solo para revisarlos.')
+                    return
+                for entry in log:
+                    with ui.card().classes('w-full p-3 gap-1 mb-2'):
+                        ui.label(entry['at']).classes('text-xs text-gray-400')
+                        for r in entry.get('removed') or []:
+                            ui.label(f"Campo eliminado: «{r['field_key']}» "
+                                     f"({core.CUSTOM_FIELD_TYPE_LABELS.get(r['field_type'], r['field_type'])})").classes('text-sm font-medium text-amber-700 mt-1')
+                            _impact_affected_list(r['affected'])
+                        for r in entry.get('retyped') or []:
+                            ui.label(f"Campo reescrito: «{r['field_key']}» "
+                                     f"({core.CUSTOM_FIELD_TYPE_LABELS.get(r['old_type'], r['old_type'])} → "
+                                     f"{core.CUSTOM_FIELD_TYPE_LABELS.get(r['new_type'], r['new_type'])})").classes('text-sm font-medium text-amber-700 mt-1')
+                            _impact_affected_list(r['affected'])
+
             @ui.refreshable
             def document_view():
                 draft = {'name': name.value or 'Vista previa', 'applies_to': applies_to.value, 'body': d['body']}
@@ -614,11 +657,15 @@ def spec_template_detail(id: str = ''):
             with ui.element('div').classes('w-full').style('height: calc(100vh - 210px)' if compact else ''):
                 # draggable por defecto (True): general/sections se pueden arrastrar al centro para verlos uno
                 # al lado del otro con el documento — misma versatilidad que ya tenía Historias de usuario.
+                extra_panels = []
+                if current and current.get('kind') == 'input':
+                    extra_panels.append(Panel('impact', 'Impacto', 'warning', render_impact))
                 workspace_handle['value'] = workspace_layout(
                     side_panels=[
                         Panel('general', 'General', 'tune', render_general),
                         Panel('sections', 'Secciones y campos', 'account_tree', render_sections),
                         Panel('linked_story', 'Historias relacionadas', 'link', render_linked_story),
+                        *extra_panels,
                     ],
                     center_anchors=[Panel('document', '', '', render_document)],
                     prefix='template', get_pref=get_pref, set_pref=set_pref,

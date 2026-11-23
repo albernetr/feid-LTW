@@ -1118,9 +1118,15 @@ def update_spec_template(template_id, name, description='', body=None, linked_st
     name = (name or '').strip()
     if not name:
         raise ValueError('El nombre de la plantilla es obligatorio')
-    template.update({'name': name, 'description': (description or '').strip(),
-                     'body': _clean_template_body(body, template['applies_to']),
+    new_body = _clean_template_body(body, template['applies_to'])
+    # Impacto sobre registros YA GUARDADOS (solo tiene sentido para una Plantilla de ENTRADA, la única que
+    # define custom_fields de verdad) -- nunca modifica esos registros, solo deja un aviso consultable
+    # después en la propia plantilla (ver core._field_impact y la pestaña "Impacto" del editor).
+    impact = _field_impact(template_id, template.get('body'), new_body) if template['kind'] == 'input' else None
+    template.update({'name': name, 'description': (description or '').strip(), 'body': new_body,
                      'linked_story_fields': _clean_linked_story_fields(linked_story_fields, template['applies_to'], template['project_id'])})
+    if impact:
+        template.setdefault('field_impact_log', []).append(impact)
     return save('spec_templates', template)
 
 
@@ -1342,6 +1348,61 @@ def iter_template_fields(body):
 
 def template_field_keys(body):
     return {n['field_key'] for n in iter_template_fields(body) if n.get('field_key')}
+
+
+def _custom_field_catalog(body):
+    """field_key -> field_type de cada campo propio (field_type declarado) de una Plantilla de ENTRADA --
+    la metadata que define qué campos propios existen para esa categoría (HU, TC, etc.) y de qué tipo es
+    cada uno. Sin field_type (plantilla vieja, o un 'field' de los fijos) no cuenta, no es un campo propio."""
+    return {n['field_key']: n['field_type'] for n in iter_template_fields(body) if n.get('field_key') and n.get('field_type')}
+
+
+def _records_using_input_template(template_id):
+    """Historias de usuario y Casos de prueba que tienen ESTA Plantilla de entrada asignada -- las dos únicas
+    tablas con `custom_fields` hoy."""
+    for table in ('user_stories', 'test_case_specs'):
+        for item in list_items(table):
+            if item.get('input_template_id') == template_id:
+                yield table, item
+
+
+def _field_impact(template_id, old_body, new_body):
+    """Compara el catálogo de campos propios de una Plantilla de ENTRADA antes/después de editarla -- campos
+    ELIMINADOS (field_key que ya no está) o REESCRITOS (mismo field_key, field_type distinto; renombrar el
+    field_key en sí cuenta como eliminar uno + campo nuevo, dos entradas separadas, no una) -- y para cada
+    uno, qué registros YA GUARDADOS (que usan esta plantilla) tienen un valor real ahí. Nunca toca esos
+    registros: la decisión del usuario fue dejarlos tal cual para siempre, esto solo informa. None si no hay
+    ningún campo eliminado/reescrito con datos reales afectados (no hace falta un aviso vacío)."""
+    old_catalog = _custom_field_catalog(old_body)
+    new_catalog = _custom_field_catalog(new_body)
+    records = list(_records_using_input_template(template_id))
+
+    def _affected(field_key):
+        affected = []
+        for table, item in records:
+            value = (item.get('custom_fields') or {}).get(field_key)
+            if value not in (None, '', [], {}):
+                affected.append({'table': table, 'id': item['id'], 'title': item.get('title', '')})
+        return affected
+
+    removed = []
+    for field_key, field_type in old_catalog.items():
+        if field_key in new_catalog:
+            continue
+        affected = _affected(field_key)
+        if affected:
+            removed.append({'field_key': field_key, 'field_type': field_type, 'affected': affected})
+    retyped = []
+    for field_key, old_type in old_catalog.items():
+        new_type = new_catalog.get(field_key)
+        if new_type is None or new_type == old_type:
+            continue
+        affected = _affected(field_key)
+        if affected:
+            retyped.append({'field_key': field_key, 'old_type': old_type, 'new_type': new_type, 'affected': affected})
+    if not removed and not retyped:
+        return None
+    return {'id': uid(), 'at': now(), 'removed': removed, 'retyped': retyped}
 
 
 def visible_templates(kind, applies_to, project_id):
