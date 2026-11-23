@@ -71,13 +71,23 @@ def code(value, language=''):
     return {'kind': 'code', 'text': value, 'language': language}
 
 
-def group(children, indent=False):
-    """Anidamiento: un step con sus sub-bloques, o una seccion con sub-secciones."""
-    return {'kind': 'group', 'children': list(children), 'indent': indent}
+def group(children, indent=False, background=None, border=False):
+    """Anidamiento: un step con sus sub-bloques, o una seccion con sub-secciones. `background`/`border`
+    (diseñador visual, Reportería): solo tienen efecto en HTML -- DOCX/Markdown los ignoran (mismo criterio
+    de degradar sin equivalente directo que ya usan `svg`/`file` con imagen)."""
+    return {'kind': 'group', 'children': list(children), 'indent': indent, 'background': background, 'border': border}
 
 
-def row(cells):
+def row(cells, background=None, border=False, gap=16):
     """Fila de una grilla de 12 columnas (Fase 2: diseñador visual) -- `cells`: lista de
     {'span': 1-12, 'children': [bloque, ...]}. HTML/DOCX honran las columnas reales; Markdown (sin noción de
-    columnas) concatena los bloques de cada celda en secuencia, igual que ya hace `group`."""
-    return {'kind': 'row', 'cells': [{'span': c['span'], 'children': list(c['children'])} for c in cells]}
+    columnas) concatena los bloques de cada celda en secuencia, igual que ya hace `group`. `background`/
+    `border` (diseñador visual, Reportería): solo tienen efecto en HTML, igual que en `group`."""
+    return {'kind': 'row', 'cells': [{'span': c['span'], 'children': list(c['children'])} for c in cells],
+           'background': background, 'border': border, 'gap': gap}
+
+
+def divider(orientation='horizontal', thickness=1, color='#d1d5db'):
+    """Línea separadora (diseñador visual, Reportería): `orientation` 'horizontal'|'vertical'. En Markdown se
+    degrada a `---` (vertical no tiene equivalente, se omite, mismo criterio que `svg`)."""
+    return {'kind': 'divider', 'orientation': orientation, 'thickness': thickness, 'color': color}

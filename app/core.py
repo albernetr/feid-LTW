@@ -60,7 +60,7 @@ SECRET_SERVICE = 'local-test-workspace'
 SENSITIVE_HEADERS = ('authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization')
 SENSITIVE_NAME = re.compile(r'token|password|passwd|secret|key|authorization|cookie', re.I)
 TABLES = ('projects', 'module_groups', 'modules', 'environments', 'cases', 'features', 'suites', 'schedules', 'datasets', 'suite_groups', 'integrations',
-          'user_stories', 'test_case_specs', 'spec_templates')
+          'user_stories', 'test_case_specs', 'spec_templates', 'report_layouts')
 ALL_TABLES = TABLES + ('settings', 'runs', 'taps', 'interfaces', 'lab_history', 'llm_profiles', 'sequences', 'users', 'exploration_trees')
 UUID_RE = re.compile(r'^[0-9a-fA-F-]{8,64}$')
 
@@ -1430,6 +1430,105 @@ def pack_grid_rows(nodes, columns=12):
     if row:
         rows.append(row)
     return rows
+
+
+# --------------------------------------------------------------------------- report_layouts (Reportería,
+# diseñador visual tipo Dreamweaver/Webflow — pieza NUEVA y separada de spec_templates/`body`, que no se toca):
+# un árbol de CONTENEDORES (fila/columna, estilo CSS flex — nunca x/y de píxeles, ver docs/plan de la sesión)
+# dentro de tres regiones fijas Encabezado/Cuerpo/Pie. Cada diseño es propio de un proyecto (sin biblioteca
+# global todavía). Fase 1: 'container'/'line'/'table' (literal). Fase 2: 'text'/'image' (fijos) y 'list'/
+# 'checklist' (adelantados desde fase 3 al revisar plantillas de referencia reales -- ver el plan de la
+# sesión). 'field'/'repeat' (dinámicos, atados a un registro) quedan para fases siguientes.
+LAYOUT_NODE_KINDS = ('container', 'line', 'table', 'text', 'image', 'list', 'checklist')
+LAYOUT_CONTAINER_DIRECTIONS = ('row', 'column')
+LAYOUT_REGIONS = ('header', 'body', 'footer')
+
+
+def _clean_layout_node(entry):
+    """Normaliza UN nodo del árbol de un diseño — recursivo para 'container'. Devuelve None si no es un nodo
+    reconocido. `col_span` (1-12, mismo significado que core.node_col_span) solo tiene efecto real cuando el
+    nodo es hijo directo de un contenedor 'row' — se guarda igual en cualquier nodo, por si cambia de padre."""
+    if not isinstance(entry, dict) or entry.get('kind') not in LAYOUT_NODE_KINDS:
+        return None
+    node_id = entry.get('id') or uid()
+    col_span = entry.get('col_span')
+    col_span = col_span if isinstance(col_span, int) and 1 <= col_span <= 12 else 12
+    if entry['kind'] == 'container':
+        direction = entry.get('direction') if entry.get('direction') in LAYOUT_CONTAINER_DIRECTIONS else 'column'
+        children = [n for n in (_clean_layout_node(c) for c in (entry.get('children') or [])) if n]
+        gap = entry.get('gap')
+        gap = gap if isinstance(gap, int) and 0 <= gap <= 64 else 16
+        background = (entry.get('background') or '').strip() or None
+        return {'id': node_id, 'kind': 'container', 'col_span': col_span, 'direction': direction, 'gap': gap,
+               'background': background, 'border': bool(entry.get('border')), 'children': children}
+    if entry['kind'] == 'line':
+        orientation = entry.get('orientation') if entry.get('orientation') in ('horizontal', 'vertical') else 'horizontal'
+        thickness = entry.get('thickness')
+        thickness = thickness if isinstance(thickness, int) and 1 <= thickness <= 20 else 1
+        color = (entry.get('color') or '').strip() or '#d1d5db'
+        return {'id': node_id, 'kind': 'line', 'col_span': col_span, 'orientation': orientation, 'thickness': thickness, 'color': color}
+    if entry['kind'] == 'table':
+        # modo literal -- el único de esta fase; un modo 'field' vinculado a un campo-tabla se suma después
+        headers = [str(h) for h in (entry.get('headers') or []) if isinstance(h, (str, int, float))] or ['Columna 1', 'Columna 2']
+        rows = [[str(c) for c in r] for r in (entry.get('rows') or []) if isinstance(r, list)]
+        return {'id': node_id, 'kind': 'table', 'col_span': col_span, 'headers': headers, 'rows': rows}
+    if entry['kind'] == 'text':
+        level = entry.get('level')
+        level = level if isinstance(level, int) and 1 <= level <= 4 else 2
+        return {'id': node_id, 'kind': 'text', 'col_span': col_span, 'value': str(entry.get('value') or ''),
+               'heading': bool(entry.get('heading')), 'level': level}
+    if entry['kind'] == 'image':
+        file_ref = entry.get('file')
+        file_ref = file_ref if isinstance(file_ref, dict) and file_ref.get('id') and file_ref.get('filename') else None
+        return {'id': node_id, 'kind': 'image', 'col_span': col_span, 'file': file_ref, 'label': str(entry.get('label') or 'Imagen')}
+    if entry['kind'] == 'list':
+        items = [str(i) for i in (entry.get('items') or []) if isinstance(i, (str, int, float)) and str(i).strip()]
+        return {'id': node_id, 'kind': 'list', 'col_span': col_span, 'items': items, 'ordered': bool(entry.get('ordered'))}
+    # 'checklist': cada item {'label', 'checked'} -- una grilla de opciones fijas (ver plantillas de
+    # referencia: "Calibration / Equipment malfunction / ..."), no un campo que dependa de un registro.
+    items = []
+    for item in (entry.get('items') or []):
+        if isinstance(item, dict) and str(item.get('label') or '').strip():
+            items.append({'label': str(item['label']), 'checked': bool(item.get('checked'))})
+    return {'id': node_id, 'kind': 'checklist', 'col_span': col_span, 'items': items}
+
+
+def _clean_layout_region(children):
+    return [n for n in (_clean_layout_node(c) for c in (children or [])) if n]
+
+
+def create_report_layout(name, applies_to, project_id, header=None, body=None, footer=None, description=''):
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('El nombre del diseño es obligatorio')
+    if applies_to not in TEMPLATE_APPLIES_TO:
+        raise ValueError('«Aplica a» inválido')
+    if project_id is None:
+        raise ValueError('Un diseño visual es siempre propio de un proyecto')
+    item = {'name': name, 'description': (description or '').strip(), 'applies_to': applies_to, 'project_id': project_id,
+           'header': _clean_layout_region(header), 'body': _clean_layout_region(body), 'footer': _clean_layout_region(footer)}
+    return save('report_layouts', item)
+
+
+def update_report_layout(layout_id, name, applies_to, header=None, body=None, footer=None, description=''):
+    layout = get('report_layouts', layout_id)
+    if layout is None:
+        raise ValueError('Diseño inexistente')
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('El nombre del diseño es obligatorio')
+    if applies_to not in TEMPLATE_APPLIES_TO:
+        raise ValueError('«Aplica a» inválido')
+    layout.update({'name': name, 'description': (description or '').strip(), 'applies_to': applies_to,
+                   'header': _clean_layout_region(header), 'body': _clean_layout_region(body), 'footer': _clean_layout_region(footer)})
+    return save('report_layouts', layout)
+
+
+def delete_report_layout(layout_id):
+    layout = get('report_layouts', layout_id)
+    if layout is None:
+        raise ValueError('Diseño inexistente')
+    delete('report_layouts', layout_id)
 
 
 def custom_field_catalog(project_id, applies_to=None):

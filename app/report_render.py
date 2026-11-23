@@ -72,11 +72,32 @@ def _block_html(block, e=html.escape):
     if kind == 'group':
         inner = ''.join(_block_html(c, e) for c in block['children'])
         cls = 'group indent' if block.get('indent') else 'group'
-        return f'<div class="{cls}">{inner}</div>'
+        extra = _container_style(block)
+        return f'<div class="{cls}"{extra}>{inner}</div>'
     if kind == 'row':
         cells = ''.join(f'<div style="grid-column:span {c["span"]}">{"".join(_block_html(b, e) for b in c["children"])}</div>' for c in block['cells'])
-        return f'<div style="display:grid;grid-template-columns:repeat(12,1fr);gap:16px;align-items:start">{cells}</div>'
+        style = f'display:grid;grid-template-columns:repeat(12,1fr);gap:{block.get("gap", 16)}px;align-items:start'
+        if block.get('background'):
+            style += f';background:{e(block["background"])}'
+        if block.get('border'):
+            style += ';border:1px solid #d1d5db;border-radius:8px;padding:10px'
+        return f'<div style="{style}">{cells}</div>'
+    if kind == 'divider':
+        if block.get('orientation') == 'vertical':
+            return f'<div style="align-self:stretch;border-left:{block.get("thickness", 1)}px solid {e(block.get("color", "#d1d5db"))};margin:0 10px"></div>'
+        return f'<hr style="border:none;border-top:{block.get("thickness", 1)}px solid {e(block.get("color", "#d1d5db"))};margin:12px 0">'
     raise ValueError(f'Bloque desconocido: {kind}')
+
+
+def _container_style(block):
+    """Estilo inline opcional de un `group`/`row` (diseñador visual) -- '' si no declara nada, para no tocar
+    el aspecto de ningún `group` existente (resumen ejecutivo, evidencia, Suite...) que nunca pasa estos campos."""
+    style = []
+    if block.get('background'):
+        style.append(f'background:{html.escape(block["background"])}')
+    if block.get('border'):
+        style.append('border:1px solid #d1d5db')
+    return f' style="{";".join(style)}"' if style else ''
 
 
 def render_html(doc):
@@ -87,6 +108,15 @@ def render_html(doc):
     body += [_block_html(b, e) for b in doc['blocks']]
     return (f'<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>{e(doc["title"])}</title><style>{HTML_CSS}</style></head><body><main>{"".join(body)}</main></body></html>')
+
+
+def render_html_fragment(blocks):
+    """Igual que render_html, pero SOLO el fragmento de bloques -- sin `<!doctype>`/`<head>`/título/meta --
+    para una vista previa EN VIVO incrustada dentro de la app (ver app/pages/report_designer.py), que ya trae
+    su propio contenedor de tipografía (common.live_doc_html) en vez de HTML_CSS, pensado para el documento
+    exportado standalone."""
+    e = html.escape
+    return ''.join(_block_html(b, e) for b in blocks)
 
 
 # --------------------------------------------------------------------------- Markdown
@@ -145,6 +175,8 @@ def _block_markdown(block, level=2):
             for child in cell['children']:
                 lines += _block_markdown(child, level)
         return lines
+    if kind == 'divider':
+        return ['---', ''] if block.get('orientation') != 'vertical' else []   # vertical: sin equivalente, se omite
     raise ValueError(f'Bloque desconocido: {kind}')
 
 
@@ -261,8 +293,28 @@ def _block_docx(doc, block, level=2):
             sink = _CellSink(table_cell)
             for child in cell['children']:
                 _block_docx(sink, child, level + 1)
+    elif kind == 'divider':
+        if block.get('orientation') != 'vertical':   # vertical: sin equivalente en un documento lineal, se omite
+            _add_docx_bottom_border(doc.add_paragraph(), block.get('thickness', 1), block.get('color', '#d1d5db'))
     else:
         raise ValueError(f'Bloque desconocido: {kind}')
+
+
+def _add_docx_bottom_border(paragraph, thickness, color):
+    """Línea horizontal real en DOCX: python-docx no tiene un `<hr>`, el truco estándar es un borde inferior
+    de párrafo vía XML crudo (oxml) -- `paragraph` puede ser de un Document o de un _CellSink (misma clase
+    python-docx.Paragraph en los dos casos)."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    p_pr = paragraph._p.get_or_add_pPr()
+    border = OxmlElement('w:pBdr')
+    bottom = OxmlElement('w:bottom')
+    bottom.set(qn('w:val'), 'single')
+    bottom.set(qn('w:sz'), str(min(max(thickness, 1), 20) * 4))
+    bottom.set(qn('w:space'), '1')
+    bottom.set(qn('w:color'), (color or '#d1d5db').lstrip('#') or 'auto')
+    border.append(bottom)
+    p_pr.append(border)
 
 
 def render_docx(doc):
@@ -294,6 +346,40 @@ def render_pdf_from_html(html_text, destination):
             page.goto(source.as_uri(), wait_until='load')
             page.emulate_media(media='print')
             page.pdf(path=str(destination), format='A4', print_background=True, margin={'top': '14mm', 'bottom': '14mm', 'left': '12mm', 'right': '12mm'})
+            browser.close()
+    finally:
+        source.unlink(missing_ok=True)
+    return destination
+
+
+def render_layout_pdf(header_blocks, body_doc, footer_blocks, destination):
+    """Variante de `render_pdf_from_html` para un diseño del nuevo diseñador visual (app/pages/
+    report_designer.py): Encabezado/Pie se pasan como `header_template`/`footer_template` de Playwright
+    (`display_header_footer=True`) -- a diferencia de ponerlos una vez arriba/abajo del HTML, esto los repite
+    de VERDAD en cada página impresa. No toca `render_pdf_from_html` (lo sigue usando todo lo demás)."""
+    from playwright.sync_api import sync_playwright
+    e = html.escape
+
+    def _fragment(blocks):
+        if not blocks:
+            return '<div></div>'
+        inner = ''.join(_block_html(b, e) for b in blocks)
+        return (f'<div style="width:100%;font-family:Segoe UI,Calibri,Arial,sans-serif;font-size:9px;'
+                f'color:#374151;padding:0 12mm;box-sizing:border-box">{inner}</div>')
+
+    destination = Path(destination)
+    source = destination.with_suffix('.tmp.html')
+    source.write_text(render_html(body_doc), encoding='utf-8')
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(source.as_uri(), wait_until='load')
+            page.emulate_media(media='print')
+            page.pdf(path=str(destination), format='A4', print_background=True, display_header_footer=True,
+                     header_template=_fragment(header_blocks), footer_template=_fragment(footer_blocks),
+                     margin={'top': '26mm' if header_blocks else '14mm', 'bottom': '22mm' if footer_blocks else '14mm',
+                            'left': '12mm', 'right': '12mm'})
             browser.close()
     finally:
         source.unlink(missing_ok=True)

@@ -24,6 +24,7 @@ NAV = [
     ('Reporte: Historias de usuario', '/reports/user-story', 'auto_stories'), ('Reporte: Casos de prueba', '/reports/test-case', 'checklist'),
     ('Reporte: Casos ejecutables', '/reports/case', 'science'), ('Reporte: Suites', '/reports/suite-group', 'folder_special'),
     ('Reporte: Evidencias', '/reports/evidence', 'history'), ('Reporte: Matriz de trazabilidad', '/reports/matrix', 'alt_route'),
+    ('Diseñador de reportes', '/report-designer', 'design_services'),
     ('Base de datos', '/storage', 'storage'),
 ]
 # Agrupa el menú (ya son ~20 opciones) en secciones desplegables/replegables — NAV sigue siendo la lista plana
@@ -34,7 +35,7 @@ NAV_GROUPS = [
     ('Pruebas', 'science', ('/cases', '/ui-cases', '/features', '/suites', '/suite-groups', '/chat')),
     ('Automatización', 'smart_toy', ('/observer', '/schedules', '/sequences', '/datasets', '/integrations')),
     ('Resultados', 'history', ('/runs', '/portable')),
-    ('Reportes', 'summarize', ('/reports/user-story', '/reports/test-case', '/reports/case', '/reports/suite-group', '/reports/evidence', '/reports/matrix')),
+    ('Reportes', 'summarize', ('/reports/user-story', '/reports/test-case', '/reports/case', '/reports/suite-group', '/reports/evidence', '/reports/matrix', '/report-designer')),
     ('Configuraciones', 'settings', ('/models', '/storage')),
 ]
 STATUS_COLOR = {'passed': 'positive', 'failed': 'negative', 'error': 'warning', 'cancelled': 'grey', 'skipped': 'grey'}
@@ -516,7 +517,7 @@ def _custom_list_editor(values, key, on_change):
         .props('outline dense color=primary')
 
 
-def _custom_table_editor(values, key, on_change):
+def custom_table_editor(values, key, on_change):
     """Tabla genérica {headers: [str], rows: [[str]]} — filas y columnas editables. Mismo criterio que la lista:
     un valor existente que no matchea esa forma se trata como una tabla nueva, vacía."""
     raw = values.get(key)
@@ -614,7 +615,7 @@ def render_template_tree(body, values, known_renderers, on_change=None):
             if field_type == 'list':
                 _custom_list_editor(values, field_key, on_change)
             elif field_type == 'table':
-                _custom_table_editor(values, field_key, on_change)
+                custom_table_editor(values, field_key, on_change)
             elif field_type in ('image', 'attachment'):
                 _custom_file_editor(values, field_key, on_change, 'image/*' if field_type == 'image' else '*/*')
 
