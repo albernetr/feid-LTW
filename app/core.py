@@ -1443,7 +1443,10 @@ def pack_grid_rows(nodes, columns=12):
 # un campo propio tipo tabla de esa misma plantilla). Fase 4: 'repeat' -- clona sus `children` una vez por
 # fila real de un campo propio tipo Tabla, para darle a cada fila más libertad visual que una celda de tabla
 # (un 'field' hijo con source='row' saca su valor de esa fila en vez de resolverse contra todo el registro).
-LAYOUT_NODE_KINDS = ('container', 'line', 'table', 'text', 'image', 'list', 'checklist', 'field', 'repeat')
+# Fase 5: 'related' -- clona sus `children` una vez por cada Caso de prueba REAL asociado a la Historia de
+# usuario del registro (reusa story_coverage, el mismo resolvedor de la Matriz de pruebas); un 'field' hijo
+# con source='related' saca un dato de ESE Caso de prueba (o de su última corrida real) en vez del registro.
+LAYOUT_NODE_KINDS = ('container', 'line', 'table', 'text', 'image', 'list', 'checklist', 'field', 'repeat', 'related')
 LAYOUT_CONTAINER_DIRECTIONS = ('row', 'column')
 LAYOUT_REGIONS = ('header', 'body', 'footer')
 
@@ -1526,14 +1529,24 @@ def _clean_layout_node(entry):
             return None
         children = [n for n in (_clean_layout_node(c) for c in (entry.get('children') or [])) if n]
         return {'id': node_id, 'kind': 'repeat', 'col_span': col_span, 'field_key': field_key, 'children': children}
+    if entry['kind'] == 'related':
+        # Bloque que vive DENTRO de un 'related': sus 'field' hijos con source='related' no se resuelven
+        # contra el registro (la Historia de usuario) sino contra el Caso de prueba que ese 'related' está
+        # clonando en este momento (ver report_designer.layout_to_blocks/_node_to_block). A diferencia de
+        # 'repeat', no necesita ningún field_key propio -- la relación (HU → sus Casos de prueba) es siempre
+        # la misma, no una elección del usuario.
+        children = [n for n in (_clean_layout_node(c) for c in (entry.get('children') or [])) if n]
+        return {'id': node_id, 'kind': 'related', 'col_span': col_span, 'children': children}
     # 'field': dinámico -- 'source'='fixed' referencia core.KNOWN_FIELDS_BY_APPLIES_TO[layout.applies_to];
     # 'source'='template' referencia un campo propio (field_type declarado) de la Plantilla de entrada
     # asociada al diseño (`report_layouts.input_template_id`); 'source'='row' solo tiene sentido como hijo de
     # un 'repeat' -- saca su valor de una columna (por posición, `column_index`) de la fila que ese 'repeat'
-    # está clonando en este momento, ver report_designer.py. Sin field_key (o sin column_index válido en modo
-    # 'row') el nodo no sirve de nada todavía (el usuario lo soltó pero no eligió qué mostrar) -- se descarta,
-    # mismo criterio que un 'table' en modo 'field' sin field_key.
-    source = entry.get('source') if entry.get('source') in ('fixed', 'template', 'row') else 'fixed'
+    # está clonando en este momento, ver report_designer.py; 'source'='related' solo tiene sentido como hijo
+    # de un 'related' -- saca un dato (o la última corrida real) del Caso de prueba que ese 'related' está
+    # clonando. Sin field_key (o sin column_index válido en modo 'row') el nodo no sirve de nada todavía (el
+    # usuario lo soltó pero no eligió qué mostrar) -- se descarta, mismo criterio que un 'table' en modo
+    # 'field' sin field_key.
+    source = entry.get('source') if entry.get('source') in ('fixed', 'template', 'row', 'related') else 'fixed'
     if source == 'row':
         column_index = entry.get('column_index')
         if not isinstance(column_index, int) or column_index < 0:

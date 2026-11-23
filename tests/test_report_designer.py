@@ -367,3 +367,63 @@ def test_layout_to_blocks_listing_table_lists_every_real_project_record(project)
 def test_layout_to_blocks_listing_table_is_empty_without_a_project_id():
     body = [{'kind': 'table', 'mode': 'listing', 'columns': [{'field_key': 'title', 'source': 'fixed', 'label': 'Título'}]}]
     assert design.layout_to_blocks(body, applies_to='user_story', project_id=None) == [{'kind': 'table', 'columns': ['Título'], 'rows': []}]
+
+
+# --------------------------------------------------------------------------- Fase 5: `related` (clona por
+# cada Caso de prueba REAL asociado a la Historia de usuario del registro, vía core.story_coverage).
+
+def test_create_report_layout_cleans_a_related_node_and_a_field_with_source_related(project):
+    layout = core.create_report_layout('x', 'user_story', project['id'], body=[
+        {'kind': 'related', 'children': [
+            {'kind': 'field', 'source': 'related', 'field_key': 'steps'},
+            {'kind': 'field', 'source': 'related'},  # sin field_key -- se descarta
+        ]},
+    ])
+    node = layout['body'][0]
+    assert node['kind'] == 'related'
+    assert len(node['children']) == 1
+    assert node['children'][0] == {'id': node['children'][0]['id'], 'kind': 'field', 'col_span': 12,
+                                   'source': 'related', 'field_key': 'steps', 'label': 'steps'}
+
+
+@pytest.fixture
+def story_with_cases(story):
+    core.create_test_case_spec('Caso válido', story['project_id'], story_id=story['id'], priority='high',
+                               steps=[{'action': 'Ingresar usuario y clave', 'expected': 'Se redirige al panel'}])
+    core.create_test_case_spec('Caso sin corridas', story['project_id'], story_id=story['id'])
+    return story
+
+
+def test_layout_to_blocks_related_clones_once_per_real_linked_test_case(story_with_cases):
+    body = [{'kind': 'related', 'children': [
+        {'kind': 'field', 'source': 'related', 'field_key': 'title', 'label': 'Título'},
+        {'kind': 'field', 'source': 'related', 'field_key': '_last_run_status', 'label': 'Estado'},
+    ]}]
+    blocks = design.layout_to_blocks(body, record=story_with_cases, applies_to='user_story')
+    assert len(blocks) == 1 and blocks[0]['kind'] == 'group'
+    children = blocks[0]['children']
+    titles = [b['text'] for b in children if b['kind'] == 'text' and b['text'] in ('Caso válido', 'Caso sin corridas')]
+    assert sorted(titles) == ['Caso sin corridas', 'Caso válido']
+    assert any(b.get('text') == 'Sin corridas' for b in children)   # ninguno de los dos casos tiene una corrida real
+
+
+def test_layout_to_blocks_related_steps_render_as_a_bullet_list(story_with_cases):
+    body = [{'kind': 'related', 'children': [{'kind': 'field', 'source': 'related', 'field_key': 'steps', 'label': 'Pasos'}]}]
+    blocks = design.layout_to_blocks(body, record=story_with_cases, applies_to='user_story')
+    lists = [b for b in blocks[0]['children'] if b['kind'] == 'list']
+    assert any(item == 'Ingresar usuario y clave → Se redirige al panel' for b in lists for item in b['items'])
+    assert any(b['kind'] == 'text' and b['text'] == design._LOREM for b in blocks[0]['children'])  # el caso sin pasos
+
+
+def test_layout_to_blocks_related_is_a_single_placeholder_pass_without_a_record():
+    body = [{'kind': 'related', 'children': [{'kind': 'field', 'source': 'related', 'field_key': 'title', 'label': 'Título'}]}]
+    blocks = design.layout_to_blocks(body, record=None, applies_to='user_story')
+    assert blocks == [{'kind': 'group', 'children': [{'kind': 'text', 'text': design._LOREM}], 'indent': False, 'background': None, 'border': False}]
+
+
+def test_layout_to_blocks_related_is_a_single_placeholder_pass_for_test_case_applies_to(story_with_cases):
+    """'related' solo tiene sentido con applies_to=='user_story' -- con cualquier otro valor, una sola
+    pasada placeholder, igual que sin registro."""
+    body = [{'kind': 'related', 'children': [{'kind': 'field', 'source': 'related', 'field_key': 'title', 'label': 'Título'}]}]
+    blocks = design.layout_to_blocks(body, record=story_with_cases, applies_to='test_case')
+    assert blocks == [{'kind': 'group', 'children': [{'kind': 'text', 'text': design._LOREM}], 'indent': False, 'background': None, 'border': False}]

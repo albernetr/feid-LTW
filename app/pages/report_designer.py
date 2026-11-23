@@ -5,7 +5,11 @@ fijas Encabezado/Cuerpo/Pie. Fase 1: 'container'/'line'/'table' (literal). Fase 
 Fase 4: 'repeat' (clona sus hijos una vez por fila real de un campo propio tipo Tabla, con más libertad
 visual que una celda de tabla -- un 'field' hijo con source='row' saca su valor de esa fila) y `table` en
 modo 'listing' (una fila por cada registro REAL del proyecto -- HU o Caso de prueba completos, no filas de
-un campo de un solo registro -- para un reporte simple tipo "listado" de todas las Historias de usuario)."""
+un campo de un solo registro -- para un reporte simple tipo "listado" de todas las Historias de usuario).
+Fase 5: 'related' (clona sus hijos una vez por cada Caso de prueba REAL asociado a la Historia de usuario del
+registro -- reusa core.story_coverage, ya usado por la Matriz de pruebas -- con un 'field' hijo con
+source='related' que saca Título/Precondición/Pasos/Resultado esperado/Prioridad/Tipo del Caso de prueba, o
+el estado/fecha de su última corrida real; solo tiene sentido con "Aplica a: Historia de usuario")."""
 import re
 import tempfile
 from pathlib import Path
@@ -25,7 +29,11 @@ PREVIEW_TABLE_BY_APPLIES_TO = {'user_story': 'user_stories', 'test_case': 'test_
 _LOREM = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit.'
 _NODE_ICON = {'container': 'crop_din', 'line': 'horizontal_rule', 'table': 'table_chart', 'text': 'text_fields',
              'image': 'image', 'list': 'format_list_bulleted', 'checklist': 'checklist', 'field': 'data_object',
-             'repeat': 'repeat'}
+             'repeat': 'repeat', 'related': 'fact_check'}
+# Campos propios de un Caso de prueba (ver core.KNOWN_TEST_CASE_FIELDS/spec_templates.KNOWN_FIELD_LABELS) +
+# dos sintéticos (nunca existen como campo de datos, se calculan de su última corrida real vía
+# core.story_coverage) -- catálogo de un 'field' hijo de un 'related' (ver _node_to_block/_resolve_related_value).
+RELATED_EXTRA_FIELD_LABELS = {'_last_run_status': 'Estado de la última corrida', '_last_run_at': 'Fecha de la última corrida'}
 PALETTE_ITEMS = [
     ('container-row', 'Contenedor (fila)', 'view_column'),
     ('container-column', 'Contenedor (columna)', 'view_agenda'),
@@ -37,6 +45,7 @@ PALETTE_ITEMS = [
     ('checklist', 'Checklist', 'checklist'),
     ('field', 'Campo', 'data_object'),
     ('repeat', 'Repetir filas (campo Tabla)', 'repeat'),
+    ('related', 'Casos de prueba de la HU', 'fact_check'),
 ]
 _REGIONS = (('header', 'Encabezado'), ('body', 'Cuerpo'), ('footer', 'Pie de página'))
 
@@ -60,6 +69,8 @@ def _new_node(new_kind):
         return {'id': core.uid(), 'kind': 'checklist', 'col_span': 12, 'items': [{'label': 'Opción 1', 'checked': False}]}
     if new_kind == 'repeat':
         return {'id': core.uid(), 'kind': 'repeat', 'col_span': 12, 'field_key': '', 'children': []}
+    if new_kind == 'related':
+        return {'id': core.uid(), 'kind': 'related', 'col_span': 12, 'children': []}
     return {'id': core.uid(), 'kind': 'field', 'col_span': 12, 'source': 'fixed', 'field_key': '', 'label': ''}
 
 
@@ -86,9 +97,13 @@ def _node_label(node):
         return f"Checklist ({len(node.get('items') or [])} opción(es))"
     if kind == 'repeat':
         return f"Repetir filas (campo: {node.get('field_key') or 'sin elegir'})"
+    if kind == 'related':
+        return 'Casos de prueba de la HU'
     # 'field'
     if node.get('source') == 'row':
         return f"Campo (fila: {node.get('label') or 'columna sin elegir'})"
+    if node.get('source') == 'related':
+        return f"Campo (TC relacionado: {node.get('label') or 'sin elegir'})"
     return f"Campo ({node.get('label') or node.get('field_key') or 'sin elegir'})"
 
 
@@ -140,6 +155,32 @@ def _resolve_field_value(field_key, source, record, row=None, column_index=None)
     return str(value)
 
 
+def _related_field_catalog():
+    """Catálogo de un 'field' hijo de un 'related': los campos propios de un Caso de prueba (reusa
+    KNOWN_FIELD_LABELS['test_case'], ya existente) + los 2 sintéticos de la última corrida real."""
+    return {**KNOWN_FIELD_LABELS.get('test_case', {}), **RELATED_EXTRA_FIELD_LABELS}
+
+
+def _resolve_related_value(field_key, related):
+    """Valor real de un 'field' con source='related': `related` es UN row de `core.story_coverage(hu_id)`
+    (`{'spec', 'last_run', 'automated'}`) -- None fuera de un 'related' (o si ese Caso de prueba no tiene
+    corrida todavía, para los 2 campos sintéticos de corrida se devuelve un texto real igual, nunca None,
+    porque "sin corridas" ES el dato real, no una ausencia de dato)."""
+    if related is None:
+        return None
+    if field_key in ('_last_run_status', '_last_run_at'):
+        last_run = related.get('last_run')
+        if not last_run:
+            return 'Sin corridas'
+        if field_key == '_last_run_status':
+            return {'passed': 'Aprobado', 'failed': 'Fallido', 'error': 'Error'}.get(last_run.get('status'), last_run.get('status'))
+        return last_run.get('started_at') or 'Sin corridas'
+    value = (related.get('spec') or {}).get(field_key)
+    if isinstance(value, (list, dict)) or value in (None, ''):
+        return None
+    return str(value)
+
+
 def _resolve_table_field_value(field_key, record):
     if record is None or not field_key:
         return None
@@ -153,7 +194,7 @@ def _file_url(file_ref):
     return f'/evidence/{file_ref["id"]}/{file_ref["id"]}-{file_ref["filename"]}'
 
 
-def layout_to_blocks(nodes, record=None, row=None, applies_to=None, project_id=None):
+def layout_to_blocks(nodes, record=None, row=None, applies_to=None, project_id=None, related=None):
     """Punto de entrada: empaqueta HERMANOS en filas de 12 columnas (core.pack_grid_rows -- el mismo motor que
     ya usan report_tree.py y el editor de Plantillas) antes de convertir a bloques, así el ancho (col_span) de
     un elemento SUELTO (sin envolverlo a mano en un Contenedor fila) ya alcanza para que quede en línea con
@@ -162,13 +203,16 @@ def layout_to_blocks(nodes, record=None, row=None, applies_to=None, project_id=N
     `row`: la fila actual que un 'repeat' ancestro está clonando (o None fuera de uno) -- se enhebra sin
     tocarla hasta un 'field' hijo con source='row'. `applies_to`/`project_id`: el tipo y proyecto del DISEÑO
     (no del registro de previsualización) -- solo los usa una `table` en modo 'listing' (ver
-    _listing_table_block), que es siempre del proyecto completo, independiente de cualquier registro elegido."""
+    _listing_table_block), que es siempre del proyecto completo, independiente de cualquier registro elegido.
+    `related`: el Caso de prueba actual que un 'related' ancestro está clonando (`{'spec','last_run',
+    'automated'}`, un row de core.story_coverage) -- se enhebra sin tocarla hasta un 'field' hijo con
+    source='related', igual criterio que `row`."""
     blocks = []
     for row_nodes in core.pack_grid_rows(nodes or []):
         if len(row_nodes) == 1:
-            blocks.append(_node_to_block(row_nodes[0], record, row, applies_to, project_id))
+            blocks.append(_node_to_block(row_nodes[0], record, row, applies_to, project_id, related))
         else:
-            cells = [{'span': core.node_col_span(n), 'children': [_node_to_block(n, record, row, applies_to, project_id)]} for n in row_nodes]
+            cells = [{'span': core.node_col_span(n), 'children': [_node_to_block(n, record, row, applies_to, project_id, related)]} for n in row_nodes]
             blocks.append(rd.row(cells))
     return blocks
 
@@ -189,7 +233,7 @@ def _listing_table_block(node, applies_to, project_id):
     return rd.table(labels, rows)
 
 
-def _node_to_block(node, record=None, row=None, applies_to=None, project_id=None):
+def _node_to_block(node, record=None, row=None, applies_to=None, project_id=None, related=None):
     """Traduce UN nodo a su bloque de report_doc.py -- casi no hace falta un renderer nuevo, un contenedor
     fila/columna ES `rd.row`/`rd.group` (ver el plan de la sesión)."""
     kind = node.get('kind')
@@ -199,9 +243,9 @@ def _node_to_block(node, record=None, row=None, applies_to=None, project_id=None
             # Fila EXPLÍCITA (pedida a propósito, no por empaquetado automático): todos los hijos van en una
             # sola fila con el ancho que cada uno declare, sin re-empaquetar -- a diferencia de 'column', que
             # sí vuelve a pasar por layout_to_blocks (empaquetado automático también puertas adentro).
-            cells = [{'span': c.get('col_span', 12), 'children': [_node_to_block(c, record, row, applies_to, project_id)]} for c in children]
+            cells = [{'span': c.get('col_span', 12), 'children': [_node_to_block(c, record, row, applies_to, project_id, related)]} for c in children]
             return rd.row(cells, background=node.get('background'), border=bool(node.get('border')), gap=node.get('gap', 16))
-        return rd.group(layout_to_blocks(children, record, row, applies_to, project_id), background=node.get('background'), border=bool(node.get('border')))
+        return rd.group(layout_to_blocks(children, record, row, applies_to, project_id, related), background=node.get('background'), border=bool(node.get('border')))
     if kind == 'line':
         return rd.divider(node.get('orientation', 'horizontal'), node.get('thickness', 1), node.get('color', '#d1d5db'))
     if kind == 'table':
@@ -235,13 +279,37 @@ def _node_to_block(node, record=None, row=None, applies_to=None, project_id=None
         table_value = _resolve_table_field_value(node.get('field_key'), record)
         rows = table_value.get('rows') if table_value else None
         if not rows:
-            return rd.group(layout_to_blocks(children, record, row, applies_to, project_id))
+            return rd.group(layout_to_blocks(children, record, row, applies_to, project_id, related))
         cloned = []
         for i, row_cells in enumerate(rows):
             if i:
                 cloned.append(rd.divider('horizontal', 1, '#e5e7eb'))
-            cloned += layout_to_blocks(children, record, row_cells, applies_to, project_id)
+            cloned += layout_to_blocks(children, record, row_cells, applies_to, project_id, related)
         return rd.group(cloned)
+    if kind == 'related':
+        # Clona `children` una vez por cada Caso de prueba REAL asociado a la Historia de usuario del
+        # registro -- reusa core.story_coverage (el mismo que ya usa la Matriz de pruebas), nunca un
+        # resolvedor propio. Solo tiene sentido con applies_to=='user_story'; sin eso, o sin registro
+        # elegido, una sola pasada placeholder (related=None, cada 'field' hijo cae a su lorem ipsum).
+        children = node.get('children') or []
+        rows = core.story_coverage(record['id'])['rows'] if (applies_to == 'user_story' and record) else None
+        if not rows:
+            return rd.group(layout_to_blocks(children, record, row, applies_to, project_id, None))
+        cloned = []
+        for i, rel in enumerate(rows):
+            if i:
+                cloned.append(rd.divider('horizontal', 1, '#e5e7eb'))
+            cloned += layout_to_blocks(children, record, row, applies_to, project_id, rel)
+        return rd.group(cloned)
+    if kind == 'field' and node.get('source') == 'related':
+        field_key = node.get('field_key')
+        if field_key == 'steps':
+            steps = (related or {}).get('spec', {}).get('steps') or []
+            if steps:
+                return rd.bullet_list([f'{s.get("action", "")} → {s.get("expected", "")}' for s in steps], ordered=True)
+            return rd.text(_LOREM)
+        value = _resolve_related_value(field_key, related)
+        return rd.text(value if value is not None else _LOREM)
     # 'field': dato real si hay registro elegido y el campo tiene valor; lorem ipsum como respaldo -- nunca
     # una sección vacía/oculta por falta de dato (ese era justo el problema del editor viejo, ver el plan).
     value = _resolve_field_value(node.get('field_key'), node.get('source'), record, row, node.get('column_index'))
@@ -389,20 +457,22 @@ def report_designer_edit(id: str = ''):
             def _siblings_in(nodes):
                 yield nodes
                 for n in nodes:
-                    if n.get('kind') in ('container', 'repeat'):
+                    if n.get('kind') in ('container', 'repeat', 'related'):
                         yield from _siblings_in(n.get('children') or [])
             for region_key, _ in _REGIONS:
                 yield from _siblings_in(d[region_key])
 
-        def _find_ancestor_repeat(node_id):
-            """El 'repeat' ancestro más cercano de `node_id` (o None si no está dentro de uno) -- para que el
-            panel de Propiedades de un 'field' sepa si ofrecer "Columna de la fila" además del catálogo normal."""
-            def _search(nodes, current_repeat):
+        def _find_ancestor_repeatable(node_id):
+            """El 'repeat' o 'related' ancestro más cercano de `node_id` (o None si no está dentro de
+            ninguno de los dos) -- para que el panel de Propiedades de un 'field' sepa qué origen extra
+            ofrecer: "Columna de la fila" bajo un 'repeat', "Dato del Caso de prueba relacionado" bajo un
+            'related'."""
+            def _search(nodes, current):
                 for n in nodes:
-                    next_repeat = n if n['kind'] == 'repeat' else current_repeat
+                    next_current = n if n['kind'] in ('repeat', 'related') else current
                     if n['id'] == node_id:
-                        return current_repeat
-                    found = _search(n.get('children') or [], next_repeat)
+                        return current
+                    found = _search(n.get('children') or [], next_current)
                     if found is not None:
                         return found
                 return None
@@ -452,7 +522,7 @@ def report_designer_edit(id: str = ''):
                         ui.icon(_NODE_ICON.get(node['kind'], 'crop_square'), size='xs', color='grey')
                         ui.label(_node_label(node)).classes('text-sm font-medium ellipsis')
                     ui.label(f'{span}/12').classes('text-xs text-gray-400')
-                if node['kind'] in ('container', 'repeat'):
+                if node['kind'] in ('container', 'repeat', 'related'):
                     with ui.column().classes('w-full').style('margin-left:10px;border-left:2px solid #e5e7eb;padding-left:8px;padding-top:6px'):
                         _render_children(node.setdefault('children', []))
 
@@ -659,25 +729,46 @@ def report_designer_edit(id: str = ''):
                         .on_value_change(on_repeat_field_change)
                 ui.label('Arrastrá elementos acá adentro: se clonan una vez por cada fila real de ese campo. '
                          'Un Campo hijo con origen "Columna de la fila" saca su valor de esa fila.').classes('text-xs text-gray-500 mt-2')
+            elif node['kind'] == 'related':
+                if applies_to.value != 'user_story':
+                    ui.label('Solo disponible con "Aplica a: Historia de usuario".').classes('text-xs text-amber-700 mt-2')
+                else:
+                    ui.label('Arrastrá elementos acá adentro: se clonan una vez por cada Caso de prueba real asociado '
+                             'a la Historia de usuario del registro de previsualización. Un Campo hijo con origen '
+                             '"Dato del Caso de prueba relacionado" saca Título/Pasos/etc. de ese Caso de prueba, o '
+                             'el estado/fecha de su última corrida real.').classes('text-xs text-gray-500 mt-2')
             elif node['kind'] == 'field':
                 input_template = core.get('spec_templates', state['input_template_id']) if state['input_template_id'] else None
                 catalog = _field_catalog(applies_to.value, input_template)
                 template_only = _template_only_field_keys(input_template)
-                ancestor_repeat = _find_ancestor_repeat(node['id'])
-                if ancestor_repeat:
+                ancestor = _find_ancestor_repeatable(node['id'])
+                ancestor_kind = ancestor['kind'] if ancestor else None
+                if ancestor_kind:
+                    origin_options = {'record': 'Campo del registro'}
+                    if ancestor_kind == 'repeat':
+                        origin_options['row'] = 'Columna de la fila (este Repetir filas)'
+                    else:
+                        origin_options['related'] = 'Dato del Caso de prueba relacionado'
+
                     def on_origin_change(e, node=node):
                         if e.value == 'row':
                             node['source'] = 'row'
                             node['column_index'] = node.get('column_index', 0)
                             node['field_key'] = ''
                             node['label'] = f"Columna {node['column_index'] + 1}"
+                        elif e.value == 'related':
+                            node['source'] = 'related'
+                            node['field_key'] = ''
+                            node['label'] = ''
+                            node.pop('column_index', None)
                         else:
                             node['source'] = 'fixed'
                             node['field_key'] = ''
                             node['label'] = ''
+                            node.pop('column_index', None)
                         _refresh(tree=True, inspector=True, document=True)
-                    ui.select({'record': 'Campo del registro', 'row': 'Columna de la fila (este Repetir filas)'},
-                             value='row' if node.get('source') == 'row' else 'record', label='Origen') \
+                    current_origin = node.get('source') if node.get('source') in ('row', 'related') else 'record'
+                    ui.select(origin_options, value=current_origin, label='Origen') \
                         .props('outlined dense').classes('w-80 mt-2').on_value_change(on_origin_change)
                 if node.get('source') == 'row':
                     column_options = {i: f'Columna {i + 1}' for i in range(10)}
@@ -689,6 +780,16 @@ def report_designer_edit(id: str = ''):
                         _refresh(tree=True, document=True)
                     ui.select(column_options, value=current_index, label='Columna (según el orden real de la tabla)').props('outlined dense').classes('w-72 mt-2') \
                         .on_value_change(on_column_change)
+                elif node.get('source') == 'related':
+                    related_catalog = _related_field_catalog()
+                    current_key = node.get('field_key') if node.get('field_key') in related_catalog else None
+
+                    def on_related_field_change(e, node=node, catalog=related_catalog):
+                        node['field_key'] = e.value or ''
+                        node['label'] = catalog.get(e.value, e.value or '')
+                        _refresh(tree=True, document=True)
+                    ui.select(related_catalog, value=current_key, label='Dato del Caso de prueba').props('outlined dense').classes('w-72 mt-2') \
+                        .on_value_change(on_related_field_change)
                 elif not catalog:
                     ui.label('No hay campos para elegir todavía: "Aplica a" no tiene campos fijos conocidos y no hay '
                              'Plantilla de entrada asociada (arriba) con campos propios.').classes('text-xs text-amber-700 mt-2')
